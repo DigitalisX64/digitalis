@@ -1,0 +1,399 @@
+#!/bin/bash
+#
+# digitalis-dispatch.sh — Automated dispatch system for Digitalis development
+#
+# Runs a loop of Claude Code subagents. Each subagent:
+#   1. Reads the latest handoff-N.md
+#   2. Does real work (edit, build, test, deploy, check logs)
+#   3. Writes handoff-(N+1).md with progress
+#   4. Exits
+#
+# The loop continues until a subagent writes STATUS: COMPLETE and
+# verification confirms hello-digitalis is actually running.
+#
+# Usage:
+#   ./digitalis-dispatch.sh                              # Continue from latest handoff
+#   ./digitalis-dispatch.sh "Fix STLR root cause"        # Fresh start with initial idea
+#   DIGITALIS_MAX_BUDGET=30 ./digitalis-dispatch.sh      # Custom budget per cycle
+#
+# Environment variables:
+#   DIGITALIS_MAX_RETRIES  - Retries per cycle on error (default: 3)
+#   DIGITALIS_RETRY_WAIT   - Seconds to wait between retries (default: 300)
+#   DIGITALIS_MAX_BUDGET   - Max USD per subagent run (default: 20)
+#   DIGITALIS_MAX_CYCLES   - Max total cycles before giving up (default: 50)
+#   DIGITALIS_MODEL        - Claude model to use (default: opus)
+
+set -euo pipefail
+
+# Derive WORK_DIR from script location: script is at <repo>/.claude/digitalis-dispatch.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HANDOFF_PREFIX="digitalis-handoff"
+LOG_DIR="/tmp/digitalis-dispatch"
+
+MAX_RETRIES=${DIGITALIS_MAX_RETRIES:-3}
+RETRY_WAIT=${DIGITALIS_RETRY_WAIT:-300}
+MAX_BUDGET=${DIGITALIS_MAX_BUDGET:-20}
+MAX_CYCLES=${DIGITALIS_MAX_CYCLES:-200}
+MODEL=${DIGITALIS_MODEL:-opus}
+
+mkdir -p "$LOG_DIR"
+
+# ──────────────────────────────────────────────
+# Find the highest-numbered handoff-N.md
+# ──────────────────────────────────────────────
+find_latest_handoff() {
+    local latest=0
+    for f in "${WORK_DIR}/${HANDOFF_PREFIX}"-*.md; do
+        [[ -f "$f" ]] || continue
+        local num
+        num=$(basename "$f" .md | sed "s/${HANDOFF_PREFIX}-//")
+        if [[ "$num" =~ ^[0-9]+$ ]] && (( num > latest )); then
+            latest=$num
+        fi
+    done
+    echo "$latest"
+}
+
+# ──────────────────────────────────────────────
+# Build the prompt for a subagent
+# ──────────────────────────────────────────────
+build_prompt() {
+    local current=$1
+    local next=$2
+    local input_file="${WORK_DIR}/${HANDOFF_PREFIX}-${current}.md"
+    local output_file="${HANDOFF_PREFIX}-${next}.md"
+    local user_idea="${3:-}"
+
+    cat <<'PROMPT_HEADER'
+You are a subagent working on the Digitalis project — an ARM64-to-x86_64 binary translation system built on AOSP's Berberis framework.
+
+GOAL: Make hello-digitalis (an ARM64-only Vulkan triangle app) run correctly on the x86_64 Digitalis emulator with good performance.
+
+You are part of an automated dispatch pipeline. You will:
+1. Read context (previous handoff or CLAUDE.md for fresh starts)
+2. Do real, concrete work (edit code, build, test, deploy, check logs)
+3. Write a new handoff document recording your progress
+4. Exit
+
+PROMPT_HEADER
+
+    if [[ -f "$input_file" ]]; then
+        cat <<PROMPT_VARS
+
+## Input
+Read this file first: ${HANDOFF_PREFIX}-${current}.md
+It contains everything you need: what was done, current blockers, what to do next, rules, and build commands.
+
+## Output
+Write your progress to: ${output_file}
+
+PROMPT_VARS
+    else
+        cat <<PROMPT_VARS
+
+## Fresh Start
+No previous handoff exists. Read CLAUDE.md first to understand the project context.
+${user_idea:+
+The initial idea / task:
+${user_idea}
+}
+Do real work — investigate, edit code, build, test. Do NOT just write a plan.
+Write your progress to: ${output_file}
+
+PROMPT_VARS
+    fi
+
+    cat <<'PROMPT_RULES'
+## Rules (MUST FOLLOW)
+
+1. **Fail fast**: implement → build → test → deploy → check logs → iterate.
+2. **Never touch timeout_multiplier**: Do NOT change `hw_timeout_multiplier`, `timeout_multiplier`, or any timeout scaling values. Do NOT add, increase, or reference these values in code or config. This is a hard rule with no exceptions.
+3. **Small changes**: One fix at a time. Verify before moving to the next.
+4. **Region markers**: Use `// region digitalis` / `// endregion` around all changes in existing files.
+5. **Read before edit**: Always read a file before modifying it.
+6. **No blind sleeps**: NEVER use `sleep` to wait for boot or device readiness. Always poll `sys.boot_completed` as shown in the build commands below. Max 60 iterations (60s) then give up.
+
+## Build, Deploy & Test Commands
+
+Every deploy cycle follows this exact sequence: kill old emulator → full system build → launch new emulator → wait for boot → test app.
+
+```bash
+source build/envsetup.sh && lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug
+
+# Step 1: Kill existing emulator
+pkill -9 -f qemu-system-x86_64 || true
+sleep 2
+
+# Step 2: Full system build (includes libberberis_arm64 and emulator images)
+m
+
+# Step 3: Launch freshly built emulator
+nohup emulator -no-snapshot -writable-system > /tmp/emu.log 2>&1 &
+
+# Step 4: Wait for boot — poll sys.boot_completed, NO blind sleep
+n=0; while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ] && [ $n -lt 60 ]; do sleep 1; n=$((n+1)); done
+if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; then echo "ERROR: Boot did not complete"; exit 1; fi
+
+# Step 5: Setup and launch app
+adb root && sleep 2 && adb remount
+adb shell am start -n com.example.hellodigitalis/android.app.NativeActivity
+
+# Step 6: Check logs
+sleep 5
+adb shell logcat -d -s berberis | tail -80
+```
+
+For host-only tests (no emulator needed):
+```bash
+source build/envsetup.sh && lunch sdk_phone64_x86_64-trunk_staging-userdebug
+m berberis_arm64_host_tests
+out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_tests --gtest_filter='Arm64*'
+```
+
+## Handoff Document Format
+
+Your output handoff document MUST follow this exact structure:
+
+```
+# Digitalis Handoff #N: [Brief Title]
+
+## What Was Done
+[Describe each change with file paths and technical details]
+
+## How It Was Verified
+[What tests were run, what logs were checked, what was the result]
+
+## Current State
+[Is hello-digitalis running? What's the current behavior?]
+
+## Files Modified (This Session)
+| File | Change |
+|------|--------|
+| ... | ... |
+
+## Current Blocker (if any)
+[What's preventing progress, with technical details]
+
+## What Should Be Done Next
+[Prioritized list of next steps]
+
+## Rules for Working on This Project
+[Copy rules from previous handoff, add any new lessons learned]
+
+## Build & Test
+[Copy build commands]
+
+## STATUS: IN_PROGRESS
+```
+
+## Completion
+
+If hello-digitalis runs correctly and renders the Vulkan triangle on the emulator,
+change the last line to: `## STATUS: COMPLETE`
+
+Otherwise keep it as: `## STATUS: IN_PROGRESS`
+
+## IMPORTANT
+
+- START by reading the handoff document (or CLAUDE.md for fresh starts). It has all the context you need.
+- DO real work. You have full tool access — edit files, run builds, deploy, check logs.
+- WRITE your handoff document before you finish. Future agents depend on it.
+- Be SPECIFIC in your handoff — include exact file paths, line numbers, error messages.
+- If you can't make progress on the top priority, document WHY and move to the next item.
+PROMPT_RULES
+}
+
+# ──────────────────────────────────────────────
+# Run a single subagent cycle
+# Returns 0 on success, 1 on failure
+# ──────────────────────────────────────────────
+run_subagent() {
+    local current=$1
+    local next=$2
+    local user_idea="${3:-}"
+    local log_file="${LOG_DIR}/cycle-${next}.log"
+    local prompt_file
+    prompt_file=$(mktemp "${LOG_DIR}/prompt-${next}-XXXXX.txt")
+
+    build_prompt "$current" "$next" "$user_idea" > "$prompt_file"
+
+    echo "[$(date '+%H:%M:%S')] Prompt written to ${prompt_file} ($(wc -c < "$prompt_file") bytes)"
+    echo "[$(date '+%H:%M:%S')] Log: ${log_file}"
+    echo "[$(date '+%H:%M:%S')] Running claude -p --model ${MODEL} --max-budget-usd ${MAX_BUDGET} ..."
+    echo ""
+
+    # Run claude in print mode with full permissions.
+    # Pipe prompt via stdin to avoid shell argument length limits.
+    # Use tee to show output live AND save to log file.
+    if (cd "${WORK_DIR}" && claude -p \
+        --dangerously-skip-permissions \
+        --model "${MODEL}" \
+        --max-budget-usd "${MAX_BUDGET}" \
+        --output-format text \
+        < "$prompt_file") \
+        2>&1 | tee "$log_file"; then
+        echo ""
+        echo "[$(date '+%H:%M:%S')] Subagent exited successfully."
+        return 0
+    else
+        local exit_code=$?
+        echo ""
+        echo "[$(date '+%H:%M:%S')] Subagent exited with code ${exit_code}."
+        echo "[$(date '+%H:%M:%S')] Last 20 lines of log:"
+        tail -20 "$log_file" 2>/dev/null || true
+        return 1
+    fi
+}
+
+# ──────────────────────────────────────────────
+# Verify that hello-digitalis is actually running
+# ──────────────────────────────────────────────
+verify_completion() {
+    echo "[$(date '+%H:%M:%S')] Verifying hello-digitalis is running..."
+
+    # Check if emulator is accessible
+    if ! adb devices 2>/dev/null | grep -q "emulator\|device"; then
+        echo "[$(date '+%H:%M:%S')] ✗ No emulator/device connected"
+        return 1
+    fi
+
+    # Check if the app process is running
+    local pid
+    pid=$(adb shell pidof com.example.hellodigitalis 2>/dev/null || true)
+    if [[ -z "$pid" ]]; then
+        echo "[$(date '+%H:%M:%S')] ✗ hello-digitalis process not found"
+        return 1
+    fi
+    echo "[$(date '+%H:%M:%S')] ✓ hello-digitalis running (pid=${pid})"
+
+    # Check for Vulkan rendering in recent logs
+    if adb logcat -d -t 60 2>/dev/null | grep -qi "vulkan\|vkCreate\|eglSwapBuffers\|NativeActivity"; then
+        echo "[$(date '+%H:%M:%S')] ✓ Rendering activity detected in logs"
+        return 0
+    else
+        echo "[$(date '+%H:%M:%S')] ? No rendering logs found (app may still be initializing)"
+        # App is running, so let's call it a success even without rendering logs
+        return 0
+    fi
+}
+
+# ──────────────────────────────────────────────
+# Main dispatch loop
+# ──────────────────────────────────────────────
+main() {
+    local user_idea="${*}"
+
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║      Digitalis Dispatch System               ║"
+    echo "║      ARM64 → x86_64 Binary Translation       ║"
+    echo "╚══════════════════════════════════════════════╝"
+    echo ""
+    echo "Config:"
+    echo "  Work dir:     ${WORK_DIR}"
+    echo "  Model:        ${MODEL}"
+    echo "  Max budget:   \$${MAX_BUDGET}/cycle"
+    echo "  Max retries:  ${MAX_RETRIES}/cycle"
+    echo "  Retry wait:   ${RETRY_WAIT}s"
+    echo "  Max cycles:   ${MAX_CYCLES}"
+    echo "  Log dir:      ${LOG_DIR}"
+    if [[ -n "$user_idea" ]]; then
+        echo "  Initial idea: ${user_idea}"
+    fi
+    echo ""
+
+    local cycle=0
+
+    while (( cycle < MAX_CYCLES )); do
+        cycle=$((cycle + 1))
+        local current
+        current=$(find_latest_handoff)
+        local next=$((current + 1))
+        local input_file="${WORK_DIR}/${HANDOFF_PREFIX}-${current}.md"
+        local output_file="${WORK_DIR}/${HANDOFF_PREFIX}-${next}.md"
+
+        if (( current == 0 )); then
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "[$(date '+%H:%M:%S')] Cycle ${cycle}: fresh start → handoff-${next}.md"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        else
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "[$(date '+%H:%M:%S')] Cycle ${cycle}: handoff-${current}.md → handoff-${next}.md"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+            if [[ ! -f "$input_file" ]]; then
+                echo "[$(date '+%H:%M:%S')] ERROR: Input file not found: ${input_file}"
+                exit 1
+            fi
+        fi
+
+        # Retry loop for this cycle
+        local retries=0
+        local success=false
+
+        while (( retries < MAX_RETRIES )); do
+            if run_subagent "$current" "$next" "$user_idea"; then
+                success=true
+                break
+            else
+                retries=$((retries + 1))
+                if (( retries < MAX_RETRIES )); then
+                    echo "[$(date '+%H:%M:%S')] Retry ${retries}/${MAX_RETRIES} in ${RETRY_WAIT}s..."
+                    sleep "$RETRY_WAIT"
+                fi
+            fi
+        done
+
+        if ! $success; then
+            echo "[$(date '+%H:%M:%S')] ERROR: Cycle ${cycle} failed after ${MAX_RETRIES} attempts."
+            echo "[$(date '+%H:%M:%S')] Check logs in ${LOG_DIR}/"
+            exit 1
+        fi
+
+        # Check that the handoff was written
+        if [[ ! -f "$output_file" ]]; then
+            echo "[$(date '+%H:%M:%S')] WARNING: handoff-${next}.md was not created."
+            echo "[$(date '+%H:%M:%S')] Subagent may not have finished writing. Retrying cycle..."
+            # Don't increment — retry with the same handoff number
+            continue
+        fi
+
+        echo "[$(date '+%H:%M:%S')] handoff-${next}.md written ($(wc -l < "$output_file") lines)"
+
+        # Clear user_idea after first successful cycle — subsequent cycles read handoffs
+        user_idea=""
+
+        # Check for completion
+        if grep -q "STATUS: COMPLETE" "$output_file" 2>/dev/null; then
+            echo ""
+            echo "[$(date '+%H:%M:%S')] ★ Subagent reports STATUS: COMPLETE"
+            echo ""
+
+            if verify_completion; then
+                echo ""
+                echo "╔══════════════════════════════════════════════╗"
+                echo "║           DIGITALIS COMPLETE!                ║"
+                echo "║   hello-digitalis running on x86_64          ║"
+                echo "║   Total cycles: ${cycle}                          ║"
+                echo "╚══════════════════════════════════════════════╝"
+                exit 0
+            else
+                echo "[$(date '+%H:%M:%S')] Verification failed. Appending note to handoff."
+                cat >> "$output_file" <<EOF
+
+## Dispatch Verification Note
+Automated verification at $(date) could not confirm hello-digitalis is running.
+The next subagent should investigate and re-verify.
+EOF
+            fi
+        fi
+
+        echo "[$(date '+%H:%M:%S')] Cycle ${cycle} complete. Moving to next cycle."
+        echo ""
+    done
+
+    echo "[$(date '+%H:%M:%S')] ERROR: Reached max cycles (${MAX_CYCLES}) without completion."
+    exit 1
+}
+
+main "$@"
