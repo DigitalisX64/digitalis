@@ -31,10 +31,6 @@ emulator
 # And then build and install sample/hellodigitalis with Gradle to test
 ```
 
-## Known Issues
-
-- **ARM64 optimized memset partially broken under translation.** The core SIMD pattern (`dup v0.16b` + `stp q0, q0`) works correctly in both JIT and interpreter (verified by host tests). The real failure is in a specific code path within bionic's `__memset_aarch64` that hasn't been isolated yet. The BSS zeroing workaround in `sys_mman_emulation.cc` covers the critical case.
-
 ## Claude Code Integration
 
 This repo includes a `/dispatch` slash command and an automated dispatch script for Claude Code.

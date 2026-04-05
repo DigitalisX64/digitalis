@@ -95,8 +95,3 @@ These are the most-modified files and the ones you'll touch most often:
 - **Use FaultyLoad/FaultyStore for all interpreter memory accesses.** Raw memcpy causes host SIGSEGV that bypasses guest signal handlers.
 - **Digitalis-specific code is marked with `// region digitalis` / `// endregion` comments** (or `# region digitalis` in makefiles). This distinguishes Digitalis additions from upstream Berberis code.
 
-## Known Issues (Non-Blocking)
-
-1. **STLR atomic store** to `once_flag` silently fails under translation. Masked by futex workaround in `syscall_emulation.cc`, not root-caused.
-2. **ARM64 optimized memset** (`dup v0.16b + stp q0, q0` loops) does not work correctly under translation. BSS zeroing workaround in `sys_mman_emulation.cc` handles the critical case.
-3. **JIT region size** averages ~5 instructions (every conditional branch ends the region). Region extension causes correctness bugs with backward branches.
