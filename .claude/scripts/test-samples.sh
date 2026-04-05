@@ -134,9 +134,12 @@ pass=0
 crash=0
 total=0
 
-# Hide status bar for screenshot/update-references modes to avoid clock/battery changes
+# For screenshot/update-references modes:
+# - Hide status bar to avoid clock/battery changes
+# - Suppress "Viewing full screen" confirmation dialog (steals focus from NativeActivity apps)
 if [[ "$MODE" == "screenshots" || "$MODE" == "update-references" ]]; then
     adb shell settings put global policy_control immersive.status=* 2>/dev/null
+    adb shell settings put secure immersive_mode_confirmations confirmed 2>/dev/null
 fi
 
 if [[ "$MODE" == "liveness" ]]; then

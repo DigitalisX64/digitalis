@@ -78,6 +78,18 @@ Test all sample modules on the emulator:
 .claude/scripts/test-samples.sh hello-vulkan   # test a single module
 ```
 
+Run screenshot tests (validates visual output against reference images):
+```bash
+.claude/scripts/test-samples.sh --screenshots              # test all 22 modules
+.claude/scripts/test-samples.sh --screenshots hello-vulkan  # test a single module
+```
+
+Update reference images (after intentional rendering changes):
+```bash
+.claude/scripts/test-samples.sh --update-references              # all modules
+.claude/scripts/test-samples.sh --update-references hello-vulkan  # single module
+```
+
 ## Key Files for Development
 
 These are the most-modified files and the ones you'll touch most often:
