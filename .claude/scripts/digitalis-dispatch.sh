@@ -44,40 +44,6 @@ MODEL=${DIGITALIS_MODEL:-opus}
 mkdir -p "$LOG_DIR"
 
 # ──────────────────────────────────────────────
-# Parse stream-json output: extract assistant text, tee to log + stdout
-# Filters out JSON metadata, shows only assistant messages and tool results.
-# ──────────────────────────────────────────────
-_stream_to_log() {
-    local log_file="$1"
-    : > "$log_file"
-    while IFS= read -r line; do
-        # Extract assistant text content from stream-json events
-        # Format: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
-        # Also show result messages and tool use summaries
-        local text
-        text=$(echo "$line" | python3 -c "
-import sys, json
-try:
-    obj = json.load(sys.stdin)
-    t = obj.get('type', '')
-    if t == 'assistant':
-        for block in obj.get('message', {}).get('content', []):
-            if block.get('type') == 'text':
-                print(block['text'])
-    elif t == 'result':
-        for block in obj.get('result', []):
-            if isinstance(block, dict) and block.get('type') == 'text':
-                print(block['text'])
-except:
-    pass
-" 2>/dev/null)
-        if [[ -n "$text" ]]; then
-            echo "$text" | tee -a "$log_file"
-        fi
-    done
-}
-
-# ──────────────────────────────────────────────
 # Find the highest-numbered handoff-N.md
 # ──────────────────────────────────────────────
 find_latest_handoff() {
@@ -267,21 +233,30 @@ run_subagent() {
     echo ""
 
     # Run claude in print mode with full permissions.
-    # Use stream-json output and extract assistant text for live display + logging.
-    # --output-format text buffers everything until exit; stream-json streams incrementally.
+    # Write output to log file, tail -f in background for live display.
+    # Note: --output-format text buffers until exit, so the log file fills
+    # only at completion. For monitoring, check child processes and file mods.
+    : > "$log_file"
+    tail -f "$log_file" &
+    local tail_pid=$!
+
     local exit_code=0
     if (cd "${WORK_DIR}" && claude -p \
         --dangerously-skip-permissions \
         --model "${MODEL}" \
         --max-budget-usd "${MAX_BUDGET}" \
-        --output-format stream-json \
+        --output-format text \
         < "$prompt_file") \
-        2>&1 | _stream_to_log "$log_file"; then
+        > "$log_file" 2>&1; then
+        sleep 1  # let tail catch up
+        kill "$tail_pid" 2>/dev/null; wait "$tail_pid" 2>/dev/null || true
         echo ""
         echo "[$(date '+%H:%M:%S')] Subagent exited successfully."
         return 0
     else
         exit_code=$?
+        sleep 1
+        kill "$tail_pid" 2>/dev/null; wait "$tail_pid" 2>/dev/null || true
         echo ""
         echo "[$(date '+%H:%M:%S')] Subagent exited with code ${exit_code}."
         echo "[$(date '+%H:%M:%S')] Last 20 lines of log:"
