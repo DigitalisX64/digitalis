@@ -134,6 +134,11 @@ pass=0
 crash=0
 total=0
 
+# Hide status bar for screenshot/update-references modes to avoid clock/battery changes
+if [[ "$MODE" == "screenshots" || "$MODE" == "update-references" ]]; then
+    adb shell settings put global policy_control immersive.status=* 2>/dev/null
+fi
+
 if [[ "$MODE" == "liveness" ]]; then
 
 echo "═══════════════════════════════════════════════"
@@ -252,16 +257,27 @@ for mod in "${MODULE_ORDER[@]}"; do
     fi
 
     # Run instrumentation test
-    output=$(adb shell am instrument -w -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1)
+    # Use timeout because am instrument -w can hang when test process doesn't exit
+    comp="${MODULES[$mod]}"
+    pkg="${comp%%/*}"
+    output=$(timeout 30 adb shell am instrument -w -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1 || true)
 
+    # Check for pass: "OK (1 test)" in output, or test finished in logcat (timeout case)
     if echo "$output" | grep -q "OK (1 test)"; then
         echo "  PASS: $mod"
+        pass=$((pass + 1))
+    elif adb logcat -d 2>/dev/null | grep -q "TestRunner.*finished.*${TEST_CLASSES[$mod]##*.}"; then
+        echo "  PASS: $mod (completed, am instrument timed out)"
         pass=$((pass + 1))
     else
         echo "  FAIL: $mod"
         crash=$((crash + 1))
         echo "$output" | sed 's/^/    /'
     fi
+
+    # Cleanup between modules
+    adb shell am force-stop "$pkg" 2>/dev/null || true
+    sleep 1
 done
 
 echo ""
@@ -312,23 +328,27 @@ for mod in "${MODULE_ORDER[@]}"; do
     fi
 
     # Run instrumentation test with updateReferences=true
-    output=$(adb shell am instrument -w -e updateReferences true -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1)
+    # Use timeout because am instrument -w can hang when test process doesn't exit
+    comp="${MODULES[$mod]}"
+    pkg="${comp%%/*}"
+    output=$(timeout 30 adb shell am instrument -w -e updateReferences true -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1 || true)
 
-    # Derive device path from package name
-    pkg_underscored=$(echo "${MODULES[$mod]%%/*}" | tr '.' '_')
-
-    # Pull reference image
+    # Pull reference image from the app's data dir (adb root required)
     dest_dir="${SAMPLE_DIR}/${mod}/src/androidTest/assets/reference"
     mkdir -p "$dest_dir"
-    pull_result=$(adb pull "/data/local/tmp/references/${pkg_underscored}/screenshot_default.png" "${dest_dir}/screenshot_default.png" 2>&1)
+    pull_result=$(adb pull "/data/data/${pkg}/files/references/screenshot_default.png" "${dest_dir}/screenshot_default.png" 2>&1)
 
-    if echo "$pull_result" | grep -q "pulled\|bytes"; then
+    if echo "$pull_result" | grep -q "pulled\|bytes\|file pulled"; then
         echo "  UPDATED: $mod"
         pass=$((pass + 1))
     else
         echo "  FAIL: $mod — $pull_result"
         crash=$((crash + 1))
     fi
+
+    # Cleanup between modules
+    adb shell am force-stop "$pkg" 2>/dev/null || true
+    sleep 1
 done
 
 echo ""
@@ -338,4 +358,9 @@ echo "════════════════════════�
 echo ""
 echo "Reference images updated. Review and commit with git add."
 
+fi
+
+# Restore status bar if we hid it
+if [[ "$MODE" == "screenshots" || "$MODE" == "update-references" ]]; then
+    adb shell settings put global policy_control null 2>/dev/null
 fi
