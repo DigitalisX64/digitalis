@@ -68,7 +68,7 @@ build_prompt() {
     cat <<'PROMPT_HEADER'
 You are a subagent working on the Digitalis project — an ARM64-to-x86_64 binary translation system built on AOSP's Berberis framework.
 
-GOAL: Make hello-digitalis (an ARM64-only Vulkan triangle app) run correctly on the x86_64 Digitalis emulator with good performance.
+GOAL: Make all 22 ARM64-only sample apps in sample/hellodigitalis run correctly on the x86_64 Digitalis emulator (0 CRASH in test-samples.sh).
 
 You are part of an automated dispatch pipeline. You will:
 1. Read context (previous handoff or CLAUDE.md for fresh starts)
@@ -117,38 +117,38 @@ PROMPT_HEADER
 4. **Region markers**: Use `// region digitalis` / `// endregion` around all changes in existing files.
 5. **Read before edit**: Always read a file before modifying it.
 6. **No blind sleeps**: NEVER use `sleep` to wait for boot or device readiness. Always poll `sys.boot_completed` as shown in the build commands below. Max 60 iterations (60s) then give up.
+7. **Reuse running emulator**: Before killing and rebuilding, check if an emulator is already booted (`adb shell getprop sys.boot_completed`). If so, and you only changed sample app code (not translator code), just rebuild APKs and reinstall — no emulator restart needed.
+8. **Write handoff early**: Write your handoff document as soon as you have results, BEFORE doing extensive screenshot analysis or secondary investigations. You can always update it. Don't spend 20+ minutes analyzing screenshots before writing anything.
+9. **Budget awareness**: You have a limited budget. Prioritize: (a) read handoff, (b) make code fixes, (c) build, (d) test, (e) write handoff. Don't spend budget on elaborate screenshot verification loops.
 
 ## Build, Deploy & Test Commands
 
-Every deploy cycle follows this exact sequence: kill old emulator → full system build → launch new emulator → wait for boot → test app.
-
+### If translator code changed (decoder.h, interpreter.h, lite_translator.h, etc.)
+Full rebuild + emulator restart required:
 ```bash
 source build/envsetup.sh && lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug
-
-# Step 1: Kill existing emulator
-pkill -9 -f qemu-system-x86_64 || true
-sleep 2
-
-# Step 2: Full system build (includes libberberis_arm64 and emulator images)
+pkill -9 -f qemu-system-x86_64 || true; sleep 2
 m
-
-# Step 3: Launch freshly built emulator
 nohup emulator -no-snapshot -writable-system > /tmp/emu.log 2>&1 &
-
-# Step 4: Wait for boot — poll sys.boot_completed, NO blind sleep
 n=0; while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ] && [ $n -lt 60 ]; do sleep 1; n=$((n+1)); done
 if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; then echo "ERROR: Boot did not complete"; exit 1; fi
-
-# Step 5: Setup and launch app
 adb root && sleep 2 && adb remount
-adb shell am start -n com.example.hellodigitalis/android.app.NativeActivity
-
-# Step 6: Check logs
-sleep 5
-adb shell logcat -d -s berberis | tail -80
 ```
 
-For host-only tests (no emulator needed):
+### If only sample app code changed
+Just rebuild APKs and reinstall (fast):
+```bash
+cd sample/hellodigitalis && ./gradlew assembleDebug && cd ../..
+# Then use .claude/scripts/test-samples.sh to test
+```
+
+### Test all samples
+```bash
+.claude/scripts/test-samples.sh              # all 22 modules
+.claude/scripts/test-samples.sh hello-vulkan  # single module
+```
+
+### Host-only tests (no emulator needed)
 ```bash
 source build/envsetup.sh && lunch sdk_phone64_x86_64-trunk_staging-userdebug
 m berberis_arm64_host_tests
@@ -193,7 +193,7 @@ Your output handoff document MUST follow this exact structure:
 
 ## Completion
 
-If hello-digitalis runs correctly and renders the Vulkan triangle on the emulator,
+When ALL 22 sample modules pass `.claude/scripts/test-samples.sh` (0 CRASH),
 change the last line to: `## STATUS: COMPLETE`
 
 Otherwise keep it as: `## STATUS: IN_PROGRESS`
@@ -202,9 +202,10 @@ Otherwise keep it as: `## STATUS: IN_PROGRESS`
 
 - START by reading the handoff document (or CLAUDE.md for fresh starts). It has all the context you need.
 - DO real work. You have full tool access — edit files, run builds, deploy, check logs.
-- WRITE your handoff document before you finish. Future agents depend on it.
+- WRITE your handoff document EARLY — as soon as you have test results. Don't delay writing it.
 - Be SPECIFIC in your handoff — include exact file paths, line numbers, error messages.
 - If you can't make progress on the top priority, document WHY and move to the next item.
+- BUDGET: You have limited budget per cycle. Focus on ONE fix per cycle, verify it, write the handoff, and exit. Don't try to do everything in one cycle.
 PROMPT_RULES
 }
 
@@ -229,8 +230,8 @@ run_subagent() {
 
     # Run claude in print mode with full permissions.
     # Pipe prompt via stdin to avoid shell argument length limits.
-    # Use tee to show output live AND save to log file.
-    if (cd "${WORK_DIR}" && claude -p \
+    # Use stdbuf to disable output buffering so tee shows output live.
+    if (cd "${WORK_DIR}" && stdbuf -oL claude -p \
         --dangerously-skip-permissions \
         --model "${MODEL}" \
         --max-budget-usd "${MAX_BUDGET}" \
@@ -254,7 +255,7 @@ run_subagent() {
 # Verify that hello-digitalis is actually running
 # ──────────────────────────────────────────────
 verify_completion() {
-    echo "[$(date '+%H:%M:%S')] Verifying hello-digitalis is running..."
+    echo "[$(date '+%H:%M:%S')] Verifying all samples pass..."
 
     # Check if emulator is accessible
     if ! adb devices 2>/dev/null | grep -q "emulator\|device"; then
@@ -262,23 +263,25 @@ verify_completion() {
         return 1
     fi
 
-    # Check if the app process is running
-    local pid
-    pid=$(adb shell pidof com.example.hellodigitalis 2>/dev/null || true)
-    if [[ -z "$pid" ]]; then
-        echo "[$(date '+%H:%M:%S')] ✗ hello-digitalis process not found"
+    # Check boot
+    if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; then
+        echo "[$(date '+%H:%M:%S')] ✗ Emulator not booted"
         return 1
     fi
-    echo "[$(date '+%H:%M:%S')] ✓ hello-digitalis running (pid=${pid})"
 
-    # Check for Vulkan rendering in recent logs
-    if adb logcat -d -t 60 2>/dev/null | grep -qi "vulkan\|vkCreate\|eglSwapBuffers\|NativeActivity"; then
-        echo "[$(date '+%H:%M:%S')] ✓ Rendering activity detected in logs"
+    # Run test-samples.sh and check for 0 crashes
+    local test_output
+    test_output=$("${WORK_DIR}/.claude/scripts/test-samples.sh" 2>&1) || true
+    echo "$test_output" | tail -5
+
+    if echo "$test_output" | grep -q "0 CRASH"; then
+        echo "[$(date '+%H:%M:%S')] ✓ All samples passing (0 CRASH)"
         return 0
     else
-        echo "[$(date '+%H:%M:%S')] ? No rendering logs found (app may still be initializing)"
-        # App is running, so let's call it a success even without rendering logs
-        return 0
+        local crashes
+        crashes=$(echo "$test_output" | grep -oP '\d+ CRASH' || echo "unknown")
+        echo "[$(date '+%H:%M:%S')] ✗ Still have crashes: ${crashes}"
+        return 1
     fi
 }
 
