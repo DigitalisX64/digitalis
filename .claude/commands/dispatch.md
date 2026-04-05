@@ -11,3 +11,7 @@ Run it now with the user's arguments (if any) passed through:
 ```
 
 If the script fails or the user wants to do a single manual cycle instead, fall back to reading the latest `digitalis-handoff-*.md` (or CLAUDE.md for fresh starts) and doing the work directly in this session. Write the next handoff before finishing.
+
+After making translator changes, verify with both host tests and the sample module test suite:
+- Host tests: `m berberis_arm64_host_tests && out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_tests --gtest_filter='Arm64*'`
+- Sample modules: `.claude/test-samples.sh` (tests all 22 ARM64 sample apps on the emulator, see `/test-samples`)

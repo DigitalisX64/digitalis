@@ -58,16 +58,24 @@ Run the emulator:
 emulator -memory 4096 -writable-system -partition-size 65536 -qemu -cpu host &
 ```
 
-Install and run the sample app:
+Install and run sample apps:
 ```bash
-# Build hello-digitalis APK separately (Gradle project in sample/hellodigitalis/)
-adb install sample/hellodigitalis/app/build/outputs/apk/debug/app-debug.apk
+# Build all 22 sample modules (ARM64-only APKs)
+cd sample/hellodigitalis && ./gradlew assembleDebug
+# Install and run the Vulkan triangle
+adb install hello-vulkan/build/outputs/apk/debug/hello-vulkan-debug.apk
 adb shell am start -n com.example.hellodigitalis/android.app.NativeActivity
 ```
 
 Run host unit tests:
 ```bash
-out/host/linux-x86/nativetest64/berberis_host_tests/berberis_host_tests
+out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_tests --gtest_filter='Arm64*'
+```
+
+Test all sample modules on the emulator:
+```bash
+.claude/test-samples.sh                # test all 22 modules
+.claude/test-samples.sh hello-vulkan   # test a single module
 ```
 
 ## Key Files for Development
@@ -83,7 +91,8 @@ These are the most-modified files and the ones you'll touch most often:
 - **`interpreter/arm64/interpreter.h`** — All interpreter-only SIMD instructions (pairwise, widening, permute, compare, across-lanes, CRC32, scalar conversions).
 - **`kernel_api/arm64/syscall_emulation.cc`** — Syscall forwarding, futex workarounds, call_once/pthread_once deadlock fixups.
 - **`kernel_api/sys_mman_emulation.cc`** — BSS partial-page zeroing after file-backed mmaps.
-- **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (31 tests).
+- **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
+- **`sample/hellodigitalis/`** — 22 ARM64-only sample app modules (ported from android/ndk-samples). Use `/test-samples` to test on the emulator.
 
 ## Critical Conventions
 
