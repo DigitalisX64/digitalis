@@ -3,8 +3,12 @@
 # test-samples.sh — Test hellodigitalis sample modules on the Digitalis emulator.
 #
 # Usage:
-#   .claude/scripts/test-samples.sh              # Test all modules
-#   .claude/scripts/test-samples.sh hello-vulkan  # Test a single module
+#   .claude/scripts/test-samples.sh                           # Liveness tests (existing)
+#   .claude/scripts/test-samples.sh hello-vulkan               # Single module liveness
+#   .claude/scripts/test-samples.sh --screenshots              # Screenshot tests all
+#   .claude/scripts/test-samples.sh --screenshots hello-vulkan # Screenshot tests single
+#   .claude/scripts/test-samples.sh --update-references              # Update refs all
+#   .claude/scripts/test-samples.sh --update-references hello-vulkan # Update refs single
 #
 # Requires: emulator booted, adb root, adb remount done.
 
@@ -18,7 +22,19 @@ done
 echo "${SCRIPT_DIR}/../.." )"
 SAMPLE_DIR="${WORK_DIR}/sample/hellodigitalis"
 
-FILTER="${1:-}"
+# Argument parsing: first arg may be a mode flag, second (or first) may be a module filter
+MODE="liveness"
+FILTER=""
+if [[ "${1:-}" == "--screenshots" ]]; then
+    MODE="screenshots"
+    FILTER="${2:-}"
+elif [[ "${1:-}" == "--update-references" ]]; then
+    MODE="update-references"
+    FILTER="${2:-}"
+else
+    FILTER="${1:-}"
+fi
+
 WAIT_SECS=5
 
 # Module -> component mapping (package/activity)
@@ -47,6 +63,58 @@ declare -A MODULES=(
     ["orderfile"]="com.example.hellodigitalis.orderfile/com.example.hellodigitalis.orderfile.MainActivity"
 )
 
+# Test package names (applicationId + ".test")
+declare -A TEST_PACKAGES=(
+    ["hello-vulkan"]="com.example.hellodigitalis.test"
+    ["hello-jni"]="com.example.hellodigitalis.hellojni.test"
+    ["hello-jniCallback"]="com.example.hellodigitalis.hellojnicallback.test"
+    ["exceptions"]="com.example.hellodigitalis.exceptions.test"
+    ["bitmap-plasma"]="com.example.hellodigitalis.plasma.test"
+    ["hello-gl2"]="com.example.hellodigitalis.gl2jni.test"
+    ["gles3jni"]="com.example.hellodigitalis.gles3jni.test"
+    ["native-activity"]="com.example.hellodigitalis.nativeactivity.test"
+    ["native-audio"]="com.example.hellodigitalis.nativeaudio.test"
+    ["native-codec"]="com.example.hellodigitalis.nativecodec.test"
+    ["native-midi"]="com.example.hellodigitalis.nativemidi.test"
+    ["sensor-graph"]="com.example.hellodigitalis.sensorgraph.test"
+    ["camera-basic"]="com.example.hellodigitalis.camerabasic.test"
+    ["camera-texture-view"]="com.example.hellodigitalis.cameratextureview.test"
+    ["teapots-classic"]="com.example.hellodigitalis.teapotsclassic.test"
+    ["teapots-more"]="com.example.hellodigitalis.teapotsmore.test"
+    ["teapots-textured"]="com.example.hellodigitalis.teapotstextured.test"
+    ["endless-tunnel"]="com.example.hellodigitalis.endlesstunnel.test"
+    ["sanitizers"]="com.example.hellodigitalis.sanitizers.test"
+    ["unit-test"]="com.example.hellodigitalis.unittest.test"
+    ["vectorization"]="com.android.ndk.samples.vectorization.test"
+    ["orderfile"]="com.example.hellodigitalis.orderfile.test"
+)
+
+# Fully qualified test class names
+declare -A TEST_CLASSES=(
+    ["hello-vulkan"]="com.example.hellodigitalis.ScreenshotTest"
+    ["hello-jni"]="com.example.hellodigitalis.hellojni.ScreenshotTest"
+    ["hello-jniCallback"]="com.example.hellodigitalis.hellojnicallback.ScreenshotTest"
+    ["exceptions"]="com.example.hellodigitalis.exceptions.ScreenshotTest"
+    ["bitmap-plasma"]="com.example.hellodigitalis.plasma.ScreenshotTest"
+    ["hello-gl2"]="com.example.hellodigitalis.gl2jni.ScreenshotTest"
+    ["gles3jni"]="com.example.hellodigitalis.gles3jni.ScreenshotTest"
+    ["native-activity"]="com.example.hellodigitalis.nativeactivity.ScreenshotTest"
+    ["native-audio"]="com.example.hellodigitalis.nativeaudio.ScreenshotTest"
+    ["native-codec"]="com.example.hellodigitalis.nativecodec.ScreenshotTest"
+    ["native-midi"]="com.example.hellodigitalis.nativemidi.ScreenshotTest"
+    ["sensor-graph"]="com.example.hellodigitalis.sensorgraph.ScreenshotTest"
+    ["camera-basic"]="com.example.hellodigitalis.camerabasic.ScreenshotTest"
+    ["camera-texture-view"]="com.example.hellodigitalis.cameratextureview.ScreenshotTest"
+    ["teapots-classic"]="com.example.hellodigitalis.teapotsclassic.ScreenshotTest"
+    ["teapots-more"]="com.example.hellodigitalis.teapotsmore.ScreenshotTest"
+    ["teapots-textured"]="com.example.hellodigitalis.teapotstextured.ScreenshotTest"
+    ["endless-tunnel"]="com.example.hellodigitalis.endlesstunnel.ScreenshotTest"
+    ["sanitizers"]="com.example.hellodigitalis.sanitizers.ScreenshotTest"
+    ["unit-test"]="com.example.hellodigitalis.unittest.ScreenshotTest"
+    ["vectorization"]="com.android.ndk.samples.vectorization.ScreenshotTest"
+    ["orderfile"]="com.example.hellodigitalis.orderfile.ScreenshotTest"
+)
+
 # Ordered list for consistent output
 MODULE_ORDER=(
     hello-vulkan hello-jni hello-jniCallback exceptions bitmap-plasma
@@ -66,8 +134,10 @@ pass=0
 crash=0
 total=0
 
+if [[ "$MODE" == "liveness" ]]; then
+
 echo "═══════════════════════════════════════════════"
-echo "  Digitalis Sample Module Test"
+echo "  Digitalis Sample Module Test (Liveness)"
 echo "═══════════════════════════════════════════════"
 echo ""
 
@@ -138,3 +208,134 @@ echo ""
 echo "═══════════════════════════════════════════════"
 echo "  Results: $pass PASS / $crash CRASH / $total total"
 echo "═══════════════════════════════════════════════"
+
+elif [[ "$MODE" == "screenshots" ]]; then
+
+echo "═══════════════════════════════════════════════"
+echo "  Digitalis Sample Module Test (Screenshots)"
+echo "═══════════════════════════════════════════════"
+echo ""
+
+for mod in "${MODULE_ORDER[@]}"; do
+    if [[ -n "$FILTER" && "$mod" != "$FILTER" ]]; then
+        continue
+    fi
+
+    total=$((total + 1))
+
+    # Install app APK
+    apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/debug/${mod}-debug.apk"
+    if [[ ! -f "$apk" ]]; then
+        echo "  SKIP: $mod (no APK — run ./gradlew :${mod}:assembleDebug first)"
+        continue
+    fi
+
+    install_result=$(adb install -r "$apk" 2>&1)
+    if ! echo "$install_result" | grep -q "Success"; then
+        echo "  FAIL_INSTALL: $mod — $install_result"
+        crash=$((crash + 1))
+        continue
+    fi
+
+    # Install test APK
+    test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
+    if [[ ! -f "$test_apk" ]]; then
+        echo "  SKIP: $mod (no test APK — run ./gradlew :${mod}:assembleAndroidTest first)"
+        continue
+    fi
+
+    test_install_result=$(adb install -r "$test_apk" 2>&1)
+    if ! echo "$test_install_result" | grep -q "Success"; then
+        echo "  FAIL_INSTALL_TEST: $mod — $test_install_result"
+        crash=$((crash + 1))
+        continue
+    fi
+
+    # Run instrumentation test
+    output=$(adb shell am instrument -w -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1)
+
+    if echo "$output" | grep -q "OK (1 test)"; then
+        echo "  PASS: $mod"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: $mod"
+        crash=$((crash + 1))
+        echo "$output" | sed 's/^/    /'
+    fi
+done
+
+echo ""
+echo "═══════════════════════════════════════════════"
+echo "  Results: $pass PASS / $crash FAIL / $total total"
+echo "═══════════════════════════════════════════════"
+
+elif [[ "$MODE" == "update-references" ]]; then
+
+echo "═══════════════════════════════════════════════"
+echo "  Digitalis Sample Module Test (Update References)"
+echo "═══════════════════════════════════════════════"
+echo ""
+
+for mod in "${MODULE_ORDER[@]}"; do
+    if [[ -n "$FILTER" && "$mod" != "$FILTER" ]]; then
+        continue
+    fi
+
+    total=$((total + 1))
+
+    # Install app APK
+    apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/debug/${mod}-debug.apk"
+    if [[ ! -f "$apk" ]]; then
+        echo "  SKIP: $mod (no APK — run ./gradlew :${mod}:assembleDebug first)"
+        continue
+    fi
+
+    install_result=$(adb install -r "$apk" 2>&1)
+    if ! echo "$install_result" | grep -q "Success"; then
+        echo "  FAIL_INSTALL: $mod — $install_result"
+        crash=$((crash + 1))
+        continue
+    fi
+
+    # Install test APK
+    test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
+    if [[ ! -f "$test_apk" ]]; then
+        echo "  SKIP: $mod (no test APK — run ./gradlew :${mod}:assembleAndroidTest first)"
+        continue
+    fi
+
+    test_install_result=$(adb install -r "$test_apk" 2>&1)
+    if ! echo "$test_install_result" | grep -q "Success"; then
+        echo "  FAIL_INSTALL_TEST: $mod — $test_install_result"
+        crash=$((crash + 1))
+        continue
+    fi
+
+    # Run instrumentation test with updateReferences=true
+    output=$(adb shell am instrument -w -e updateReferences true -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1)
+
+    # Derive device path from package name
+    pkg_underscored=$(echo "${MODULES[$mod]%%/*}" | tr '.' '_')
+
+    # Pull reference image
+    dest_dir="${SAMPLE_DIR}/${mod}/src/androidTest/assets/reference"
+    mkdir -p "$dest_dir"
+    pull_result=$(adb pull "/data/local/tmp/references/${pkg_underscored}/screenshot_default.png" "${dest_dir}/screenshot_default.png" 2>&1)
+
+    if echo "$pull_result" | grep -q "pulled\|bytes"; then
+        echo "  UPDATED: $mod"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL: $mod — $pull_result"
+        crash=$((crash + 1))
+    fi
+done
+
+echo ""
+echo "═══════════════════════════════════════════════"
+echo "  Results: $pass updated / $crash failed / $total total"
+echo "═══════════════════════════════════════════════"
+echo ""
+echo "Reference images updated. Review and commit with git add."
+
+fi
