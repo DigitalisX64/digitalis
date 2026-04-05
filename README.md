@@ -49,10 +49,10 @@ Or continue from where the last handoff left off:
 /dispatch
 ```
 
-This runs `.claude/digitalis-dispatch.sh`, which spawns subagents in a loop — each reads the latest handoff, does real work, writes the next handoff, and exits. The loop continues until `STATUS: COMPLETE`.
+This runs `.claude/scripts/digitalis-dispatch.sh`, which spawns subagents in a loop — each reads the latest handoff, does real work, writes the next handoff, and exits. The loop continues until `STATUS: COMPLETE`.
 
 To run directly from the terminal:
 
 ```bash
-.claude/digitalis-dispatch.sh "Implement FRECVTS instruction"
+.claude/scripts/digitalis-dispatch.sh "Implement FRECVTS instruction"
 ```

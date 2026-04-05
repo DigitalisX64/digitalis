@@ -25,9 +25,9 @@
 
 set -euo pipefail
 
-# Derive WORK_DIR from script location: script is at <repo>/.claude/digitalis-dispatch.sh
+# Derive WORK_DIR from script location: script is at <repo>/.claude/scripts/digitalis-dispatch.sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORK_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 HANDOFF_PREFIX="digitalis-handoff"
 LOG_DIR="/tmp/digitalis-dispatch"
 

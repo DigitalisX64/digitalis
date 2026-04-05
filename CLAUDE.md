@@ -74,8 +74,8 @@ out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_te
 
 Test all sample modules on the emulator:
 ```bash
-.claude/test-samples.sh                # test all 22 modules
-.claude/test-samples.sh hello-vulkan   # test a single module
+.claude/scripts/test-samples.sh                # test all 22 modules
+.claude/scripts/test-samples.sh hello-vulkan   # test a single module
 ```
 
 ## Key Files for Development

@@ -24,7 +24,7 @@ cd sample/hellodigitalis
 
 3. **Run the test script:**
 ```bash
-.claude/test-samples.sh $ARGUMENTS
+.claude/scripts/test-samples.sh $ARGUMENTS
 ```
 
 4. **Report results.** Summarize the PASS/CRASH table. For crashes, include:

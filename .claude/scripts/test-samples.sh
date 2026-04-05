@@ -3,15 +3,15 @@
 # test-samples.sh — Test hellodigitalis sample modules on the Digitalis emulator.
 #
 # Usage:
-#   .claude/test-samples.sh              # Test all modules
-#   .claude/test-samples.sh hello-vulkan  # Test a single module
+#   .claude/scripts/test-samples.sh              # Test all modules
+#   .claude/scripts/test-samples.sh hello-vulkan  # Test a single module
 #
 # Requires: emulator booted, adb root, adb remount done.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORK_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SAMPLE_DIR="${WORK_DIR}/sample/hellodigitalis"
 
 FILTER="${1:-}"
