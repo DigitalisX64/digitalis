@@ -25,9 +25,13 @@
 
 set -euo pipefail
 
-# Derive WORK_DIR from script location: script is at <repo>/.claude/scripts/digitalis-dispatch.sh
+# Derive WORK_DIR (AOSP root) by walking up from script location until we find build/envsetup.sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+WORK_DIR="$(cd "${SCRIPT_DIR}" && while [[ "$PWD" != "/" ]]; do
+    if [[ -f "$PWD/build/envsetup.sh" ]]; then echo "$PWD"; exit 0; fi
+    cd ..
+done
+echo "${SCRIPT_DIR}/../.." )"
 HANDOFF_PREFIX="digitalis-handoff"
 LOG_DIR="/tmp/digitalis-dispatch"
 
@@ -38,6 +42,40 @@ MAX_CYCLES=${DIGITALIS_MAX_CYCLES:-200}
 MODEL=${DIGITALIS_MODEL:-opus}
 
 mkdir -p "$LOG_DIR"
+
+# ──────────────────────────────────────────────
+# Parse stream-json output: extract assistant text, tee to log + stdout
+# Filters out JSON metadata, shows only assistant messages and tool results.
+# ──────────────────────────────────────────────
+_stream_to_log() {
+    local log_file="$1"
+    : > "$log_file"
+    while IFS= read -r line; do
+        # Extract assistant text content from stream-json events
+        # Format: {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+        # Also show result messages and tool use summaries
+        local text
+        text=$(echo "$line" | python3 -c "
+import sys, json
+try:
+    obj = json.load(sys.stdin)
+    t = obj.get('type', '')
+    if t == 'assistant':
+        for block in obj.get('message', {}).get('content', []):
+            if block.get('type') == 'text':
+                print(block['text'])
+    elif t == 'result':
+        for block in obj.get('result', []):
+            if isinstance(block, dict) and block.get('type') == 'text':
+                print(block['text'])
+except:
+    pass
+" 2>/dev/null)
+        if [[ -n "$text" ]]; then
+            echo "$text" | tee -a "$log_file"
+        fi
+    done
+}
 
 # ──────────────────────────────────────────────
 # Find the highest-numbered handoff-N.md
@@ -229,20 +267,21 @@ run_subagent() {
     echo ""
 
     # Run claude in print mode with full permissions.
-    # Pipe prompt via stdin to avoid shell argument length limits.
-    # Use stdbuf to disable output buffering so tee shows output live.
-    if (cd "${WORK_DIR}" && stdbuf -oL claude -p \
+    # Use stream-json output and extract assistant text for live display + logging.
+    # --output-format text buffers everything until exit; stream-json streams incrementally.
+    local exit_code=0
+    if (cd "${WORK_DIR}" && claude -p \
         --dangerously-skip-permissions \
         --model "${MODEL}" \
         --max-budget-usd "${MAX_BUDGET}" \
-        --output-format text \
+        --output-format stream-json \
         < "$prompt_file") \
-        2>&1 | tee "$log_file"; then
+        2>&1 | _stream_to_log "$log_file"; then
         echo ""
         echo "[$(date '+%H:%M:%S')] Subagent exited successfully."
         return 0
     else
-        local exit_code=$?
+        exit_code=$?
         echo ""
         echo "[$(date '+%H:%M:%S')] Subagent exited with code ${exit_code}."
         echo "[$(date '+%H:%M:%S')] Last 20 lines of log:"

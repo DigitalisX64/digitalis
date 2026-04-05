@@ -11,7 +11,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORK_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+WORK_DIR="$(cd "${SCRIPT_DIR}" && while [[ "$PWD" != "/" ]]; do
+    if [[ -f "$PWD/build/envsetup.sh" ]]; then echo "$PWD"; exit 0; fi
+    cd ..
+done
+echo "${SCRIPT_DIR}/../.." )"
 SAMPLE_DIR="${WORK_DIR}/sample/hellodigitalis"
 
 FILTER="${1:-}"
