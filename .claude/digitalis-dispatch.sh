@@ -79,29 +79,33 @@ You are part of an automated dispatch pipeline. You will:
 PROMPT_HEADER
 
     if [[ -f "$input_file" ]]; then
-        cat <<PROMPT_VARS
-
-## Input
-Read this file first: ${HANDOFF_PREFIX}-${current}.md
-It contains everything you need: what was done, current blockers, what to do next, rules, and build commands.
-
-## Output
-Write your progress to: ${output_file}
-
-PROMPT_VARS
+        echo ""
+        echo "## Input"
+        echo "Read this file first: ${HANDOFF_PREFIX}-${current}.md"
+        echo "It contains context from the previous cycle: what was done, current state, rules, and build commands."
+        echo ""
+        if [[ -n "$user_idea" ]]; then
+            echo "## Priority Task (OVERRIDE)"
+            echo "The user has specified this task. Work on it instead of the handoff's \"What Should Be Done Next\" list:"
+            echo "$user_idea"
+            echo ""
+        fi
+        echo "## Output"
+        echo "Write your progress to: ${output_file}"
+        echo ""
     else
-        cat <<PROMPT_VARS
-
-## Fresh Start
-No previous handoff exists. Read CLAUDE.md first to understand the project context.
-${user_idea:+
-The initial idea / task:
-${user_idea}
-}
-Do real work — investigate, edit code, build, test. Do NOT just write a plan.
-Write your progress to: ${output_file}
-
-PROMPT_VARS
+        echo ""
+        echo "## Fresh Start"
+        echo "No previous handoff exists. Read CLAUDE.md first to understand the project context."
+        echo ""
+        if [[ -n "$user_idea" ]]; then
+            echo "The initial idea / task:"
+            echo "$user_idea"
+            echo ""
+        fi
+        echo "Do real work — investigate, edit code, build, test. Do NOT just write a plan."
+        echo "Write your progress to: ${output_file}"
+        echo ""
     fi
 
     cat <<'PROMPT_RULES'
