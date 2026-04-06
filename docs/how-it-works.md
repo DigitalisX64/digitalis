@@ -1172,7 +1172,7 @@ graph TD
     G -->|"No"| H["Return entry point address"]
 ```
 
-TinyLoader is deliberately simple — it loads ELF segments into memory but doesn't resolve symbols or handle relocations. That's the job of the guest dynamic linker (`linker64`), which TinyLoader loads first.
+TinyLoader is deliberately simple — it loads ELF segments into memory and can look up symbols by name, but it doesn't process relocations (patching code references to point to the right addresses). That's the job of the guest dynamic linker (`linker64`), which TinyLoader loads first.
 
 ### The Guest Address Space
 
@@ -1332,16 +1332,16 @@ graph TD
     D --> T1 --> T2 --> A1 --> A2 --> F1 --> F2 --> F3 --> C1 --> R
 ```
 
-### Intrinsics: When Host Instructions Map Directly
+### Direct Instruction Mappings
 
-Some ARM64 operations have direct x86_64 equivalents — no complex translation needed. The **`intrinsics/`** directory provides these mappings:
+Some ARM64 operations have direct x86_64 equivalents — the JIT emits a single host instruction instead of a multi-instruction sequence. These mappings are implemented directly in the JIT (`lite_translator.h`):
 
-- **CRC32**: ARM64's `CRC32B/H/W/X` instructions map to x86_64's `CRC32` instruction (with the SSE4.2 extension)
-- **Bit manipulation**: ARM64's `REV` (byte reverse) maps to x86_64's `BSWAP`
-- **Count leading zeros**: ARM64's `CLZ` maps to x86_64's `BSR` + XOR
-- **Population count**: ARM64's `CNT` can use x86_64's `POPCNT`
+- **Bit manipulation**: ARM64's `REV` (byte reverse) maps to x86_64's `BSWAP` — a single instruction for endianness conversion
+- **Count leading zeros**: ARM64's `CLZ` maps to x86_64's `BSR` (bit scan reverse) + `XOR 63` — two instructions to find the highest set bit and compute the leading zero count
 
-When a direct mapping exists, the JIT emits a single x86_64 instruction instead of emulating the operation with multiple instructions. The `intrinsics/` directory organizes these by source architecture (`arm64_to_all/`, `riscv64_to_all/`).
+Not all ARM64 instructions have hardware equivalents on x86_64. For example, ARM64's `CRC32B/H/W/X` instructions are handled entirely by the interpreter using software table-based computation, even though x86_64 has a hardware `CRC32` instruction (SSE4.2) — the intrinsics mapping hasn't been implemented yet.
+
+The **`intrinsics/`** directory (`arm64_to_all/`, `riscv64_to_all/`) provides architecture-specific intrinsic function implementations. For the ARM64 backend, this directory is currently minimal — most direct mappings live in the JIT itself.
 
 ---
 
@@ -1930,7 +1930,7 @@ frameworks/libs/native_bridge_support/            # Shared support libraries
 ├── guest_state_accessor/                         # Debug/crash reporting interface
 │   ├── accessor.h                                #   LoadGuestStateRegisters() — for debuggerd
 │   └── accessor_proxy.cc                         #   Dynamically loads bridge to read state
-├── android_api/                                  # 26 proxy library stubs with trampolines
+├── android_api/                                  # 21 proxy library stubs with trampolines
 │   ├── libEGL/, libGLESv1_CM/, libGLESv2/...     #   Per-library trampoline implementations
 │   └── vdso/                                     #   Guest vDSO support functions
 │       ├── vdso.h                                #     native_bridge_trace(), etc.
@@ -2307,7 +2307,7 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `FDIV Dd, Dn, Dm` | `divsd` | JIT | |
 | `FCMP Dn, Dm` | `ucomisd` + NZCV mapping | JIT | Unordered compare (NaN-aware) |
 | `FCMP Dn, #0.0` | `xorpd` (zero) + `ucomisd` | JIT | Compare with zero |
-| `FMOV Dd, #imm` | — | Interpreter | FP immediate load |
+| `FMOV Dd/Sd, #imm` | load immediate to SIMD reg | JIT | Single and double precision; half-precision falls back to interpreter |
 | `FCVT Sd, Dd` | — | Interpreter | Double → single conversion |
 | `FCVTZS Xd, Dn` | — | Interpreter | Float → signed int |
 | `FCVTZU Xd, Dn` | — | Interpreter | Float → unsigned int |
