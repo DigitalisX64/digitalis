@@ -82,48 +82,64 @@ src/androidTest/assets/reference/screenshot_default.png.
 
 ### What each screenshot test validates
 
+Each module has a reference image at src/androidTest/assets/reference/screenshot_default.png.
+Some references are currently BROKEN (blank/corrupt) — these must be fixed by fixing the
+underlying translator bug, then running --update-references to capture correct images.
+
 **3D rendering — must show rendered geometry, not a black/blank screen:**
-| Module | Expected screenshot content |
-|--------|---------------------------|
-| hello-vulkan | Vulkan-rendered colored triangle on dark background |
-| hello-gl2 | OpenGL ES 2.0 rotating triangle/shape |
-| gles3jni | OpenGL ES 3.0 instanced colored quads |
-| teapots-classic | 3D teapot model with Phong shading |
-| teapots-more | Multiple 3D teapot models |
-| teapots-textured | Textured 3D teapot model |
-| endless-tunnel | 3D tunnel scene with obstacles |
-| sensor-graph | Accelerometer graph rendered with OpenGL |
+| Module | Expected content | Reference status |
+|--------|-----------------|-----------------|
+| hello-vulkan | Colored triangle on dark background | OK (81K colors) |
+| hello-gl2 | Green triangle on black background | OK |
+| gles3jni | Instanced colored quads | BROKEN — corrupt 131-byte PNG |
+| teapots-classic | 3D teapot on gray background | OK (1K colors) |
+| teapots-more | Multiple 3D teapots on gray background | OK (114K colors) |
+| teapots-textured | Textured 3D teapot on gray (glClearColor 0.5,0.5,0.5) | BROKEN — all black, should look like teapots-classic |
+| endless-tunnel | 3D tunnel scene with obstacles | OK |
+| sensor-graph | Graph lines on black background | OK (minimal data in emulator) |
 
-**2D rendering — must show computed pixel content:**
-| Module | Expected screenshot content |
-|--------|---------------------------|
-| bitmap-plasma | Animated plasma color pattern (time-varying) |
-| native-activity | Solid color background (cycles RGB each second) |
+**2D rendering:**
+| Module | Expected content | Reference status |
+|--------|-----------------|-----------------|
+| bitmap-plasma | Plasma color pattern | OK (3.5K colors) |
+| native-activity | Solid color (cycles RGB each second, green at 5s) | OK — solid green is correct |
 
-**Text/UI — must show correct text and UI elements:**
-| Module | Expected screenshot content |
-|--------|---------------------------|
-| hello-jni | "Hello from JNI" text (STATIC) |
-| hello-jniCallback | Timer display HH:MM:SS (DYNAMIC — clock changes) |
-| exceptions | Exception handling demo text (STATIC) |
-| native-audio | Audio playback controls — buttons, sliders (STATIC layout) |
-| native-codec | Video codec UI — radio buttons, play controls (STATIC layout) |
-| native-midi | MIDI controls — spinners, buttons, log area (STATIC layout) |
-| sanitizers | Sanitizer demo text output (STATIC) |
-| unit-test | "1 + 2 = 3" text (STATIC) |
-| vectorization | Benchmark results table (DYNAMIC — timing values vary) |
-| orderfile | "Hello, world!" text (STATIC) |
+**Text/UI — must show text, not blank screen:**
+| Module | Expected content | Reference status |
+|--------|-----------------|-----------------|
+| hello-jni | "Hello from JNI" text | OK |
+| hello-jniCallback | Timer HH:MM:SS | OK |
+| exceptions | Exception handling demo text | BROKEN — all white, should have text like sanitizers |
+| native-audio | Audio playback controls UI | OK |
+| native-codec | Video codec UI with controls | OK |
+| native-midi | MIDI controls UI | OK |
+| sanitizers | Sanitizer demo text output | OK |
+| unit-test | "1 + 2 = 3" text | OK |
+| vectorization | Benchmark results table (Jetpack Compose) | BROKEN — all (250,250,250), should have text like unit-test |
+| orderfile | "Hello, world!" text | OK |
 
-**Camera — must show camera UI (feed content varies):**
-| Module | Expected screenshot content |
-|--------|---------------------------|
-| camera-basic | Camera preview with exposure/sensitivity controls |
-| camera-texture-view | Camera preview in TextureView |
+**Camera — emulator has no real camera, blank preview expected:**
+| Module | Expected content | Reference status |
+|--------|-----------------|-----------------|
+| camera-basic | Camera UI with controls (blank preview OK) | OK — (238,237,246) system gray |
+| camera-texture-view | Camera TextureView (blank preview OK) | OK — same system gray |
+
+### BROKEN references that need fixing (4 modules)
+These pass screenshot tests only because the reference itself is blank/corrupt.
+Fix the translator bug first, then update the reference:
+1. **teapots-textured** — all black (ifstream/locale deadlock prevents rendering)
+2. **vectorization** — all light gray (Compose UI never mounts, JNI benchmark stalls)
+3. **gles3jni** — corrupt 131-byte PNG (ES3 renderer black screen)
+4. **exceptions** — all white (exception text never displayed)
+
+After fixing each, update its reference:
+  .claude/scripts/test-samples.sh --update-references <module>
 
 If a screenshot test fails, the likely causes are:
 - **Black screen**: Rendering pipeline broken (GL/Vulkan proxy, buffer mapping, shader compilation)
 - **Wrong content**: Instruction translation bug (wrong colors, corrupted geometry, missing text)
 - **Crash before render**: App died before 5s screenshot capture (check liveness test first)
+- **Test passes but blank**: Reference image itself is broken — fix the bug, update reference
 
 You are part of an automated dispatch pipeline. You will:
 1. Read context (previous handoff or CLAUDE.md for fresh starts)
