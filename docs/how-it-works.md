@@ -587,3 +587,137 @@ The `TranslationCache` class uses **lock-free reads** (atomic pointer loads) for
 **Thread safety.** When multiple threads hit the same untranslated address simultaneously, the cache's state machine prevents duplicate work: only one thread transitions the entry from `NotTranslated` to `Translating`, and the others wait.
 
 **Eager translation.** Both ARM64 and RISC-V paths pass a threshold of 0 to `AddAndLockForTranslation`, meaning every code region is translated on first encounter. The `kGearSwitchThreshold = 1000` in upstream Berberis governs **gear-up** — re-optimizing a lite-translated region with heavier optimization — not the initial translation decision.
+
+---
+
+## 12. System Libraries
+
+An ARM64 Android app doesn't just run its own code — it calls dozens of system libraries for graphics, audio, memory allocation, threading, and more. Each of these calls crosses the ARM64-to-x86_64 boundary and needs a proxy library (as described in [Section 9](#9-talking-to-the-host-proxy-libraries)). Digitalis currently ships **21 proxy libraries**:
+
+| Category | Libraries |
+|----------|-----------|
+| **Graphics** | libvulkan, libEGL, libGLESv1_CM, libGLESv2, libGLESv3 |
+| **Audio** | libaaudio, libOpenSLES, libOpenMAXAL, libamidi |
+| **Camera** | libcamera2ndk |
+| **Media** | libmediandk |
+| **Core** | libc, libm |
+| **Android Framework** | libandroid, libandroid_runtime, libnativewindow, libnativehelper, libjnigraphics |
+| **IPC** | libbinder_ndk |
+| **ML** | libneuralnetworks |
+| **Web** | libwebviewchromium_plat_support |
+
+**Vulkan is the primary use case.** ARM64-only games and graphics apps almost always use Vulkan for rendering. The Vulkan proxy path — guest call to `libberberis_proxy_libvulkan.so` to GFXStream's VkDecoder to the host GPU — is the most exercised and most important translation path.
+
+**Proxy coverage determines app compatibility.** If an app calls a system library that doesn't have a proxy, the guest linker can't resolve the symbol and the app crashes. The set of proxy libraries defines the universe of apps that can run under Digitalis. The current 21 proxies cover the most commonly used Android NDK APIs.
+
+### Going Deeper
+
+Proxy libraries are registered in the build system via `berberis_config.mk`, which defines `BERBERIS_PRODUCT_PACKAGES_ARM64_TO_X86_64` — the complete list of packages installed on a Digitalis-enabled emulator. The guest namespace is configured so the ARM64 linker searches `/system/lib64/arm64/` for these proxies.
+
+**Adding a new proxy** involves: creating the ABI wrapper (converting calling conventions), handling any struct layout differences between ARM64 and x86_64, registering the proxy in `berberis_config.mk`, and testing with sample apps that exercise the new API.
+
+**Limitations.** Some libraries are harder to proxy than others. Complex callback patterns — where host code calls back into guest code, which calls host code again — require careful re-entrant handling. Shared-memory interfaces (where guest and host code access the same memory region concurrently) need additional synchronization.
+
+---
+
+## 13. Debugging
+
+When an ARM64 app crashes under Digitalis, the bug is almost always in the translator — not the app. The app runs correctly on real ARM64 hardware; something in the translation pipeline is producing incorrect behavior. This section explains how to find and fix these bugs.
+
+### Reading the Crash
+
+Crashes show up in Android's logcat as signal names:
+
+| Signal | Meaning | Common Translation Cause |
+|--------|---------|------------------------|
+| `SIGSEGV` | Memory access violation | Wrong address calculation, missing mmap emulation |
+| `SIGABRT` | Assertion or abort | Incorrect API behavior from proxy library |
+| `SIGILL` | Illegal instruction | Guest code jumped to non-executable memory |
+| `Fatal signal` | Generic fatal | Various translation errors |
+
+### Common Crash Categories
+
+- **Wrong instruction decoded**: the decoder dispatched an instruction to the wrong handler because of a shared encoding prefix or missing distinguishing bit. Produces incorrect results, not immediate crashes — the crash comes later when corrupted data hits a memory boundary.
+- **Missing instruction**: neither the JIT nor the interpreter implements this instruction. The app hits an undefined instruction handler.
+- **Wrong register mapping or spill**: the JIT corrupted guest state by mismanaging register allocation. Manifests as wrong values in seemingly unrelated code.
+- **Missing proxy library or function**: the app calls an API that Digitalis hasn't proxied. Guest linker can't resolve the symbol.
+- **Syscall emulation bug**: wrong syscall number translation, wrong struct layout conversion, or missing emulation for an edge case.
+- **Memory mapping issue**: BSS data not zeroed, file-backed mmap not handled correctly, or guest signal handler bypassed by raw memory access in the interpreter.
+
+### Going Deeper: Debugging Workflow
+
+```mermaid
+graph TD
+    A["App crashes"] --> B["Reproduce via test-samples.sh"]
+    B --> C["Collect logs via adb logcat"]
+    C --> D["Enable BERBERIS_TRACING"]
+    D --> E["Identify guest PC from crash log"]
+    E --> F["Disassemble guest .so<br/>with llvm-objdump"]
+    F --> G{"Which component?"}
+    G -->|"Decoder bug"| H["Check bit-field routing<br/>in decoder.h"]
+    G -->|"JIT bug"| I["Check LiteTranslator<br/>code emission"]
+    G -->|"Interpreter bug"| J["Check Interpreter<br/>handler"]
+    G -->|"Missing instruction"| K["Implement in<br/>JIT or Interpreter"]
+    H --> L["Write host test"]
+    I --> L
+    J --> L
+    K --> L
+    L --> M["Fix and verify:<br/>host tests + sample apps"]
+```
+
+**Step by step:**
+
+1. **Reproduce**: run `test-samples.sh <module>` to confirm the app crashes (reports `CRASH` status)
+2. **Collect logs**: `adb logcat | grep -E "berberis|SIGSEGV|Fatal"` — look for the crash address and signal type
+3. **Enable tracing**: set the `BERBERIS_TRACING` environment variable to a file path to capture detailed translation logs
+4. **Identify the guest PC**: the crash or trace log shows which ARM64 address was being executed when things went wrong
+5. **Disassemble**: use `llvm-objdump -d <guest.so>` to find the ARM64 instruction at that address
+6. **Diagnose**: check whether the decoder is routing the instruction correctly, whether the JIT is generating the right x86_64 code, or whether the interpreter is executing it correctly
+7. **Write a host test**: add a test to `lite_translate_region_exec_tests.cc` that exercises the specific instruction
+8. **Fix and verify**: fix the translator, run host tests (`berberis_arm64_host_tests`), then run sample app tests
+
+### Going Deeper: Tracing Infrastructure
+
+Digitalis provides several tracing and logging mechanisms:
+
+- **`TRACE(...)` macro**: conditional tracing controlled by the `BERBERIS_TRACING` environment variable. Output includes PID and TID for multi-threaded debugging. Written via atomic `write()` calls for thread safety.
+- **`DIGITALIS_LOG(...)` macro**: Digitalis-specific debug-level Android log with tag "berberis". Defined in `native_bridge.cc` and used for NativeBridge operations (namespace creation, library loading, etc.).
+- **`TRACE_AND_ALOGD()` macro**: combined trace file output + Android logcat output in a single call.
+- **Inline profiling**: `g_translation_stats` tracks JIT compilation statistics, JIT break logging records when regions end early, and the dispatch watchdog detects potential infinite loops.
+
+Tracing modes supported by `BERBERIS_TRACING`:
+- **File output**: set to a path (e.g., `/data/local/tmp/trace.log`), or `1`/`2` for stdout/stderr
+- **TCP socket**: set to `:<port>` (e.g., `:9999`) for real-time tracing over network
+- **Package-specific**: set to `com.example.app=/path/to/trace` to trace only a specific app
+
+### Going Deeper: Common Bug Patterns
+
+**Silent mis-routing.** Instruction A is decoded as instruction B because they share encoding bits and the decoder doesn't check the right distinguishing bit. Example: CMGT decoded as SMAX, or SWP decoded as LDADD. The program runs with wrong values until a memory boundary causes a visible crash. Fix: verify opcode bits against the ARM Architecture Reference Manual.
+
+**Infinite re-entry loops.** The JIT marks a guest PC as translated but the code at that PC needs interpreter handling. The dispatch loop keeps jumping to the JIT code, which keeps failing and retrying. Fix: use `success_ = false` to install `kInterpreted` at that PC, routing future dispatches to the interpreter.
+
+**FLAGS clobbering.** The JIT uses SUB or ADD to adjust the stack pointer before calling LAHF to read condition flags. But SUB/ADD modify x86_64's FLAGS register — destroying the flags LAHF needs to capture. Fix: use PUSH/POP or LEA for stack adjustment, which don't affect FLAGS.
+
+**Raw memcpy in interpreter.** The interpreter uses raw `memcpy` for a memory access instead of `FaultyLoad`/`FaultyStore`. When the guest accesses invalid memory, the host process gets a SIGSEGV that bypasses the guest signal handler entirely. Fix: always use `FaultyLoad`/`FaultyStore` for guest memory access.
+
+---
+
+## 14. What Digitalis Adds to Berberis
+
+Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x86_64 translation. Digitalis adds the entire ARM64-to-x86_64 backend. Here's what's Digitalis-specific versus upstream infrastructure:
+
+**Decoder.** The complete ARM64 instruction decoder: bit-field parsing for all instruction groups (data processing, branches, loads/stores, SIMD/FP), including CRC32 instructions not present in the original Berberis decoder.
+
+**JIT (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region.
+
+**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~3x speedup), and CRC32 instruction support.
+
+**Syscall Emulation.** ARM64-to-x86_64 syscall number mapping, the futex BSS workaround for Bionic's pthread_mutex implementation, pthread_once/call_once deadlock fixups for guest-host threading interaction, and BSS partial-page zeroing in `sys_mman_emulation.cc`.
+
+**Guest Loader.** ARM64-specific namespace path configuration (`/system/lib64/arm64/`), vDSO whitelist for cross-namespace visibility, libc.so mapping protection via `GuestMapShadow`, and guest linker namespace fallback for incomplete ARM64 configs.
+
+**Product Configuration.** `sdk_phone64_x86_64_digitalis.mk` — the emulator product definition that enables ARM64 translation, sets the NativeBridge system property, and includes all proxy libraries.
+
+**Sample Apps.** 22 ARM64-only sample app modules (ported from android/ndk-samples) that serve as the integration test suite: hello-vulkan, hello-jni, hello-gl2, teapots, endless-tunnel, native-activity, native-audio, camera apps, and more.
+
+**Code Markers.** All Digitalis-specific additions to upstream Berberis files are marked with `// region digitalis` / `// endregion` comments (or `# region digitalis` in makefiles). This makes it easy to find what Digitalis changed versus what was already in Berberis.
