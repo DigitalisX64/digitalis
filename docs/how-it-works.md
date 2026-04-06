@@ -104,23 +104,164 @@ To understand what Digitalis translates, you need to know what ARM64 and x86_64 
 
 ### What's Inside a Native Library
 
-Both ARM64 and x86_64 native libraries on Android use the **ELF** (Executable and Linkable Format) container. An ELF file has a header describing the target architecture, followed by sections: `.text` (executable code), `.data` (initialized data), `.bss` (uninitialized data), and symbol tables that map function names to addresses. The container format is the same on both architectures — what differs is the machine code inside `.text`.
+When you write C/C++ code and compile it for Android, the compiler produces a **shared library** (a `.so` file). Both ARM64 and x86_64 libraries on Android use the **ELF** (Executable and Linkable Format) container — think of it as a ZIP file with a standardized layout:
+
+```mermaid
+graph TD
+    subgraph ELF["ELF File (.so)"]
+        direction TB
+        HDR["ELF Header<br/><i>magic number, target arch<br/>(ARM64 or x86_64), entry point</i>"]
+        TEXT[".text section<br/><i>executable machine code</i>"]
+        DATA[".data section<br/><i>initialized global variables</i>"]
+        BSS[".bss section<br/><i>uninitialized data (zeroed)</i>"]
+        SYMTAB["Symbol tables<br/><i>function names → addresses</i>"]
+        HDR --- TEXT --- DATA --- BSS --- SYMTAB
+    end
+```
+
+The container format is identical on both architectures. What differs is the machine code inside `.text` — the actual CPU instructions. An ARM64 `.so` has ARM64 instructions; an x86_64 `.so` has x86_64 instructions. They're both ELF files, but a CPU can only execute its own instruction set.
 
 ### How Android Packages Them
 
-Android APKs include native libraries under architecture-specific directories: `lib/arm64-v8a/` for ARM64 and `lib/x86_64/` for x86_64. Most apps ship both, but some — particularly games and Vulkan-based apps — ship only `lib/arm64-v8a/`. When an x86_64 emulator encounters an APK with only ARM64 libraries, it has no native code it can run. This is where Digitalis steps in.
+Android APKs include native libraries under architecture-specific directories:
+
+```
+my_app.apk
+├── classes.dex          (Java/Kotlin bytecode — runs everywhere)
+├── lib/
+│   ├── arm64-v8a/       (ARM64 native libraries)
+│   │   └── libgame.so
+│   └── x86_64/          (x86_64 native libraries)
+│       └── libgame.so
+└── res/                 (resources)
+```
+
+Most apps ship both, but some — particularly games and Vulkan-based apps — ship only `lib/arm64-v8a/`. When an x86_64 emulator encounters an APK with only ARM64 libraries, it has no native code it can run. This is where Digitalis steps in.
+
+### What a CPU Does
+
+Before diving into instruction encoding, let's understand what instructions actually *are*. A CPU is a machine that executes a sequence of very simple operations:
+
+- **Arithmetic**: add two numbers, subtract, multiply, divide
+- **Logic**: AND, OR, XOR, shift bits left or right
+- **Memory access**: load a value from RAM into a register, store a register value to RAM
+- **Branching**: jump to a different location in the code (for loops, if/else, function calls)
+- **Comparison**: compare two values and set condition flags (used by branches)
+
+Both ARM64 and x86_64 can do all of these things — they just encode the operations differently, use different register names, and have different rules for how instructions are structured.
+
+### Registers: The CPU's Scratch Paper
+
+Registers are tiny, ultra-fast storage slots built directly into the CPU. Think of them as labeled boxes that each hold one number. Instead of going to main memory (which takes ~100 nanoseconds), reading a register takes less than 1 nanosecond. Every arithmetic operation works on register values.
+
+```mermaid
+graph LR
+    subgraph ARM64_Regs["ARM64 Registers"]
+        direction TB
+        A_GP["General Purpose (31)<br/>X0, X1, X2, ... X30<br/><i>64 bits each</i>"]
+        A_SP["SP — Stack Pointer"]
+        A_PC["PC — Program Counter<br/><i>address of current instruction</i>"]
+        A_NZCV["NZCV — Condition Flags<br/><i>Negative, Zero, Carry, Overflow</i>"]
+        A_SIMD["SIMD/FP (32)<br/>V0, V1, ... V31<br/><i>128 bits each</i>"]
+    end
+
+    subgraph X86_Regs["x86_64 Registers"]
+        direction TB
+        X_GP["General Purpose (16)<br/>RAX, RBX, RCX, RDX<br/>RSI, RDI, R8-R15<br/><i>64 bits each</i>"]
+        X_SP["RSP — Stack Pointer"]
+        X_PC["RIP — Instruction Pointer<br/><i>address of current instruction</i>"]
+        X_FLAGS["RFLAGS — Condition Flags<br/><i>SF, ZF, CF, OF, and more</i>"]
+        X_SIMD["SSE/AVX (16)<br/>XMM0 - XMM15<br/><i>128 bits each</i>"]
+    end
+```
+
+Key differences for Digitalis:
+
+| Feature | ARM64 | x86_64 | Translation Challenge |
+|---------|-------|--------|----------------------|
+| GP register count | **31** (X0-X30) | **16** (RAX-R15) | Must map 31 into 16 (minus reserved = 13 usable) |
+| Register width options | X0 (64-bit) / W0 (32-bit) | RAX / EAX / AX / AL | W-register ops zero-extend; must replicate this |
+| SIMD register count | **32** (V0-V31) | **16** (XMM0-XMM15) | Must map 32 into 16 |
+| Condition flags | NZCV (4 flags) | RFLAGS (many flags) | Different layout, different semantics for Carry |
+| Zero register | X31 = ZR (reads as 0) | No equivalent | Must handle ZR specially in code gen |
+
+The register count mismatch (31 vs 16 for GP, 32 vs 16 for SIMD) is one of the biggest challenges in translation — this is covered in detail in [Section 8](#8-register-allocation).
+
+### Common Operations: Same Intent, Different Encoding
+
+Here are some common operations and how each architecture expresses them. This shows what the translator must convert:
+
+| Operation | ARM64 Assembly | x86_64 Assembly | Notes |
+|-----------|---------------|-----------------|-------|
+| Add two registers | `ADD X1, X2, X3` | `mov rcx, rdx` then `add rcx, rsi` | x86_64 needs a copy first (destructive ops) |
+| Add immediate | `ADD X1, X2, #42` | `lea rcx, [rdx+42]` or `add` | x86_64 has multiple options |
+| Load from memory | `LDR X1, [X2]` | `mov rcx, [rdx]` | Similar concept, different encoding |
+| Store to memory | `STR X1, [X2]` | `mov [rdx], rcx` | x86_64 reverses operand order |
+| Compare | `CMP X1, X2` | `cmp rcx, rdx` | Both set flags, but flag layouts differ |
+| Branch if equal | `B.EQ label` | `je label` | Different condition flag checking |
+| Function call | `BL function` | `call function` | ARM64 saves return addr in X30; x86_64 pushes to stack |
+| Return | `RET` | `ret` | ARM64 jumps to X30; x86_64 pops from stack |
+| System call | `SVC #0` (nr in X8) | `syscall` (nr in RAX) | Different registers, different numbers |
+
+A critical difference: ARM64 uses **three-operand instructions** (`ADD dest, src1, src2` — three registers specified), while x86_64 typically uses **two-operand instructions** (`ADD dest, src` — destination is both source and result). This means the translator often needs an extra `mov` instruction to copy a value before a destructive x86_64 operation.
 
 ### ARM64 Instruction Encoding
 
-ARM64 (also called AArch64) uses **fixed-length instructions**: every instruction is exactly 4 bytes (32 bits). Different bit positions within those 32 bits encode the operation type, register numbers, and immediate values. Because every instruction is the same size, you always know where the next instruction starts — just add 4 bytes. This makes decoding straightforward.
+ARM64 (also called AArch64) uses **fixed-length instructions**: every instruction is exactly 4 bytes (32 bits). Different bit positions within those 32 bits encode the operation type, register numbers, and immediate values.
+
+```
+ARM64 instruction stream (every instruction = 4 bytes):
+┌──────────┬──────────┬──────────┬──────────┬──────────┐
+│ insn @ 0 │ insn @ 4 │ insn @ 8 │ insn @ C │ insn @ 10│
+│ 4 bytes  │ 4 bytes  │ 4 bytes  │ 4 bytes  │ 4 bytes  │
+└──────────┴──────────┴──────────┴──────────┴──────────┘
+Finding the next instruction: always current address + 4
+```
+
+Because every instruction is the same size, you always know where the next instruction starts — just add 4 bytes. This makes decoding straightforward.
 
 ### x86_64 Instruction Encoding
 
-x86_64 uses **variable-length instructions**: anywhere from 1 to 15 bytes per instruction. An instruction can have optional prefix bytes, one or more opcode bytes, a ModR/M byte (specifying register/memory operands), a SIB byte (for complex addressing), displacement bytes, and immediate bytes. You can't find the start of the next instruction without fully decoding the current one.
+x86_64 uses **variable-length instructions**: anywhere from 1 to 15 bytes per instruction.
+
+```
+x86_64 instruction stream (variable lengths):
+┌───────┬──────────────┬────┬──────────┬─────────────────┐
+│ 2 B   │ 5 bytes      │ 1B │ 3 bytes  │ 7 bytes         │
+│ push  │ mov reg,imm  │nop │ add r,r  │ mov [rdi+8],rax │
+└───────┴──────────────┴────┴──────────┴─────────────────┘
+Finding the next instruction: must fully decode the current one first
+```
+
+An instruction can have optional prefix bytes, one or more opcode bytes, a ModR/M byte (specifying register/memory operands), a SIB byte (for complex addressing), displacement bytes, and immediate bytes:
+
+```
+x86_64 instruction format (all parts optional except opcode):
+┌──────────┬────────┬────────┬─────┬──────────────┬───────────┐
+│ Prefixes │ REX    │ Opcode │ Mod │ Displacement │ Immediate │
+│ 0-4 B    │ 0-1 B  │ 1-3 B  │R/M  │ 0/1/2/4 B    │ 0/1/2/4 B │
+│          │        │        │+SIB │              │           │
+└──────────┴────────┴────────┴─────┴──────────────┴───────────┘
+```
+
+You can't find the start of the next instruction without fully decoding the current one. This is one reason why x86_64 decoders are complex — but Digitalis only *generates* x86_64 (it doesn't decode it), so the JIT's Assembler class handles the encoding complexity.
 
 ### Why This Matters for Digitalis
 
 Digitalis reads ARM64 instructions (input) and generates x86_64 instructions (output). Decoding the ARM64 input is easy thanks to fixed-width encoding. But *generating* x86_64 output is more complex — each instruction must be assembled from variable-length components with the correct prefix, opcode, and operand encoding bytes. A single ARM64 instruction often becomes 1 to 5 x86_64 instructions.
+
+Here's a concrete example of what translation looks like:
+
+```
+ARM64 (1 instruction, 4 bytes):
+    ADD X1, X2, X3        ; X1 = X2 + X3
+
+x86_64 (2 instructions, 6 bytes):
+    mov rcx, rdx          ; copy X2's mapped register to X1's mapped register
+    add rcx, rsi          ; add X3's mapped register
+```
+
+The ARM64 three-operand `ADD` becomes two x86_64 instructions because x86_64's `add` is destructive (it overwrites the destination). The JIT must insert a `mov` to preserve the source value.
 
 ### Going Deeper
 
@@ -142,11 +283,17 @@ Consider `ADD X1, X2, X3` — a 64-bit register add. As a 32-bit word, the bits 
 
 There is no single contiguous "opcode" field. ARM64 uses **hierarchical bit-field dispatch**: the top-level encoding group is determined by bits[28:25] (called `op0`), and sub-groups are identified by further bit checks within each group. In Digitalis's decoder (`decoder.h`), this maps directly to a switch on `GetBits<25, 4>()`:
 
-- `100x` → Data Processing (Immediate)
-- `101x` → Branches, Exceptions, System
-- `x1x0` → Loads and Stores
-- `x101` → Data Processing (Register) — where our ADD lives
-- `x111` → SIMD and Floating Point
+```mermaid
+graph TD
+    INSN["32-bit ARM64 instruction"] --> OP0{"bits 28:25<br/>(op0)"}
+    OP0 -->|"100x"| DPI["Data Processing<br/>Immediate<br/><i>ADD X1, X2, #42</i>"]
+    OP0 -->|"101x"| BES["Branches, Exceptions<br/>System<br/><i>B.EQ, BL, SVC, RET</i>"]
+    OP0 -->|"x1x0"| LS["Loads and Stores<br/><i>LDR, STR, LDP, STP</i>"]
+    OP0 -->|"x101"| DPR["Data Processing<br/>Register<br/><i>ADD X1, X2, X3</i>"]
+    OP0 -->|"x111"| SIMD["SIMD and<br/>Floating Point<br/><i>FADD, FMUL, vector ops</i>"]
+```
+
+Within each group, further bit checks narrow down to the specific instruction.
 
 #### x86_64 Encoding Anatomy
 
@@ -156,23 +303,63 @@ The same `ADD X1, X2, X3` in x86_64 requires:
 - **Opcode** (0x01): ADD r/m64, r64
 - **ModR/M byte**: encodes that the source is one register and the destination is another
 
+```
+Byte layout:  48  01  D1
+              │   │   └── ModR/M: mod=11 (register), reg=010 (rdx), r/m=001 (rcx)
+              │   └────── Opcode: ADD r/m64, r64
+              └────────── REX.W: 64-bit operand size
+```
+
 The JIT's Assembler class handles this encoding via methods like `as_.Addq()`, which assembles the correct byte sequence automatically.
 
-#### Register Naming
+#### Register Naming in Detail
 
-ARM64 and x86_64 use different register naming conventions:
+Both architectures allow accessing different portions of the same register:
 
-| ARM64 | Size | x86_64 Equivalent | Size |
-|-------|------|--------------------|------|
-| X0-X30 | 64-bit GP | RAX, RBX, RCX, ... | 64-bit GP |
-| W0-W30 | 32-bit (lower half of X) | EAX, EBX, ECX, ... | 32-bit (lower half) |
-| V0-V31 | 128-bit SIMD | XMM0-XMM15 | 128-bit SIMD |
+**ARM64 registers:**
+```
+X0  [████████████████████████████████████████████████████████████████]  64 bits
+W0  [                                ████████████████████████████████]  lower 32 bits
+    (writing W0 zero-extends to X0 — upper 32 bits become zero)
+```
+
+**x86_64 registers:**
+```
+RAX [████████████████████████████████████████████████████████████████]  64 bits
+EAX [                                ████████████████████████████████]  lower 32 bits
+AX  [                                                ████████████████]  lower 16 bits
+AL  [                                                        ████████]  lower 8 bits
+    (writing EAX zero-extends to RAX; writing AX/AL does NOT zero-extend)
+```
+
+The full register comparison:
+
+| ARM64 | Count | x86_64 | Count | Role |
+|-------|-------|--------|-------|------|
+| X0-X30 / W0-W30 | 31 | RAX-R15 / EAX-R15D | 16 | General purpose |
+| SP | 1 | RSP | 1 | Stack pointer |
+| PC | 1 | RIP | 1 | Program counter |
+| XZR/WZR | 1 | *(none)* | 0 | Zero register (reads as 0, writes discarded) |
+| V0-V31 | 32 | XMM0-XMM15 | 16 | SIMD / floating point |
+| NZCV | 4 flags | RFLAGS | 6+ flags | Condition flags after arithmetic |
 
 ARM64 has 31 general-purpose registers plus SP; x86_64 has only 16. This mismatch is one of the central challenges in translation (covered in [Section 8](#8-register-allocation)).
 
 #### Endianness and Alignment
 
-Both architectures use little-endian byte ordering on Android. However, ARM64 requires aligned memory access for certain instructions (e.g., `LDP`/`STP` require 8-byte alignment), while x86_64 handles unaligned access transparently (with a performance penalty). The translator must account for this when generating memory access code.
+Both architectures use **little-endian** byte ordering on Android. This means the least significant byte is stored at the lowest address:
+
+```
+Value: 0x0123456789ABCDEF stored at address 0x1000
+
+Address: 0x1000 0x1001 0x1002 0x1003 0x1004 0x1005 0x1006 0x1007
+Byte:      EF     CD     AB     89     67     45     23     01
+           ↑ least significant                       most significant ↑
+```
+
+Both architectures use the same byte order, so data in memory doesn't need conversion — a significant simplification for the translator.
+
+However, ARM64 requires **aligned memory access** for certain instructions (e.g., `LDP`/`STP` pair loads/stores require 8-byte alignment), while x86_64 handles unaligned access transparently (with a performance penalty). The translator must account for this when generating memory access code.
 
 ---
 
