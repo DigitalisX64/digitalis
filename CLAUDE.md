@@ -106,6 +106,10 @@ These are the most-modified files and the ones you'll touch most often:
 - **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
 - **`sample/hellodigitalis/`** — 22 ARM64-only sample app modules (ported from android/ndk-samples). Use `/test-samples` to test on the emulator.
 
+## Git Conventions
+
+- **No Co-Authored-By lines.** Do not add `Co-Authored-By` trailers to commit messages.
+
 ## Critical Conventions
 
 - **Decoder dispatch order matters.** Multiple instruction groups share encoding prefixes. Always check distinguishing bits (bit29 for LD/ST, bit24 for single/multi struct, bits[11:10] for three-diff/three-same). Missing a bit routes instructions to the wrong handler silently.
