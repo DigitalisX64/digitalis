@@ -363,3 +363,89 @@ The decoder handles these ARM64 instruction categories:
 - **Control flow**: B, BL, B.cond, RET, CBZ, CBNZ, TBZ, TBNZ
 - **SIMD/FP**: vector arithmetic, permute, across-lanes, widening, narrowing
 - **CRC32**: CRC32B, CRC32H, CRC32W, CRC32X and their "C" variants (Digitalis-specific addition)
+
+---
+
+## 7. Two Execution Paths: JIT and Interpreter
+
+When Digitalis encounters ARM64 code, it has two ways to run it.
+
+The **JIT compiler** (called the "Lite Translator") takes a block of ARM64 instructions and compiles them into native x86_64 machine code. This compiled code runs directly on the host CPU at near-native speed. About 98% of instructions in a typical app go through this path.
+
+The **interpreter** reads ARM64 instructions one at a time and simulates their effects on the guest CPU state. It's slower — each guest instruction requires many host instructions of overhead — but it can handle any instruction, including ones the JIT doesn't support yet.
+
+The choice happens automatically: the dispatch loop tries the JIT first. If the JIT can handle the code, the translated result is cached and runs natively from then on. If the JIT can't handle a particular instruction, that address is routed to the interpreter for all future executions.
+
+```mermaid
+graph TD
+    A["Guest PC"] --> B["TranslationCache Lookup"]
+    B --> C{"Cache Entry State"}
+    C -->|"Not Translated"| D["Try JIT Translation"]
+    D -->|"Success"| E["Install in Cache"]
+    D -->|"Fail"| F["Mark as Interpreted"]
+    E --> G["Run Native x86_64 Code"]
+    C -->|"Translated"| G
+    C -->|"Interpreted"| H["Run Interpreter"]
+    F --> H
+    G --> I["Update PC"]
+    H --> I
+    I --> A
+```
+
+### Going Deeper: The JIT (Lite Translator)
+
+#### Regions
+
+The JIT compiles code in **regions** — sequences of ARM64 instructions compiled together into a single block of x86_64 code. A region has one entry point (the starting PC) and continues until the compiler hits a reason to stop:
+
+- **Forward branch or call**: the target may not be compiled yet, so the region ends and control returns to the dispatch loop
+- **SVC instruction** (system call): requires special handling by the interpreter
+- **Register pressure**: the register allocator is running low on available host registers (see `IsGpRegPoolLow()`)
+- **End of basic block**: any other termination condition
+
+The infrastructure for **backward branch inlining** exists — `RegisterGuestPcLabel` creates a label at each guest PC, and `TryLocalBackwardBranch` could jump to it — but this is currently disabled because it would trap the CPU in tight loops without checking for pending signals between iterations.
+
+#### Trampolines
+
+When JIT-compiled code reaches a branch to an address that hasn't been translated yet, it can't just jump there. Instead, it jumps to a small **trampoline** — a code stub that saves the current state and returns control to `ExecuteGuest()`, which then handles the new address (either by JIT-compiling it or sending it to the interpreter).
+
+#### Condition Flags (NZCV)
+
+ARM64 tracks four condition flags after arithmetic operations: **N**egative, **Z**ero, **C**arry, and **O**verflow (NZCV). x86_64 has similar flags but stores them in a different format. The JIT translates between them using a four-instruction sequence:
+
+1. **LAHF**: loads x86_64 flags (Sign, Zero, Carry) into the AH register
+2. **SETO**: captures the Overflow flag into a separate byte
+3. **AND + MOVW**: combines and packs them into ARM64's NZCV layout
+
+This is implemented in `EmitStoreArmNZCV()` in `lite_translator.h`.
+
+#### Code Generation Example
+
+Here's how the JIT translates `ADD X1, X2, #5` (add immediate 5 to X2, store in X1). The `AddSubImm` method in `lite_translator.h`:
+
+1. `movq res, src` — copy the source register (mapped X2) into a temp
+2. `addq res, 5` — add the immediate value
+
+For 32-bit variants (W registers), it uses `movl` + `addl`, which automatically zero-extends the result to 64 bits. If the instruction sets flags (like `ADDS`), `EmitStoreArmNZCV()` is called after the arithmetic to capture the x86_64 flags into ARM64 NZCV format.
+
+#### The `success_ = false` Pattern
+
+When the JIT encounters an instruction it can't translate (e.g., a complex SIMD operation), it sets `success_ = false`. The region compilation detects this and marks that guest PC as `kInterpreted` in the translation cache. This is critical: without it, the dispatch loop would keep trying to JIT-compile the same unsupported instruction, creating an infinite re-entry loop.
+
+#### Partial-Success Compilation
+
+If the JIT fails partway through a region (say, instruction 8 of 12 is unsupported), it doesn't discard all the work. `TryLiteTranslateAndInstallRegion()` re-translates just the successful prefix (instructions 1-7) and installs that in the cache. The unsupported instruction at position 8 is marked for the interpreter. This maximizes the amount of code that runs as native x86_64.
+
+#### Direct Dispatch (Region Chaining)
+
+Normally, when a JIT-compiled region finishes, control returns to the `ExecuteGuest()` dispatch loop, which looks up the next PC in the cache and dispatches again. Digitalis enables an optimization called **direct dispatch** (`allow_dispatch = true` in `translator_x86_64.cc`): translated regions can jump directly to other translated regions through the translation cache, bypassing the return to `ExecuteGuest()`. This eliminates the dispatch overhead between consecutive translated regions — a significant performance improvement.
+
+### Going Deeper: The Interpreter
+
+The interpreter implements the `SemanticsListener` interface, just like the JIT, but instead of generating code, it directly updates the `ThreadState` registers and memory.
+
+**`InterpretInsn()`** handles a single instruction: decode, execute, advance PC. **`InterpretBatch()`** is a Digitalis optimization that processes multiple instructions in a loop, reusing the Decoder and Interpreter objects instead of reconstructing them for each instruction. This reduces setup/teardown overhead by roughly 3x compared to per-instruction interpretation.
+
+All memory accesses in the interpreter use **`FaultyLoad`** and **`FaultyStore`** instead of raw `memcpy`. This is essential: if an ARM64 instruction accesses invalid memory, the fault must be routed to the guest's signal handler, not the host's. Raw `memcpy` would cause a host SIGSEGV that bypasses the guest signal handling entirely. The Faulty variants let the runtime intercept the fault and deliver it as an ARM64 signal.
+
+The interpreter handles the full ARM64 SIMD instruction set that the JIT hasn't implemented: pairwise operations, widening/narrowing conversions, across-lanes reductions, permute and table lookup, compare and select, CRC32 calculations, and scalar floating-point conversions.
