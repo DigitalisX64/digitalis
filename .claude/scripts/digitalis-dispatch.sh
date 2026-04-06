@@ -232,33 +232,29 @@ run_subagent() {
     echo "[$(date '+%H:%M:%S')] Running claude -p --model ${MODEL} --max-budget-usd ${MAX_BUDGET} ..."
     echo ""
 
-    # Run claude in print mode with full permissions.
-    # Write output to log file, tail -f in background for live display.
-    # Note: --output-format text buffers until exit, so the log file fills
-    # only at completion. For monitoring, check child processes and file mods.
-    : > "$log_file"
-    tail -f "$log_file" &
-    local tail_pid=$!
-
+    # Run claude with stream-json output piped through a progress filter.
+    # The filter shows compact tool-call lines and a heartbeat every 30s,
+    # while writing the full raw stream to log_file.
     local exit_code=0
     if (cd "${WORK_DIR}" && claude -p \
         --dangerously-skip-permissions \
         --model "${MODEL}" \
         --max-budget-usd "${MAX_BUDGET}" \
-        --output-format text \
-        < "$prompt_file") \
-        > "$log_file" 2>&1; then
-        sleep 1  # let tail catch up
-        kill "$tail_pid" 2>/dev/null; wait "$tail_pid" 2>/dev/null || true
+        --verbose \
+        --output-format stream-json \
+        < "$prompt_file" 2>"${log_file}.stderr") \
+        | python3 "${SCRIPT_DIR}/dispatch-progress.py" "$log_file" 30; then
         echo ""
         echo "[$(date '+%H:%M:%S')] Subagent exited successfully."
         return 0
     else
         exit_code=$?
-        sleep 1
-        kill "$tail_pid" 2>/dev/null; wait "$tail_pid" 2>/dev/null || true
         echo ""
         echo "[$(date '+%H:%M:%S')] Subagent exited with code ${exit_code}."
+        if [[ -s "${log_file}.stderr" ]]; then
+            echo "[$(date '+%H:%M:%S')] Stderr:"
+            tail -10 "${log_file}.stderr" 2>/dev/null || true
+        fi
         echo "[$(date '+%H:%M:%S')] Last 20 lines of log:"
         tail -20 "$log_file" 2>/dev/null || true
         return 1
