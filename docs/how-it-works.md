@@ -2057,7 +2057,7 @@ Digitalis translates every region once with the Lite Translator and doesn't re-o
 
 ### RISC-V Translation Modes
 
-The RISC-V backend supports six different translation modes, selectable at build time:
+The RISC-V backend supports five different translation modes, selectable at runtime (via `BERBERIS_MODE` environment variable or `berberis.mode` system property):
 
 | Mode | Description |
 |------|-------------|
@@ -2066,7 +2066,6 @@ The RISC-V backend supports six different translation modes, selectable at build
 | `kHeavyOptimizeOrFallbackToInterpret` | Skip lite, go straight to heavy optimizer |
 | `kHeavyOptimizeOrFallbackToLiteTranslator` | Try heavy first, fall back to lite |
 | `kLiteTranslateThenHeavyOptimize` | **Default (two-gear)** — lite first, then heavy |
-| `kNumModes` | (mode count sentinel) |
 
 ARM64 has no mode selection — it always does lite translation with interpreter fallback.
 
