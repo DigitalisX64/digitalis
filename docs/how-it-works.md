@@ -349,8 +349,8 @@ The full register comparison:
 
 | ARM64 | Count | x86_64 | Count | Role |
 |-------|-------|--------|-------|------|
-| X0-X30 / W0-W30 | 31 | RAX-R15 / EAX-R15D | 16 | General purpose |
-| SP | 1 | RSP | 1 | Stack pointer |
+| X0-X30 / W0-W30 | 31 | RAX-R15 / EAX-R15D (excl. RSP) | 15 | General purpose |
+| SP | 1 | RSP (one of 16 total GP) | 1 | Stack pointer |
 | PC | 1 | RIP | 1 | Program counter |
 | XZR/WZR | 1 | *(none)* | 0 | Zero register (reads as 0, writes discarded) |
 | V0-V31 | 32 | XMM0-XMM15 | 16 | SIMD / floating point |
@@ -497,7 +497,7 @@ Three key data structures appear throughout the system:
 
 **`ThreadState`** holds the complete guest CPU state: 32 general-purpose registers (X0-X30 plus SP), 32 SIMD registers (V0-V31), condition flags (NZCV), the program counter, thread-local storage, and a pending signal status flag. Every instruction — whether JIT-compiled or interpreted — reads from and writes to this structure.
 
-**`GuestAddr` / `ToHostAddr()` / `ToGuestAddr()`** convert between the guest address space (where ARM64 code thinks it's running) and the host address space (where the data actually lives in the x86_64 process). Guest code uses ARM64 addresses; the translator and proxy libraries use these functions to access the corresponding host memory.
+**`GuestAddr` / `ToHostAddr()` / `ToGuestAddr()`** are type-safety wrappers for address handling. `GuestAddr` is a `typedef` for `uintptr_t`, and the conversion functions are identity `reinterpret_cast`s — guest and host addresses are numerically the same. They exist to prevent accidentally mixing address types in C++ code, not to perform address translation.
 
 **`TranslationCache`** is the central lookup table mapping guest program counter addresses to host code pointers. It's the routing table for the entire system — every dispatch cycle starts with a cache lookup. It supports lock-free reads (via atomic pointer loads) and mutex-protected writes for thread safety.
 
@@ -781,7 +781,7 @@ The register pool, in allocation order: **RBX, RCX, RSI, RDI, R8-R15, RDX**. The
 
 ### Going Deeper
 
-The `Allocator<RegType>` class manages register mappings. `GetMappedRegisterOrMap()` returns an existing mapping for a guest register or creates a new one. When creating a new mapping, it loads the guest value from ThreadState memory: `[rbp + offset_of(cpu.x[reg])]`.
+The `Allocator<RegType>` class manages register mappings. When `GetReg()` encounters a guest register without a mapping, it calls `GetMappedRegisterOrMap()` to allocate a host register slot, then loads the guest value from ThreadState memory: `[rbp + offset_of(cpu.x[reg])]`.
 
 **Permanent vs temporary mappings.** Permanent mappings persist across all instructions in a region — they're used for guest registers that appear repeatedly. Temporary mappings are per-instruction scratch registers, allocated from the pool end in reverse order and released after each instruction.
 
@@ -847,7 +847,7 @@ The proxy handles all three, making the boundary crossing invisible to both side
 
 #### How the Guest Linker Finds Proxies
 
-When the ARM64 guest linker needs to resolve a symbol like `malloc`, Digitalis has configured the linker namespace to search `/system/lib64/arm64/` first. This directory contains the proxy libraries. So `malloc` resolves to `libberberis_proxy_libc.so`'s implementation, not a real ARM64 libc (which doesn't exist on the x86_64 host).
+When the ARM64 guest linker needs to resolve a symbol like `malloc`, Digitalis has configured the linker namespace to include `/system/lib64/arm64/` in the search path (appended after the default library paths). This directory contains the proxy libraries. So `malloc` resolves to `libberberis_proxy_libc.so`'s implementation, not a real ARM64 libc (which doesn't exist on the x86_64 host).
 
 From the guest code's perspective, it's calling a normal ARM64 library. The proxy transparently handles the translation.
 
@@ -855,7 +855,7 @@ From the guest code's perspective, it's calling a normal ARM64 library. The prox
 
 **Argument marshalling** uses `GuestCall` and `VirtualGuestCallFrame` to convert between ABIs. For host-to-guest callbacks (e.g., when a Vulkan debug callback needs to call back into ARM64 code), `GuestCall::RunResInt64()` enters guest execution with the converted arguments.
 
-**JNI trampolines** are a special case. `WrapGuestJNIFunction()` creates bidirectional wrappers for Java native methods. It uses **"shorty" strings** — type abbreviation strings like `"VLI"` for `void(long, int)` — to know how many arguments to convert and what types they are. The wrapper converts JNIEnv pointers, jobject handles, and primitive arguments between host and guest representations.
+**JNI trampolines** are a special case. `WrapGuestJNIFunction()` creates host-callable wrappers for guest JNI native methods. It uses **"shorty" strings** — Dalvik type abbreviation strings like `"VJI"` for `void(long, int)` — to know how many arguments to convert and what types they are (where `V`=void, `J`=long, `I`=int, `L`=object). The wrapper converts JNIEnv pointers, jobject handles, and primitive arguments between host and guest representations.
 
 **The Vulkan path** is the primary use case for Digitalis:
 
@@ -1176,56 +1176,39 @@ TinyLoader is deliberately simple — it loads ELF segments into memory and can 
 
 ### The Guest Address Space
 
-The host x86_64 process has one address space. Digitalis carves out a region within it for guest ARM64 code and data. This creates a **dual address space** where guest code thinks it's running at ARM64 addresses, but the actual memory is at different host addresses:
+Guest ARM64 code lives in the **same host address space** as everything else — there is no separate "guest memory." When TinyLoader `mmap`s a guest ELF segment, it gets a real host virtual address, and the guest code runs at that address. There's no remapping or translation of memory addresses.
 
 ```mermaid
-graph LR
-    subgraph Guest["Guest View (what ARM64 code sees)"]
+graph TD
+    subgraph Process["x86_64 Host Process Address Space"]
         direction TB
-        G1["0x7000000000: linker64"]
-        G2["0x7000100000: libc.so"]
-        G3["0x7000200000: libhello_digitalis.so"]
-        G4["0x7FFFFFFFE000: guest stack"]
+        H1["Host code: libberberis_arm64.so, libc.so (x86_64)"]
+        G1["Guest code: linker64, libc.so (ARM64), app .so<br/><i>mmap'd by TinyLoader at kernel-chosen addresses</i>"]
+        G2["Guest stack, heap<br/><i>same address space as host</i>"]
+        SHADOW["GuestMapShadow<br/><i>bitmap: 1 bit per guest page<br/>tracks executable (X) permission only</i>"]
+        PROT["Protected mappings<br/><i>blocks guest mprotect() on libc.so</i>"]
     end
-
-    subgraph Host["Host Reality (where memory actually is)"]
-        direction TB
-        H1["0x100000000: linker64 data"]
-        H2["0x100100000: libc.so data"]
-        H3["0x100200000: app data"]
-        H4["0x200000000: guest stack data"]
-    end
-
-    subgraph Shadow["GuestMapShadow"]
-        direction TB
-        S["Tracks: guest addr → host addr<br/>Permissions: R/W/X per page<br/>Protected regions: libc mappings"]
-    end
-
-    Guest -->|"ToHostAddr()"| Host
-    Host -->|"ToGuestAddr()"| Guest
-    Shadow --- Guest
-    Shadow --- Host
 ```
 
-**`GuestMapShadow`** (`guest_os_primitives/`) is the bookkeeper for this dual address space. It tracks which guest addresses are valid, what permissions they have, and where they map in host memory. Every memory access from translated code goes through this mapping.
+**`GuestAddr`** is a `typedef` for `uintptr_t` — just a regular integer. **`ToHostAddr<T>(guest_addr)`** and **`ToGuestAddr(host_ptr)`** are `reinterpret_cast` wrappers — identity conversions with no arithmetic. They exist for **type safety** in the C++ code (to prevent accidentally mixing guest addresses with host pointers), not for address translation.
 
-**`ToHostAddr<T>(guest_addr)`** converts a guest ARM64 address to a host pointer — this is used everywhere the translator or proxy libraries need to access guest memory.
+### GuestMapShadow: Tracking Executable Pages
 
-**`ToGuestAddr(host_ptr)`** does the reverse — used when returning memory addresses to guest code (like the result of `malloc()`).
+Even though guest and host addresses are the same, the translator needs extra bookkeeping that the host kernel's page tables don't provide:
 
-### Why Not Just Run at the Same Addresses?
+**`GuestMapShadow`** (`guest_os_primitives/`) maintains a **one-bit-per-page bitmap** tracking which guest pages are **executable**. This matters because:
 
-You might wonder why we need address translation at all. Three reasons:
+- Digitalis strips `PROT_EXEC` from guest memory mappings at the host level (replacing it with `PROT_READ` in `ToHostProt()`). This prevents the host CPU from directly executing untranslated ARM64 bytes.
+- The JIT checks the executable bitmap to determine whether a guest address contains code that should be translated.
+- When guest code calls `mprotect()` to change page permissions, the emulation layer updates the bitmap to reflect the new executable status.
 
-1. **Address space conflicts.** The host process already has code and data at many addresses. Guest ARM64 code expects to load at specific addresses that may overlap with host mappings.
-2. **Permission tracking.** The translator needs to know which guest addresses are executable (to decide whether to JIT them) and which are writable (to detect self-modifying code). `GuestMapShadow` tracks this separately from the host's page permissions.
-3. **Protection.** Guest code shouldn't be able to tamper with host data structures. `GuestMapShadow::AddProtectedMapping()` prevents guest writes to critical regions like libc.so mappings.
+**`AddProtectedMapping()`** is a separate mechanism: it prevents guest `mprotect()` calls from modifying permissions on specific host memory regions (specifically libc.so mappings, to prevent a known issue where guest code scans `/proc/self/maps` and tries to change permissions on host libraries).
 
 ### The Guest Dynamic Linker
 
 After TinyLoader loads the basic ELF files into memory, the **guest ARM64 `linker64`** takes over. This is Android's standard ARM64 dynamic linker, running under translation — it doesn't know it's being translated. It resolves symbols, processes relocations, and loads additional shared libraries.
 
-Digitalis drives the guest linker programmatically through `LinkerCallbacks` — function pointers to the guest linker's exported symbols (`dlopen`, `dlsym`, `create_namespace`). When the guest linker needs to load a library, Digitalis intercedes via the NativeBridge callbacks, routing to either a real ARM64 library or a proxy.
+Digitalis drives the guest linker programmatically through `LinkerCallbacks` — function pointers to the guest linker's exported symbols (prefixed with `__loader_*`, including `dlopen_ext`, `dlsym`, `create_namespace`, and others). When the guest linker needs to load a library, Digitalis intercedes via the NativeBridge callbacks, routing to either a real ARM64 library or a proxy.
 
 ---
 
@@ -1692,12 +1675,12 @@ To make this concrete, let's trace one ARM64 instruction from the app's initiali
 
 ```
 ARM64 source:  state->device = device;    // Store VkDevice handle
-ARM64 asm:     STR X1, [X0, #24]          // Store X1 at address X0+24
+ARM64 asm:     STR X1, [X0, #16]          // Store X1 at address X0+16 (device is the 3rd field)
 ```
 
 **Step 1 — Decoder** reads 4 bytes at the current PC. Bits[28:25] = `x1x0` → Loads and Stores group. Further bits identify this as `STR` (store register) with immediate offset.
 
-**Step 2 — SemanticsPlayer** calls `LiteTranslator::Store()` with: source=X1, base=X0, offset=24, size=64-bit.
+**Step 2 — SemanticsPlayer** calls `LiteTranslator::Store()` with: source=X1, base=X0, offset=16, size=64-bit.
 
 **Step 3 — Allocator** maps guest registers to host registers:
 - X0 is already mapped to (say) RSI
@@ -1705,14 +1688,14 @@ ARM64 asm:     STR X1, [X0, #24]          // Store X1 at address X0+24
 
 **Step 4 — Code emitter** generates:
 ```
-x86_64:  mov [rsi + 24], rdi       ; 48 89 7E 18
+x86_64:  mov [rsi + 16], rdi       ; 48 89 7E 10
 ```
 
 With fault recovery code in case the address is invalid (jumps to `ExitGeneratedCode`).
 
 **Step 5 — InstallTranslated()** stores this (along with the rest of the region) in the TranslationCache at the guest PC address.
 
-**Step 6 — Next time** this address is reached, the cached x86_64 code runs directly — no decoding, no allocation, no emission. Just `mov [rsi + 24], rdi`.
+**Step 6 — Next time** this address is reached, the cached x86_64 code runs directly — no decoding, no allocation, no emission. Just `mov [rsi + 16], rdi`.
 
 ### The Complete Journey: From Tap to Triangle
 
