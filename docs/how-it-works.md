@@ -22,6 +22,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 **Appendix**
 
 - [A. How Berberis Translates RISC-V to x86_64](#appendix-a-how-berberis-translates-risc-v-to-x86_64)
+- [B. ARM64 to x86_64 Instruction Mapping](#appendix-b-arm64-to-x86_64-instruction-mapping)
 
 ---
 
@@ -1283,3 +1284,229 @@ Digitalis benefits enormously from the shared infrastructure that was built for 
 5. **No heavy optimizer** — ARM64 skips the two-gear pipeline in favor of simpler, direct-dispatch lite translation
 
 The single-gear decision reflects a pragmatic trade-off: the ARM64 lite translator produces good-enough code that the complexity of heavy optimization isn't yet justified. If performance-critical hot loops become a bottleneck in the future, the heavy optimizer infrastructure already exists in the shared codebase and could be adapted for ARM64.
+
+---
+
+## Appendix B: ARM64 to x86_64 Instruction Mapping
+
+This appendix shows how ARM64 instructions map to x86_64 instructions in the Digitalis JIT. Instructions marked **JIT** are translated to native x86_64 code. Instructions marked **Interpreter** fall back to per-instruction simulation.
+
+### Arithmetic
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `ADD Xd, Xn, #imm` | `movq` + `addq` | JIT | `movl`+`addl` for 32-bit (W regs) |
+| `SUB Xd, Xn, #imm` | `movq` + `subq` | JIT | |
+| `ADDS/SUBS` (set flags) | same + `LAHF`+`SETO`+`AND`+`MOVW` | JIT | NZCV stored to ThreadState |
+| `ADD Xd, Xn, Xm, LSL #s` | shift src2 via `shlq`, then `addq` | JIT | Supports LSL/LSR/ASR/ROR |
+| `ADD Xd, Xn, Xm, UXTB #s` | `movzxbl` (extend) + shift + `addq` | JIT | 8 extension types supported |
+| `ADC Xd, Xn, Xm` | — | Interpreter | Add with carry |
+| `SBC Xd, Xn, Xm` | — | Interpreter | Subtract with carry |
+| `NEG Xd, Xm` | alias for `SUB Xd, XZR, Xm` | JIT | |
+
+### Logic
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `AND Xd, Xn, #imm` | load imm to temp + `andq` | JIT | |
+| `ORR Xd, Xn, #imm` | load imm to temp + `orq` | JIT | |
+| `EOR Xd, Xn, #imm` | load imm to temp + `xorq` | JIT | |
+| `ANDS` (set flags) | same + NZCV emission | JIT | TST is an alias for ANDS |
+| `AND Xd, Xn, Xm, LSL #s` | shift src2, then `andq` | JIT | |
+| `BIC Xd, Xn, Xm` | shift + `notq` + `andq` | JIT | Bit clear = AND NOT |
+| `ORN Xd, Xn, Xm` | shift + `notq` + `orq` | JIT | OR NOT |
+| `EON Xd, Xn, Xm` | shift + `notq` + `xorq` | JIT | XOR NOT |
+
+### Move & Immediate
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `MOVZ Xd, #imm16, LSL #s` | `movq dst, (imm16 << shift)` | JIT | Zero other bits |
+| `MOVN Xd, #imm16, LSL #s` | `movq dst, ~(imm16 << shift)` | JIT | Inverted |
+| `MOVK Xd, #imm16, LSL #s` | mask out 16-bit window + `orq` | JIT | Keep other bits |
+| `ADR Xd, label` | `movq dst, (PC + offset)` | JIT | PC-relative |
+| `ADRP Xd, label` | `movq dst, (PC_page + offset)` | JIT | Page-aligned |
+
+### Bitfield
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `LSR Xd, Xn, #imm` | `shrq` / `shrl` | JIT | UBFM alias |
+| `LSL Xd, Xn, #imm` | `shlq` / `shll` | JIT | UBFM alias |
+| `ASR Xd, Xn, #imm` | `sarq` / `sarl` | JIT | SBFM alias |
+| `UXTB Xd, Wn` | `movzxbl` | JIT | Zero-extend byte |
+| `UXTH Xd, Wn` | `movzxwl` | JIT | Zero-extend halfword |
+| `SXTB Xd, Wn` | `movsxbq` / `movsxbl` | JIT | Sign-extend byte |
+| `SXTH Xd, Wn` | `movsxwq` / `movsxwl` | JIT | Sign-extend halfword |
+| `SXTW Xd, Wn` | `movsxlq` | JIT | Sign-extend word |
+| `BFM` (general) | — | Interpreter | Complex bitfield insert/extract |
+| `EXTR Xd, Xn, Xm, #lsb` | `shrdq` | JIT | Double-precision shift; ROR when Xn=Xm |
+
+### Shifts (Register)
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `LSLV Xd, Xn, Xm` | save RCX + `movq rcx, Xm` + `shlq Xn, cl` + restore RCX | JIT | x86_64 requires shift count in CL |
+| `LSRV Xd, Xn, Xm` | same pattern with `shrq` | JIT | |
+| `ASRV Xd, Xn, Xm` | same pattern with `sarq` | JIT | |
+| `RORV Xd, Xn, Xm` | same pattern with `rorq` | JIT | |
+
+### Multiply & Divide
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `MUL Xd, Xn, Xm` | `imulq` | JIT | MADD alias with XZR accumulator |
+| `MADD Xd, Xn, Xm, Xa` | `imulq` + `addq Xa` | JIT | Xd = Xa + Xn*Xm |
+| `MSUB Xd, Xn, Xm, Xa` | `imulq` + `subq` from Xa | JIT | Xd = Xa - Xn*Xm |
+| `SMADDL Xd, Wn, Wm, Xa` | sign-extend both + `imulq` + `addq` | JIT | 32x32→64 signed |
+| `UMADDL Xd, Wn, Wm, Xa` | `movl` (zero-ext) + `imulq` + `addq` | JIT | 32x32→64 unsigned |
+| `SMULH Xd, Xn, Xm` | `movq rax, Xn` + `imulq Xm` → RDX | JIT | High 64 bits of 128-bit product |
+| `UMULH Xd, Xn, Xm` | `movq rax, Xn` + `mulq Xm` → RDX | JIT | Unsigned high multiply |
+| `UDIV Xd, Xn, Xm` | test zero + `divq` | JIT | Xd=0 if Xm=0 (ARM64 doesn't fault) |
+| `SDIV Xd, Xn, Xm` | test zero + overflow check + `cqo` + `idivq` | JIT | Handle INT_MIN/-1 (no fault on ARM64) |
+
+### Branches
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `B #offset` | `ExitRegion(target)` | JIT | Ends current region |
+| `BL #offset` | store return addr in X30 + `ExitRegion` | JIT | |
+| `BR Xn` | `ExitRegionIndirect(Xn)` | JIT | Indirect branch |
+| `BLR Xn` | store X30 + `ExitRegionIndirect(Xn)` | JIT | Indirect call |
+| `RET` | `ExitRegionIndirect(X30)` | JIT | Return to link register |
+| `B.cond label` | load NZCV + `bt` + `jcc` + `ExitRegion` | JIT | 16 condition codes |
+| `CBZ Xn, label` | `testq Xn, Xn` + `jz`/`jnz` | JIT | Terminates region on backward branch |
+| `CBNZ Xn, label` | `testq Xn, Xn` + `jnz`/`jz` | JIT | |
+| `TBZ Xn, #bit, label` | `bt Xn, bit` + `jnc`/`jc` | JIT | Test single bit |
+| `TBNZ Xn, #bit, label` | `bt Xn, bit` + `jc`/`jnc` | JIT | |
+
+### Conditional Operations
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `CSEL Xd, Xn, Xm, cond` | load Xm + eval cond + `jcc` skip + load Xn | JIT | Branchless select |
+| `CSINC Xd, Xn, Xm, cond` | load Xm + `incq` + eval cond + `jcc` | JIT | False path: Xm+1 |
+| `CSINV Xd, Xn, Xm, cond` | load Xm + `notq` + eval cond + `jcc` | JIT | False path: ~Xm |
+| `CSNEG Xd, Xn, Xm, cond` | load Xm + `negq` + eval cond + `jcc` | JIT | False path: -Xm |
+| `CCMP Xn, Xm, #nzcv, cond` | eval cond + branch + `cmpq` / set imm flags | JIT | Conditional compare |
+| `CCMN Xn, Xm, #nzcv, cond` | eval cond + branch + `addq` (sets flags) / set imm | JIT | Conditional compare negative |
+
+### Memory Access
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `LDR Xd, [Xn, #off]` | `movq dst, [base+off]` | JIT | With fault recovery |
+| `LDR Wd, [Xn, #off]` | `movl dst, [base+off]` | JIT | Zero-extends to 64-bit |
+| `LDRH Wd, [Xn, #off]` | `movzxwl dst, [base+off]` | JIT | 16-bit unsigned |
+| `LDRB Wd, [Xn, #off]` | `movzxbl dst, [base+off]` | JIT | 8-bit unsigned |
+| `LDRSW Xd, [Xn, #off]` | `movsxlq dst, [base+off]` | JIT | 32-bit sign-extend |
+| `LDRSH Xd, [Xn, #off]` | `movsxwq dst, [base+off]` | JIT | 16-bit sign-extend |
+| `LDRSB Xd, [Xn, #off]` | `movsxbq dst, [base+off]` | JIT | 8-bit sign-extend |
+| `STR Xd, [Xn, #off]` | `movq [base+off], src` | JIT | |
+| `STR Wd, [Xn, #off]` | `movl [base+off], src` | JIT | |
+| `STRH Wd, [Xn, #off]` | `movw [base+off], src` | JIT | |
+| `STRB Wd, [Xn, #off]` | `movb [base+off], src` | JIT | |
+| `LDP Xd1, Xd2, [Xn, #off]` | two `movq` loads | JIT | Pair load |
+| `STP Xd1, Xd2, [Xn, #off]` | two `movq` stores | JIT | Pair store |
+| `LDR Xd, [Xn, Xm]` | compute addr + `movq` | JIT | Register index |
+| `LDAR Xd, [Xn]` | plain `movq` | JIT | x86 TSO provides acquire for free |
+| `STLR Xd, [Xn]` | plain `movq` | JIT | x86 TSO provides release for free |
+| `CAS Xs, Xt, [Xn]` | `lock cmpxchg [mem], desired` | JIT | Compare-and-swap |
+| `LDXR Xd, [Xn]` | load + store reservation in ThreadState | JIT | Exclusive load |
+| `STXR Wd, Xs, [Xn]` | CAS loop using reservation | JIT | Exclusive store |
+| Pre/post-index addressing | compute addr + load/store + writeback | JIT | `[Xn, #off]!` and `[Xn], #off` |
+
+### Data Processing (Single Source)
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `REV Xd, Xn` | `bswapq` | JIT | Byte-reverse 64-bit |
+| `REV32 Wd, Wn` | `bswapl` | JIT | Byte-reverse 32-bit |
+| `REV16 Xd, Xn` | — | Interpreter | Reverse 16-bit halfwords |
+| `CLZ Xd, Xn` | test + `bsrq` + `xor 63` | JIT | Count leading zeros |
+| `RBIT Xd, Xn` | — | Interpreter | Reverse bits |
+
+### Floating Point
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `FMOV Dd, Dn` | copy 8 bytes via ThreadState | JIT | FP register-to-register |
+| `FMOV Sd, Sn` | copy 4 bytes via ThreadState | JIT | Single precision |
+| `FADD Dd, Dn, Dm` | `addsd` | JIT | Double add |
+| `FADD Sd, Sn, Sm` | `addss` | JIT | Single add |
+| `FSUB Dd, Dn, Dm` | `subsd` | JIT | |
+| `FMUL Dd, Dn, Dm` | `mulsd` | JIT | |
+| `FDIV Dd, Dn, Dm` | `divsd` | JIT | |
+| `FCMP Dn, Dm` | `ucomisd` + NZCV mapping | JIT | Unordered compare (NaN-aware) |
+| `FCMP Dn, #0.0` | `xorpd` (zero) + `ucomisd` | JIT | Compare with zero |
+| `FMOV Dd, #imm` | — | Interpreter | FP immediate load |
+| `FCVT Sd, Dd` | — | Interpreter | Double → single conversion |
+| `FCVTZS Xd, Dn` | — | Interpreter | Float → signed int |
+| `FCVTZU Xd, Dn` | — | Interpreter | Float → unsigned int |
+| `SCVTF Dd, Xn` | — | Interpreter | Signed int → float |
+| `UCVTF Dd, Xn` | — | Interpreter | Unsigned int → float |
+| `FMADD Dd, Dn, Dm, Da` | — | Interpreter | Fused multiply-add |
+| `FABS Dd, Dn` | — | Interpreter | Absolute value |
+| `FNEG Dd, Dn` | — | Interpreter | Negate |
+| `FSQRT Dd, Dn` | — | Interpreter | Square root |
+| `FCSEL Dd, Dn, Dm, cond` | — | Interpreter | FP conditional select |
+| `FRINTX/FRINTI/FRINTZ/...` | — | Interpreter | FP rounding |
+
+### System
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `SVC #0` | *intentionally not JIT'd* | Interpreter | Sets `success_=false` → syscall emulation |
+| `MRS Xd, TPIDR_EL0` | `movq dst, [ThreadState.tls]` | JIT | Thread-local storage pointer |
+| `MRS Xd, NZCV` | load + shift from ThreadState flags | JIT | Read condition flags |
+| `MRS Xd, CTR_EL0` | `movq dst, 0x8444c004` | JIT | Cache type (constant) |
+| `MRS Xd, DCZID_EL0` | `movq dst, 0x10` | JIT | Data cache zero ID (constant) |
+| `MSR NZCV, Xn` | remap bits + store to ThreadState | JIT | Write condition flags |
+| `MSR TPIDR_EL0, Xn` | `movq [ThreadState.tls], src` | JIT | Write TLS pointer |
+| `MRS/MSR` (other regs) | — | Interpreter | |
+| `DMB / DSB / ISB` | — | Interpreter | Barriers (x86 TSO handles most cases) |
+| `BRK #imm` | — | Interpreter | Breakpoint |
+
+### SIMD / NEON
+
+| ARM64 | x86_64 Translation | Path | Notes |
+|-------|-------------------|------|-------|
+| `MOVI Vd.2D, #0` | `pxor xmm, xmm` | JIT | Zero a 128-bit register (special case only) |
+| `LDR Qd, [Xn, #off]` | `movdqu` | JIT | 128-bit SIMD load |
+| `LDR Dd, [Xn, #off]` | `movq` + zero upper 64 bits | JIT | 64-bit SIMD load |
+| `LDR Sd, [Xn, #off]` | load 4 bytes via temp GP reg | JIT | 32-bit SIMD load |
+| `LDR Hd/Bd, [Xn, #off]` | `movzxwl`/`movzxbl` via temp | JIT | 16/8-bit SIMD load |
+| `STR Qd, [Xn, #off]` | `movdqu` | JIT | 128-bit SIMD store |
+| `STR Dd/Sd/Hd/Bd` | store via temp | JIT | Smaller SIMD stores |
+| `LDP Qd1, Qd2, [Xn]` | two `movdqu` | JIT | 128-bit pair load only |
+| `STP Qd1, Qd2, [Xn]` | two `movdqu` | JIT | 128-bit pair store only |
+| `ADD Vd.4S, Vn.4S, Vm.4S` | — | Interpreter | Vector element-wise add |
+| `SUB/MUL/AND/ORR/EOR` (vector) | — | Interpreter | Vector element-wise ops |
+| `CMGT/CMEQ/CMLE` (vector) | — | Interpreter | Vector compare |
+| `SMAX/SMIN/UMAX/UMIN` (vector) | — | Interpreter | Vector min/max |
+| `DUP Vd.4S, Vn.S[i]` | — | Interpreter | Duplicate element |
+| `INS Vd.S[i], Xn` | — | Interpreter | Insert element |
+| `UMOV Xd, Vn.S[i]` | — | Interpreter | Extract unsigned |
+| `EXT Vd.16B, Vn, Vm, #idx` | — | Interpreter | Extract/concatenate |
+| `TRN1/TRN2` (vector) | — | Interpreter | Transpose |
+| `ZIP1/ZIP2` (vector) | — | Interpreter | Interleave |
+| `UZP1/UZP2` (vector) | — | Interpreter | De-interleave |
+| `LD1/LD2/LD3/LD4` | — | Interpreter | Multi-structure load |
+| `ST1/ST2/ST3/ST4` | — | Interpreter | Multi-structure store |
+| `UADDL/SADDL/UMULL/SMULL` | — | Interpreter | Widening arithmetic |
+| `SHL/SSHR/USHR` (vector) | — | Interpreter | Vector shift by immediate |
+| `ABS/NEG/CNT/NOT/REV` (vector) | — | Interpreter | Vector single-source |
+| `ADDV/SADDLV/UMAXV` (vector) | — | Interpreter | Across-lanes reduction |
+| `FMLA/FMLS` (vector) | — | Interpreter | Vector FP multiply-accumulate |
+| `CRC32B/H/W/X` | — | Interpreter | CRC32 (Digitalis-specific addition) |
+| `CRC32CB/CH/CW/CX` | — | Interpreter | CRC32C variants |
+
+### Summary
+
+```mermaid
+pie title Instruction Translation Coverage
+    "JIT (native x86_64)" : 98
+    "Interpreter (fallback)" : 2
+```
+
+The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores, atomics, basic FP, and SIMD load/store** — the instructions that make up ~98% of executed code in typical apps. The interpreter handles **syscalls, memory barriers, FP conversions, fused multiply-add, and the full NEON SIMD compute instruction set** (element-wise ops, permute, widening, reductions, etc.).
