@@ -157,3 +157,129 @@ ARM64 has 31 general-purpose registers plus SP; x86_64 has only 16. This mismatc
 #### Endianness and Alignment
 
 Both architectures use little-endian byte ordering on Android. However, ARM64 requires aligned memory access for certain instructions (e.g., `LDP`/`STP` require 8-byte alignment), while x86_64 handles unaligned access transparently (with a performance penalty). The translator must account for this when generating memory access code.
+
+---
+
+## 4. The Big Picture
+
+This diagram shows the complete path from an ARM64 app launching to code executing on the host CPU. Each box is a subsystem covered in detail later in this document.
+
+```mermaid
+graph TD
+    subgraph Launch["App Launch"]
+        APK["ARM64 APK<br/><i>lib/arm64-v8a/*.so</i>"]
+        PM["Android PackageManager"]
+        ZYG["Zygote forks process"]
+        ART["ART detects arm64-v8a"]
+        NB["Loads NativeBridge<br/><i>libberberis_arm64.so</i>"]
+        INIT["NdktNativeBridge::Initialize()"]
+        APK --> PM --> ZYG --> ART --> NB --> INIT
+    end
+
+    subgraph Setup["Guest Setup"]
+        GL["GuestLoader spawns guest thread"]
+        TL["TinyLoader loads ARM64 ELFs<br/><i>linker64, libc.so, app .so</i>"]
+        GMS["Guest address space mapped<br/><i>GuestMapShadow</i>"]
+        PROXY_REG["Proxy libraries registered<br/><i>/system/lib64/arm64/</i>"]
+        GL --> TL --> GMS --> PROXY_REG
+    end
+
+    subgraph JNI["JNI Entry"]
+        JAVA["Java calls native method"]
+        TRAMP["GetTrampolineWithJNICallType()"]
+        WRAP["WrapGuestJNIFunction()<br/><i>x86_64 ABI &#8594; ARM64 ABI</i>"]
+        GCALL["GuestCall::RunResInt64()"]
+        JAVA --> TRAMP --> WRAP --> GCALL
+    end
+
+    subgraph Dispatch["Dispatch Loop — ExecuteGuest()"]
+        RPC["Read PC from ThreadState"]
+        SIG["Check pending signals"]
+        CACHE["TranslationCache lookup<br/><i>atomic load</i>"]
+        RUN["berberis_RunGeneratedCode()<br/><i>indirect call to code pointer</i>"]
+        STOP{"kEntryStop?"}
+        RPC --> SIG --> CACHE --> RUN
+        RUN --> STOP
+        STOP -->|No| RPC
+        STOP -->|Yes| EXIT["Exit loop"]
+    end
+
+    subgraph JIT["JIT Path — Lite Translator"]
+        DECODE_J["Decoder reads 4-byte instruction"]
+        BITFIELD["Bit-field dispatch<br/><i>op0 = bits 28:25</i>"]
+        SEM_J["SemanticsPlayer bridges to LiteTranslator"]
+        ALLOC["Allocator maps guest regs &#8594; host regs<br/><i>13 GP register pool</i>"]
+        EMIT["Emit x86_64 machine code"]
+        REGION{"Region end?<br/><i>branch / SVC / reg pressure</i>"}
+        INSTALL["InstallTranslated() into cache"]
+        DECODE_J --> BITFIELD --> SEM_J --> ALLOC --> EMIT --> REGION
+        REGION -->|No| DECODE_J
+        REGION -->|Yes| INSTALL
+    end
+
+    subgraph Interp["Interpreter Path"]
+        DECODE_I["Decoder reads 4-byte instruction"]
+        SEM_I["SemanticsPlayer bridges to Interpreter"]
+        UPDATE["Update ThreadState directly"]
+        FAULT["FaultyLoad / FaultyStore<br/><i>safe memory access</i>"]
+        SVC_CHECK{"SVC instruction?"}
+        DECODE_I --> SEM_I --> UPDATE --> FAULT --> SVC_CHECK
+        SVC_CHECK -->|No| DECODE_I
+    end
+
+    subgraph Syscall["Syscall Emulation"]
+        RSYS["RunGuestSyscall()"]
+        XLATE_NUM["Translate syscall number<br/><i>ARM64 &#8594; x86_64</i>"]
+        XLATE_ARGS["Convert args and structs"]
+        HOST_KERN["Host kernel syscall"]
+        RSYS --> XLATE_NUM --> XLATE_ARGS --> HOST_KERN
+    end
+
+    subgraph ProxyLib["Proxy Libraries — API Calls"]
+        GUEST_API["Guest calls API<br/><i>e.g. vkCreateInstance()</i>"]
+        PROXY["Proxy library<br/><i>libberberis_proxy_libvulkan.so</i>"]
+        MARSHAL["Marshal ARM64 args &#8594; x86_64"]
+        HOST_LIB["Host library"]
+        GPU["GFXStream VkDecoder &#8594; Host GPU"]
+        GUEST_API --> PROXY --> MARSHAL --> HOST_LIB --> GPU
+    end
+
+    subgraph Signals["Signal Handling"]
+        PEND["pending_signals_status set"]
+        DELIVER["Deliver to guest signal handler"]
+        MODIFY["Handler may modify PC"]
+        PEND --> DELIVER --> MODIFY
+    end
+
+    INIT --> GL
+    PROXY_REG --> JAVA
+    GCALL --> RPC
+    RUN -->|"Not translated"| DECODE_J
+    RUN -->|"Interpreted"| DECODE_I
+    INSTALL --> RUN
+    SVC_CHECK -->|Yes| RSYS
+    HOST_KERN --> UPDATE
+    EMIT -->|"API call"| GUEST_API
+    GPU --> EMIT
+    MODIFY --> RPC
+```
+
+### The Execution Path in Words
+
+When an ARM64 app launches on an x86_64 emulator, Android's runtime (ART) detects that the app's native libraries are ARM64-only. It loads Digitalis through the NativeBridge interface (`libberberis_arm64.so`). Digitalis's guest loader creates an ARM64 environment inside the x86_64 process: it loads the ARM64 dynamic linker, libc, and the app's shared libraries into a guest address space using a minimal ELF loader called TinyLoader.
+
+When Java code calls a native method, the NativeBridge creates a trampoline that converts the call from x86_64 to ARM64 calling conventions and enters the guest execution loop. The dispatch loop (`ExecuteGuest()`) reads the current program counter from the guest CPU state, looks up the address in the translation cache, and jumps to whatever code pointer it finds there — translated native code, an interpreter trampoline, or a not-yet-translated handler.
+
+For untranslated code, the JIT compiler (Lite Translator) kicks in: it decodes ARM64 instructions, maps guest registers to host registers, and emits x86_64 machine code. The translated code is installed in the cache for reuse. For instructions the JIT can't handle (syscalls, complex SIMD), the interpreter takes over, simulating each instruction by directly updating the guest CPU state.
+
+When guest code calls Android APIs (Vulkan, libc, etc.), proxy libraries intercept the call, convert arguments between ARM64 and x86_64 ABIs, and forward to the host library. For Vulkan specifically, calls pass through GFXStream's VkDecoder to reach the host GPU.
+
+### Going Deeper
+
+Three key data structures appear throughout the system:
+
+**`ThreadState`** holds the complete guest CPU state: 32 general-purpose registers (X0-X30 plus SP), 32 SIMD registers (V0-V31), condition flags (NZCV), the program counter, thread-local storage, and a pending signal status flag. Every instruction — whether JIT-compiled or interpreted — reads from and writes to this structure.
+
+**`GuestAddr` / `ToHostAddr()` / `ToGuestAddr()`** convert between the guest address space (where ARM64 code thinks it's running) and the host address space (where the data actually lives in the x86_64 process). Guest code uses ARM64 addresses; the translator and proxy libraries use these functions to access the corresponding host memory.
+
+**`TranslationCache`** is the central lookup table mapping guest program counter addresses to host code pointers. It's the routing table for the entire system — every dispatch cycle starts with a cache lookup. It supports lock-free reads (via atomic pointer loads) and mutex-protected writes for thread safety.
