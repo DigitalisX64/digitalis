@@ -22,6 +22,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 16. [Machine Code Generation](#16-machine-code-generation)
 17. [Signal Handling and Fault Recovery](#17-signal-handling-and-fault-recovery)
 18. [Putting It All Together: The Vulkan Triangle](#18-putting-it-all-together-the-vulkan-triangle)
+19. [Android's NativeBridge Framework](#19-androids-nativebridge-framework)
 
 **Appendix**
 
@@ -1745,6 +1746,207 @@ graph TD
 This is the complete path: a tap on the screen triggers process creation, NativeBridge interception, guest environment setup, JIT compilation of the main loop, syscall emulation for event polling, proxy library calls for Vulkan initialization and rendering, and finally GFXStream forwards the draw commands to the host GPU — which renders a colored triangle on screen at 60fps.
 
 ---
+
+## 19. Android's NativeBridge Framework
+
+Digitalis doesn't exist in isolation — it plugs into **NativeBridge**, an Android framework specifically designed to let apps compiled for one CPU architecture run on a device with a different architecture. Understanding NativeBridge is essential because it's the interface between Android and any binary translator.
+
+### What NativeBridge Is
+
+NativeBridge is a plugin system built into Android's runtime (ART). When ART encounters an app with native libraries for a foreign architecture (e.g., ARM64 libraries on an x86_64 device), it loads a NativeBridge implementation that can translate and run those libraries.
+
+The framework is split across three locations in the AOSP source tree:
+
+```mermaid
+graph TD
+    subgraph ART_Layer["art/libnativebridge/<br/><i>The Framework (ART side)</i>"]
+        ART_SM["State machine<br/><i>kNotSetup → kOpened →<br/>kPreInitialized → kInitialized</i>"]
+        ART_API["Public API<br/><i>NativeBridgeLoadLibrary()<br/>NativeBridgeGetTrampoline()<br/>NativeBridgeCreateNamespace()</i>"]
+        ART_LOAD["Discovery & Loading<br/><i>dlopen the bridge library<br/>dlsym NativeBridgeItf</i>"]
+    end
+
+    subgraph Support_Layer["frameworks/libs/native_bridge_support/<br/><i>Shared Support Libraries</i>"]
+        SUP_GS["guest_state/<br/><i>CPUState struct definitions<br/>per architecture</i>"]
+        SUP_GSA["guest_state_accessor/<br/><i>Debug/crash reporting<br/>reads guest registers</i>"]
+        SUP_VDSO["vdso/<br/><i>Guest-side runtime support<br/>native_bridge_trace()<br/>native_bridge_intercept_symbol()</i>"]
+        SUP_API["android_api/<br/><i>26 proxy library stubs<br/>with trampolines</i>"]
+    end
+
+    subgraph Impl_Layer["frameworks/libs/binary_translation/native_bridge/<br/><i>Berberis/Digitalis Implementation</i>"]
+        IMPL_CB["Exports NativeBridgeItf symbol<br/><i>v8 callback struct</i>"]
+        IMPL_NB["NdktNativeBridge class<br/><i>library loading, namespaces,<br/>trampoline generation</i>"]
+        IMPL_ARCH["Architecture config<br/><i>arm64/native_bridge.cc<br/>riscv64/native_bridge.cc</i>"]
+    end
+
+    ART_Layer -->|"dlopen + dlsym<br/>NativeBridgeItf"| Impl_Layer
+    Impl_Layer -->|"uses headers &<br/>support libraries"| Support_Layer
+    ART_Layer -->|"guest_state_accessor<br/>for debuggerd"| Support_Layer
+```
+
+### "Guest" and "Host": The Key Terminology
+
+Throughout the NativeBridge and Digitalis codebase, two terms appear constantly:
+
+- **Guest** = the foreign architecture being translated. In Digitalis, the guest is **ARM64** — the architecture the app was compiled for. Guest code, guest registers, guest address space, guest loader — all refer to the ARM64 side.
+- **Host** = the native architecture the device actually runs. In Digitalis, the host is **x86_64** — the real CPU executing the translated code.
+
+Think of it like a foreign guest staying in someone's home: the guest (ARM64 app) is visiting, and the host (x86_64 emulator) is providing the environment.
+
+This terminology appears everywhere:
+- `GuestAddr` / `ToHostAddr()` — address space conversion
+- `guest_loader_` — loads ARM64 binaries
+- `host_libraries_` — set of libraries loaded via host `dlopen()` (not translated)
+- `guest_namespace` / `host_namespace` — linker namespaces for each side
+- `kGuestIsa = "arm64"` — the architecture being emulated
+
+### How Android Discovers and Loads NativeBridge
+
+The following diagram (from `art/libnativebridge/nb-diagram.png` in the AOSP source) shows how NativeBridge integrates with Android's system boot, app installation, app launch, and app execution:
+
+![NativeBridge integration with Android system boot, app install, app launch, and app execution](nb-diagram.png)
+*Diagram source: `art/libnativebridge/nb-diagram.png` from AOSP*
+
+The key flows are:
+
+**System Boot:**
+1. The `init` process starts Zygote
+2. Zygote starts the VM and calls `load native bridge` using the library name from `ro.dalvik.vm.native.bridge`
+3. ART uses `dlopen()` to load the library (e.g., `libberberis_arm64.so`) and `dlsym("NativeBridgeItf")` to find the callback struct
+4. If the bridge is available (NB:Available), the runtime continues; otherwise it runs without translation
+
+**App Install:**
+- Package Manager checks if the app has native libraries matching the device architecture
+- If not, but NativeBridge is available, it selects the best compatible ABI via the bridge
+- The app installs with translated ABI support
+
+**App Launch:**
+- Activity Manager starts the app, connects to Zygote, and forks a new process
+- The forked process calls `PreInitialize Native Bridge` (with elevated privileges, before dropping to app permissions)
+- Then `Initialize Native Bridge` — this is when Digitalis sets up the guest environment
+
+**App Execution:**
+- When Java code calls a native method, ART checks if the library was loaded via NativeBridge
+- If yes, it calls `nb: get method trampoline` to get an x86_64 wrapper for the ARM64 function
+- The trampoline handles ABI conversion and enters guest execution
+
+### The NativeBridge State Machine
+
+ART manages the NativeBridge lifecycle through a state machine:
+
+```mermaid
+stateDiagram-v2
+    [*] --> kNotSetup
+    kNotSetup --> kOpened : LoadNativeBridge()<br/>dlopen + dlsym NativeBridgeItf
+    kOpened --> kPreInitialized : PreInitializeNativeBridge()<br/>create code cache dir<br/>(elevated privileges)
+    kPreInitialized --> kInitialized : InitializeNativeBridge()<br/>calls bridge's initialize()<br/>(per-app process, after fork)
+    kOpened --> kClosed : Error
+    kPreInitialized --> kClosed : Error
+    kInitialized --> kClosed : UnloadNativeBridge()
+```
+
+- **kNotSetup**: No bridge loaded yet (initial state)
+- **kOpened**: Library loaded, symbol found, version verified
+- **kPreInitialized**: Code cache directory created (done with elevated privileges before Zygote drops permissions)
+- **kInitialized**: Bridge fully initialized for the current app process — guest environment is ready, translation can begin
+- **kClosed**: Bridge closed or error occurred
+
+### The NativeBridge Callback Interface (v8)
+
+The NativeBridge implementation exports a single C symbol — `NativeBridgeItf` — which is a struct of function pointers. ART calls these functions to interact with the translator. The interface has evolved over 8 versions:
+
+| Version | Key Additions |
+|---------|--------------|
+| **v1** | Base: `initialize`, `loadLibrary`, `getTrampoline`, `isSupported` |
+| **v2** | Signal handling (`getSignalHandler` for SIGSEGV routing) |
+| **v3** | Linker namespace support (`createNamespace`, `linkNamespaces`, `loadLibraryExt`) — critical for library isolation |
+| **v4** | Vendor namespace (Treble "sphal" separation) |
+| **v5** | Exported namespaces (`getExportedNamespace`) |
+| **v6** | Pre-Zygote fork hook (`preZygoteFork`) for app-zygote support |
+| **v7** | Enhanced JNI trampolines with call type info (`getTrampolineWithJNICallType`) |
+| **v8** | Function pointer detection (`isNativeBridgeFunctionPointer`) — **current Digitalis version** |
+
+Digitalis implements version 8 and supports back to version 2. The most important callbacks are:
+
+| Callback | What It Does |
+|----------|-------------|
+| `initialize()` | Called once per app process. Digitalis creates the guest loader, spawns the guest thread, and loads ARM64 linker/libc/vDSO. |
+| `loadLibraryExt()` | Called when the app loads a native library. Digitalis tries the guest loader first; falls back to host `dlopen()`. |
+| `getTrampolineWithJNICallType()` | Called when Java calls a native method. Digitalis creates an x86_64 wrapper that marshals arguments and enters guest execution. |
+| `createNamespace()` / `linkNamespaces()` | Manages linker namespaces. Digitalis creates paired guest+host namespaces and links them, adding vDSO to the shared whitelist. |
+| `getSignalHandler()` | Returns Digitalis's signal handler so host SIGSEGV can be routed to the guest signal handler (see [Section 17](#17-signal-handling-and-fault-recovery)). |
+
+### What Is vDSO?
+
+**vDSO** (virtual Dynamic Shared Object) is a special mechanism in the Linux kernel. Normally, when a program calls the kernel (e.g., `gettimeofday()`), it must perform a full system call — switching from user mode to kernel mode and back, which is expensive (~100ns). The vDSO is a tiny shared library that the kernel **automatically maps** into every process's address space. It contains optimized versions of frequently-called functions that can run entirely in user mode, avoiding the syscall overhead.
+
+```mermaid
+graph LR
+    subgraph Without_VDSO["Without vDSO"]
+        A1["App calls gettimeofday()"] --> B1["Switch to kernel mode<br/><i>~100ns overhead</i>"]
+        B1 --> C1["Kernel reads clock"]
+        C1 --> D1["Switch back to user mode"]
+    end
+
+    subgraph With_VDSO["With vDSO"]
+        A2["App calls gettimeofday()"] --> B2["vDSO code runs<br/>in user mode<br/><i>~5ns</i>"]
+        B2 --> C2["Reads shared kernel page<br/><i>mapped into process</i>"]
+    end
+```
+
+The vDSO appears as `linux-vdso.so.1` in a process's memory map. Apps don't load it explicitly — the kernel maps it automatically.
+
+### Why Digitalis Must Handle vDSO
+
+In a translation context, the vDSO situation is tricky:
+
+1. The **host kernel** maps an **x86_64 vDSO** into the process automatically — but guest ARM64 code can't execute x86_64 instructions
+2. The **guest ARM64 linker** expects an **ARM64 vDSO** — it's part of the standard Linux process setup that the guest code depends on
+3. If the guest linker doesn't find an ARM64 vDSO, it may try to load one from the filesystem, creating a **duplicate** without Digitalis's trampolines registered — leading to null function pointer crashes
+
+Digitalis solves this in three steps:
+
+1. **TinyLoader loads a guest vDSO** (`libnative_bridge_vdso.so`) from `/system/lib64/arm64/` during guest environment setup. This is a Berberis-provided ARM64 vDSO with special bridge functions (`native_bridge_trace`, `native_bridge_intercept_symbol`, `native_bridge_post_init`).
+
+2. **The vDSO address is passed to the guest linker** via the auxiliary vector (`AT_SYSINFO_EHDR`), just as the kernel would pass the real vDSO to a native process.
+
+3. **`LinkNamespaces()` adds `linux-vdso.so.1` to the shared library whitelist** so the guest linker recognizes the pre-loaded vDSO across namespace boundaries and doesn't try to load a second copy.
+
+### Source Code Structure
+
+```
+art/libnativebridge/                              # The ART framework side
+├── native_bridge.cc                              # State machine, public API, dlopen/dlsym
+├── include/nativebridge/native_bridge.h          # NativeBridgeCallbacks struct (v8)
+├── nb-diagram.png                                # Integration flowchart (shown above)
+├── tests/                                        # 30+ test files
+└── README.md
+
+frameworks/libs/native_bridge_support/            # Shared support libraries
+├── guest_state/                                  # CPUState definitions per architecture
+│   └── include/.../arm64/guest_state_cpu_state.h #   ARM64: x[31], v[32], flags, SP, etc.
+│   └── include/.../riscv64/...                   #   RISC-V: x[32], f[32], v[32], CSRs
+├── guest_state_accessor/                         # Debug/crash reporting interface
+│   ├── accessor.h                                #   LoadGuestStateRegisters() — for debuggerd
+│   └── accessor_proxy.cc                         #   Dynamically loads bridge to read state
+├── android_api/                                  # 26 proxy library stubs with trampolines
+│   ├── libEGL/, libGLESv1_CM/, libGLESv2/...     #   Per-library trampoline implementations
+│   └── vdso/                                     #   Guest vDSO support functions
+│       ├── vdso.h                                #     native_bridge_trace(), etc.
+│       └── vdso_arm64.S                          #     ARM64 assembly implementation
+└── tools/
+
+frameworks/libs/binary_translation/native_bridge/ # Berberis/Digitalis implementation
+├── native_bridge.cc                              # NdktNativeBridge class, exports NativeBridgeItf
+├── native_bridge.h                               # Local callback struct definition
+├── arm64/native_bridge.cc                        # Digitalis: kGuestIsa="arm64", ABI config
+└── riscv64/native_bridge.cc                      # RISC-V: kGuestIsa="riscv64"
+```
+
+The **`guest_state_accessor`** deserves a special mention: when an app crashes under translation, Android's crash reporter (`debuggerd`) needs to display the guest CPU registers (ARM64 X0-X30), not the host registers (x86_64 RAX-R15). The accessor provides a `LoadGuestStateRegisters()` function that reads the guest state from a special TLS slot (`TLS_SLOT_NATIVE_BRIDGE_GUEST_STATE`) where Berberis stores it. The guest state data starts with a signature (`0x5349'5245'4252'4542` = "BERBERIS") followed by architecture-specific register data.
+
+---
+
+## Appendix A: How Berberis Translates RISC-V to x86_64
 
 Digitalis adds ARM64 support to Berberis, but Berberis was originally built to translate **RISC-V to x86_64**. Understanding the upstream RISC-V backend helps you see what Digitalis reuses, what it replaces, and where the two approaches diverge.
 
