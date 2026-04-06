@@ -74,7 +74,23 @@ Digitalis takes a simpler approach: it eagerly translates every code region on f
 
 ### Digitalis's Approach: JIT + Interpreter
 
-Digitalis combines both strategies. The JIT compiler (called the "Lite Translator") handles the vast majority of instructions — roughly 98% of what a typical app executes. This includes arithmetic, logic, branches, memory loads and stores, and basic SIMD operations.
+Digitalis combines both strategies:
+
+```mermaid
+graph TD
+    A["ARM64 code region encountered"] --> B["JIT attempts translation"]
+    B -->|"All instructions supported"| C["Generate native x86_64 code<br/><i>~98% of instructions</i>"]
+    C --> D["Cache translated code"]
+    D --> E["Execute at near-native speed"]
+    B -->|"Unsupported instruction hit"| F["Mark address for interpreter"]
+    F --> G["Interpreter simulates instruction<br/><i>syscalls, complex SIMD</i>"]
+    E --> H["Update guest state"]
+    G --> H
+    H --> I["Dispatch loop picks next PC"]
+    I --> A
+```
+
+The JIT compiler (called the "Lite Translator") handles the vast majority of instructions — roughly 98% of what a typical app executes. This includes arithmetic, logic, branches, memory loads and stores, and basic SIMD operations.
 
 The interpreter handles the rest: system calls (which need special emulation), complex SIMD instructions (pairwise operations, widening, cross-lane reductions), and any instruction the JIT hasn't implemented yet. When the JIT encounters an instruction it can't translate, it marks that location for interpreter handling, and the dispatch loop routes future executions of that address to the interpreter.
 
@@ -289,6 +305,36 @@ Three key data structures appear throughout the system:
 
 ## 5. How an ARM64 App Starts
 
+```mermaid
+sequenceDiagram
+    participant ART as Android Runtime
+    participant NB as NativeBridge<br/>(libberberis_arm64.so)
+    participant GL as GuestLoader
+    participant TL as TinyLoader
+    participant Linker as Guest ARM64 Linker
+
+    ART->>ART: Detect arm64-v8a native libs
+    ART->>NB: Load via ro.dalvik.vm.native.bridge
+    NB->>NB: Initialize()
+    NB->>GL: Spawn guest thread
+    GL->>TL: Load linker64
+    GL->>TL: Load libc.so
+    GL->>TL: Load app .so files
+    TL-->>GL: Guest address space mapped (GuestMapShadow)
+    GL->>Linker: Register proxy libraries at /system/lib64/arm64/
+    Note over Linker: Symbol resolution begins
+    Linker->>Linker: Try ARM64 guest path
+    alt Library found in guest path
+        Linker-->>GL: Load ARM64 library
+    else Not found — use proxy
+        Linker-->>GL: Load proxy library (host x86_64)
+    end
+    GL-->>ART: Guest environment ready
+    ART->>NB: Java calls native method
+    NB->>NB: Create JNI trampoline (x86_64 → ARM64)
+    NB-->>ART: Enter guest execution
+```
+
 When an ARM64 APK launches on an x86_64 emulator, the Android framework detects that the app's native libraries are in `lib/arm64-v8a/` — an architecture the host can't run natively. Android checks if a NativeBridge is configured. On a Digitalis-enabled emulator, the system property `ro.dalvik.vm.native.bridge` is set to `libberberis_arm64.so`, telling Android to load Digitalis as the translation layer.
 
 Once loaded, Digitalis's guest loader creates an ARM64 execution environment inside the x86_64 process. It uses **TinyLoader**, a minimal ELF loader, to load the ARM64 versions of critical system files: `linker64` (the ARM64 dynamic linker), `libc.so`, and eventually the app's own native libraries. These ARM64 binaries are loaded into a **guest address space** tracked by `GuestMapShadow`, which maps guest addresses to host memory.
@@ -397,7 +443,28 @@ graph TD
 
 #### Regions
 
-The JIT compiles code in **regions** — sequences of ARM64 instructions compiled together into a single block of x86_64 code. A region has one entry point (the starting PC) and continues until the compiler hits a reason to stop:
+The JIT compiles code in **regions** — sequences of ARM64 instructions compiled together into a single block of x86_64 code:
+
+```mermaid
+graph TD
+    A["Start: guest PC"] --> B["Decode next ARM64 instruction"]
+    B --> C["SemanticsPlayer → LiteTranslator"]
+    C --> D["Allocator maps guest regs → host regs"]
+    D --> E["Emit x86_64 machine code"]
+    E --> F{"Region-ending condition?"}
+    F -->|"No"| B
+    F -->|"Forward branch / SVC /<br/>register pressure"| G["Region complete"]
+    E --> H{"success_ == false?"}
+    H -->|"Yes — unsupported instruction"| I{"Partial success?<br/>Previous instructions OK?"}
+    I -->|"Yes"| J["Re-translate successful prefix<br/>Install partial region"]
+    I -->|"No"| K["Mark PC as kInterpreted"]
+    J --> L["Mark failing PC as kInterpreted"]
+    H -->|"No"| F
+    G --> M["InstallTranslated into cache"]
+    M --> N["Execute via direct dispatch<br/>or return to ExecuteGuest"]
+```
+
+A region has one entry point (the starting PC) and continues until the compiler hits a reason to stop:
 
 - **Forward branch or call**: the target may not be compiled yet, so the region ends and control returns to the dispatch loop
 - **SVC instruction** (system call): requires special handling by the interpreter
@@ -413,6 +480,17 @@ When JIT-compiled code reaches a branch to an address that hasn't been translate
 #### Condition Flags (NZCV)
 
 ARM64 tracks four condition flags after arithmetic operations: **N**egative, **Z**ero, **C**arry, and **O**verflow (NZCV). x86_64 has similar flags but stores them in a different format. The JIT translates between them using a multi-instruction sequence:
+
+```mermaid
+graph LR
+    FLAGS["x86_64 FLAGS register<br/><i>SF, ZF, CF, OF</i>"]
+    FLAGS -->|"LAHF"| AH["AH register<br/><i>SF, ZF, CF</i>"]
+    FLAGS -->|"SETO"| OV["Overflow byte<br/><i>OF</i>"]
+    AH -->|"AND + MOVW"| NZCV["ARM64 NZCV<br/><i>bits 31:28</i>"]
+    OV -->|"AND + MOVW"| NZCV
+    NZCV -->|"SUB/CMP only:<br/>XORL inverts C"| NZCV_FINAL["Final NZCV<br/><i>stored in ThreadState</i>"]
+    NZCV -->|"ADD/other"| NZCV_FINAL
+```
 
 1. **LAHF**: loads x86_64 flags (Sign, Zero, Carry) into the AH register
 2. **SETO**: captures the Overflow flag into a separate byte
@@ -457,6 +535,37 @@ The interpreter handles the full ARM64 SIMD instruction set that the JIT hasn't 
 ## 8. Register Allocation
 
 Registers are the fastest storage in a CPU — accessing a register is roughly 100x faster than accessing main memory. When the JIT can keep a guest value in a real host register instead of loading and storing it from memory, the translated code runs dramatically faster. This makes register allocation one of the most performance-critical parts of the translator.
+
+```mermaid
+graph LR
+    subgraph ARM64["ARM64 Guest Registers (31)"]
+        direction TB
+        A0["X0"] ~~~ A1["X1"] ~~~ A2["X2"] ~~~ A3["..."] ~~~ A30["X30"]
+    end
+
+    subgraph Reserved["x86_64 Reserved"]
+        direction TB
+        R_RAX["RAX — guest PC"]
+        R_RBP["RBP — ThreadState ptr"]
+        R_RSP["RSP — host stack"]
+    end
+
+    subgraph Pool["x86_64 Available Pool (13)"]
+        direction TB
+        P1["RBX, RCX, RSI, RDI"]
+        P2["R8 - R15"]
+        P3["RDX"]
+    end
+
+    subgraph Spill["ThreadState Memory"]
+        direction TB
+        SP["Spilled register values<br/><i>cpu.x[reg] in memory</i>"]
+    end
+
+    ARM64 -->|"Map most-used<br/>(permanent slots)"| Pool
+    ARM64 -->|"Overflow → spill"| Spill
+    Pool -->|"Save/restore<br/>when full"| Spill
+```
 
 The problem: ARM64 has 31 general-purpose registers (X0-X30) plus SP. x86_64 has only 16, and several are reserved for Digitalis's own use:
 
@@ -505,14 +614,28 @@ The guest ARM64 linker resolves symbols to these proxy libraries, which are inst
 
 **JNI trampolines** are a special case. `WrapGuestJNIFunction()` creates bidirectional wrappers for Java native methods. It uses **"shorty" strings** — type abbreviation strings like `"VLI"` for `void(long, int)` — to know how many arguments to convert and what types they are. The wrapper converts JNIEnv pointers, jobject handles, and primitive arguments between host and guest representations.
 
-**The Vulkan path** is the primary use case for Digitalis. When guest code calls a Vulkan function:
+**The Vulkan path** is the primary use case for Digitalis:
 
-1. The call hits the proxy `libberberis_proxy_libvulkan.so`
-2. Arguments are marshalled from ARM64 to x86_64 ABI
-3. The call reaches the host Vulkan implementation
-4. GFXStream's VkDecoder translates the Vulkan commands for the host GPU
-5. The host GPU renders the frame
-6. Return values are converted back to guest registers
+```mermaid
+sequenceDiagram
+    participant Guest as Guest ARM64 Code
+    participant Proxy as Proxy Library<br/>(libberberis_proxy_libvulkan.so)
+    participant Marshal as ABI Marshalling
+    participant Host as Host libvulkan
+    participant GFX as GFXStream VkDecoder
+    participant GPU as Host GPU
+
+    Guest->>Proxy: vkCreateInstance(args in X0-X7)
+    Proxy->>Marshal: Convert ARM64 ABI → x86_64 ABI
+    Marshal->>Host: vkCreateInstance(args in RDI, RSI, ...)
+    Host->>GFX: Vulkan command stream
+    GFX->>GPU: Execute on hardware
+    GPU-->>GFX: Result
+    GFX-->>Host: Return value
+    Host-->>Marshal: Convert x86_64 → ARM64 ABI
+    Marshal-->>Proxy: Return value
+    Proxy-->>Guest: Result in X0
+```
 
 ---
 
@@ -522,7 +645,25 @@ When ARM64 code makes a system call (via the SVC instruction), it follows ARM64 
 
 It gets worse. ARM64 and x86_64 don't just use different registers — they use **different syscall numbers** for the same operations. `write()` might be syscall 64 on ARM64 and syscall 1 on x86_64. And some kernel data structures, like `stat` (file information), have different field sizes and memory layouts between the two architectures.
 
-Digitalis intercepts all guest system calls. The interpreter detects the SVC instruction and calls `RunGuestSyscall()`, which translates the syscall number, converts arguments and data structures, invokes the host kernel, and converts the results back to ARM64 format. The JIT doesn't handle SVC directly — it sets `success_ = false` so the instruction falls back to the interpreter.
+Digitalis intercepts all guest system calls:
+
+```mermaid
+graph TD
+    A["ARM64 SVC instruction detected<br/><i>in interpreter</i>"] --> B["RunGuestSyscall()"]
+    B --> C["Translate syscall number<br/><i>ARM64 nr → x86_64 nr</i>"]
+    C --> D["Convert arguments<br/><i>X0-X5 → RDI, RSI, RDX, R10, R8, R9</i>"]
+    D --> E{"Struct arguments?"}
+    E -->|"Yes"| F["Convert struct layouts<br/><i>e.g. ARM64 stat → x86_64 stat</i>"]
+    E -->|"No"| G["Host kernel syscall"]
+    F --> G
+    G --> H["Convert results back<br/><i>x86_64 return → ARM64 X0</i>"]
+    H --> I{"Struct results?"}
+    I -->|"Yes"| J["Convert structs back<br/><i>x86_64 layout → ARM64 layout</i>"]
+    I -->|"No"| K["Update ThreadState"]
+    J --> K
+```
+
+The JIT doesn't handle SVC directly — it sets `success_ = false` so the instruction falls back to the interpreter.
 
 ### Going Deeper
 
@@ -544,7 +685,28 @@ The translation cache and dispatch loop are the central coordination mechanism t
 
 Every time Digitalis finishes running a block of code — whether JIT-compiled or interpreted — it needs to figure out what to do next. The **translation cache** is a lookup table mapping guest PC addresses to host code pointers. The **dispatch loop** (`ExecuteGuest()`) runs forever: read the current PC, look it up in the cache, jump to the code pointer there, repeat.
 
-This is an **indirect-call dispatch**, not a switch statement. The cache stores raw code pointers, and `berberis_RunGeneratedCode()` jumps to whatever address is stored there. That address might be translated native code, an interpreter entry point, or a handler for untranslated code. The only explicit check in the loop is for `kEntryStop`, which breaks the loop when the guest thread exits.
+This is an **indirect-call dispatch**, not a switch statement. The cache stores raw code pointers, and `berberis_RunGeneratedCode()` jumps to whatever address is stored there:
+
+```mermaid
+graph TD
+    A["Read PC from ThreadState"] --> B{"Pending signals?"}
+    B -->|"Yes"| C["Deliver signals to guest handler<br/><i>handler may modify PC</i>"]
+    C --> A
+    B -->|"No"| D["cache→GetHostCodePtr PC → load code pointer"]
+    D --> E{"Code pointer value?"}
+    E -->|"kEntryStop"| F["Exit dispatch loop"]
+    E -->|"kEntryNotTranslated"| G["Trampoline triggers JIT<br/>TranslateRegion"]
+    E -->|"kEntryInterpret"| H["Trampoline invokes<br/>InterpretBatch"]
+    E -->|"kEntryTranslating"| I["Another thread is<br/>translating — wait"]
+    E -->|"Translated code address"| J["berberis_RunGeneratedCode<br/><i>execute native x86_64</i>"]
+    G --> K["Code installed in cache"]
+    K --> A
+    H --> A
+    I --> A
+    J --> A
+```
+
+The only explicit check in the loop is for `kEntryStop`, which breaks the loop when the guest thread exits. All other routing happens through the indirect call to the code pointer.
 
 ```mermaid
 stateDiagram-v2
