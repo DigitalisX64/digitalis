@@ -119,4 +119,5 @@ These are the most-modified files and the ones you'll touch most often:
 - **PUSH/POP don't affect x86 FLAGS, but SUB/ADD do.** When saving registers before LAHF, use PUSH/POP or LEA, not SUB RSP.
 - **Use FaultyLoad/FaultyStore for all interpreter memory accesses.** Raw memcpy causes host SIGSEGV that bypasses guest signal handlers.
 - **Digitalis-specific code is marked with `// region digitalis` / `// endregion` comments** (or `# region digitalis` in makefiles). This distinguishes Digitalis additions from upstream Berberis code.
+- **Fix root causes in the translator, not workarounds in samples.** When a sample app fails, the bug is in the binary translator (decoder, interpreter, lite translator, proxy libraries, syscall emulation), not the app. Do not modify code under `sample/hellodigitalis/` to work around translator bugs unless explicitly asked to.
 

@@ -72,7 +72,58 @@ build_prompt() {
     cat <<'PROMPT_HEADER'
 You are a subagent working on the Digitalis project — an ARM64-to-x86_64 binary translation system built on AOSP's Berberis framework.
 
-GOAL: Make all 22 ARM64-only sample apps in sample/hellodigitalis run correctly on the x86_64 Digitalis emulator (0 CRASH in test-samples.sh).
+GOAL: Make all 22 ARM64-only sample apps in sample/hellodigitalis:
+1. Run without crashing (0 CRASH in test-samples.sh)
+2. Pass screenshot tests (0 FAIL in test-samples.sh --screenshots)
+
+Screenshot tests capture the screen after 5 seconds, crop system bars, and compare pixel-by-pixel
+against a reference image (>=95% match required). Reference images are in each module's
+src/androidTest/assets/reference/screenshot_default.png.
+
+### What each screenshot test validates
+
+**3D rendering — must show rendered geometry, not a black/blank screen:**
+| Module | Expected screenshot content |
+|--------|---------------------------|
+| hello-vulkan | Vulkan-rendered colored triangle on dark background |
+| hello-gl2 | OpenGL ES 2.0 rotating triangle/shape |
+| gles3jni | OpenGL ES 3.0 instanced colored quads |
+| teapots-classic | 3D teapot model with Phong shading |
+| teapots-more | Multiple 3D teapot models |
+| teapots-textured | Textured 3D teapot model |
+| endless-tunnel | 3D tunnel scene with obstacles |
+| sensor-graph | Accelerometer graph rendered with OpenGL |
+
+**2D rendering — must show computed pixel content:**
+| Module | Expected screenshot content |
+|--------|---------------------------|
+| bitmap-plasma | Animated plasma color pattern (time-varying) |
+| native-activity | Solid color background (cycles RGB each second) |
+
+**Text/UI — must show correct text and UI elements:**
+| Module | Expected screenshot content |
+|--------|---------------------------|
+| hello-jni | "Hello from JNI" text (STATIC) |
+| hello-jniCallback | Timer display HH:MM:SS (DYNAMIC — clock changes) |
+| exceptions | Exception handling demo text (STATIC) |
+| native-audio | Audio playback controls — buttons, sliders (STATIC layout) |
+| native-codec | Video codec UI — radio buttons, play controls (STATIC layout) |
+| native-midi | MIDI controls — spinners, buttons, log area (STATIC layout) |
+| sanitizers | Sanitizer demo text output (STATIC) |
+| unit-test | "1 + 2 = 3" text (STATIC) |
+| vectorization | Benchmark results table (DYNAMIC — timing values vary) |
+| orderfile | "Hello, world!" text (STATIC) |
+
+**Camera — must show camera UI (feed content varies):**
+| Module | Expected screenshot content |
+|--------|---------------------------|
+| camera-basic | Camera preview with exposure/sensitivity controls |
+| camera-texture-view | Camera preview in TextureView |
+
+If a screenshot test fails, the likely causes are:
+- **Black screen**: Rendering pipeline broken (GL/Vulkan proxy, buffer mapping, shader compilation)
+- **Wrong content**: Instruction translation bug (wrong colors, corrupted geometry, missing text)
+- **Crash before render**: App died before 5s screenshot capture (check liveness test first)
 
 You are part of an automated dispatch pipeline. You will:
 1. Read context (previous handoff or CLAUDE.md for fresh starts)
@@ -197,8 +248,11 @@ Your output handoff document MUST follow this exact structure:
 
 ## Completion
 
-When ALL 22 sample modules pass `.claude/scripts/test-samples.sh` (0 CRASH),
-change the last line to: `## STATUS: COMPLETE`
+When ALL 22 sample modules pass BOTH tests:
+1. `.claude/scripts/test-samples.sh` (0 CRASH — apps launch without crashing)
+2. `.claude/scripts/test-samples.sh --screenshots` (0 FAIL — screenshots match reference images >=95%)
+
+Change the last line to: `## STATUS: COMPLETE`
 
 Otherwise keep it as: `## STATUS: IN_PROGRESS`
 
@@ -279,18 +333,32 @@ verify_completion() {
         return 1
     fi
 
-    # Run test-samples.sh and check for 0 crashes
+    # Step 1: Run test-samples.sh and check for 0 crashes
     local test_output
     test_output=$("${WORK_DIR}/.claude/scripts/test-samples.sh" 2>&1) || true
     echo "$test_output" | tail -5
 
-    if echo "$test_output" | grep -q "0 CRASH"; then
-        echo "[$(date '+%H:%M:%S')] ✓ All samples passing (0 CRASH)"
-        return 0
-    else
+    if ! echo "$test_output" | grep -q "0 CRASH"; then
         local crashes
         crashes=$(echo "$test_output" | grep -oP '\d+ CRASH' || echo "unknown")
         echo "[$(date '+%H:%M:%S')] ✗ Still have crashes: ${crashes}"
+        return 1
+    fi
+    echo "[$(date '+%H:%M:%S')] ✓ All samples passing (0 CRASH)"
+
+    # Step 2: Run screenshot tests and check for 0 failures
+    echo "[$(date '+%H:%M:%S')] Running screenshot tests..."
+    local screenshot_output
+    screenshot_output=$("${WORK_DIR}/.claude/scripts/test-samples.sh" --screenshots 2>&1) || true
+    echo "$screenshot_output" | tail -5
+
+    if echo "$screenshot_output" | grep -q "0 FAIL"; then
+        echo "[$(date '+%H:%M:%S')] ✓ All screenshot tests passing (0 FAIL)"
+        return 0
+    else
+        local fails
+        fails=$(echo "$screenshot_output" | grep -oP '\d+ FAIL' || echo "unknown")
+        echo "[$(date '+%H:%M:%S')] ✗ Screenshot test failures: ${fails}"
         return 1
     fi
 }
