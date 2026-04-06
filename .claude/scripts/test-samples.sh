@@ -37,6 +37,23 @@ fi
 
 WAIT_SECS=5
 
+# Modules that need runtime permissions granted after install
+declare -A MODULE_PERMISSIONS=(
+    ["camera-basic"]="android.permission.CAMERA"
+    ["camera-texture-view"]="android.permission.CAMERA"
+)
+
+# Grant runtime permissions for a module after install
+grant_permissions() {
+    local mod=$1
+    local pkg=$2
+    if [[ -n "${MODULE_PERMISSIONS[$mod]:-}" ]]; then
+        for perm in ${MODULE_PERMISSIONS[$mod]}; do
+            adb shell pm grant "$pkg" "$perm" 2>/dev/null || true
+        done
+    fi
+}
+
 # Module -> component mapping (package/activity)
 declare -A MODULES=(
     ["hello-vulkan"]="com.example.hellodigitalis/android.app.NativeActivity"
@@ -173,6 +190,9 @@ for mod in "${MODULE_ORDER[@]}"; do
         continue
     fi
 
+    # Grant runtime permissions if needed
+    grant_permissions "$mod" "$pkg"
+
     # Clear logcat, launch, wait
     adb logcat -c 2>/dev/null
     adb shell am start -n "$comp" 2>/dev/null
@@ -245,6 +265,11 @@ for mod in "${MODULE_ORDER[@]}"; do
         continue
     fi
 
+    # Grant runtime permissions if needed
+    comp="${MODULES[$mod]}"
+    pkg="${comp%%/*}"
+    grant_permissions "$mod" "$pkg"
+
     # Install test APK
     test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
     if [[ ! -f "$test_apk" ]]; then
@@ -261,8 +286,6 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # Run instrumentation test
     # Use timeout because am instrument -w can hang when test process doesn't exit
-    comp="${MODULES[$mod]}"
-    pkg="${comp%%/*}"
     output=$(timeout 30 adb shell am instrument -w -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1 || true)
 
     # Check for pass: "OK (1 test)" in output, or test finished in logcat (timeout case)
@@ -316,6 +339,11 @@ for mod in "${MODULE_ORDER[@]}"; do
         continue
     fi
 
+    # Grant runtime permissions if needed
+    comp="${MODULES[$mod]}"
+    pkg="${comp%%/*}"
+    grant_permissions "$mod" "$pkg"
+
     # Install test APK
     test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
     if [[ ! -f "$test_apk" ]]; then
@@ -332,8 +360,6 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # Run instrumentation test with updateReferences=true
     # Use timeout because am instrument -w can hang when test process doesn't exit
-    comp="${MODULES[$mod]}"
-    pkg="${comp%%/*}"
     output=$(timeout 30 adb shell am instrument -w -e updateReferences true -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1 || true)
 
     # Pull reference image from the app's data dir (adb root required)
