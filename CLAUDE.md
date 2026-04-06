@@ -6,7 +6,7 @@ ARM64-to-x86_64 binary translation for Android, built on AOSP's Berberis NativeB
 
 This is an AOSP (Android Open Source Project) source tree with modifications to the Berberis binary translator to support ARM64-to-x86_64 translation. Berberis originally supported only RISC-V-to-x86_64; Digitalis adds the ARM64 backend.
 
-The proof-of-concept app `hello-digitalis` renders a Vulkan triangle — an ARM64-only APK running on an x86_64 emulator via NativeBridge translation.
+The `sample/hellodigitalis/` project contains 22 ARM64-only sample app modules (ported from [android/ndk-samples](https://github.com/android/ndk-samples)) that serve as the integration test suite. These cover Vulkan, OpenGL ES, JNI, audio, camera, MIDI, sensors, SIMD, and more — all running on an x86_64 emulator via NativeBridge translation.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ All paths relative to repo root.
 | `frameworks/libs/binary_translation/prebuilt/` | Prebuilt configs including `ld.config.arm64.txt` |
 | `device/generic/goldfish/` | Emulator (goldfish) product definitions |
 | `device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_digitalis.mk` | Digitalis product config |
-| `sample/hellodigitalis/` | ARM64-only Vulkan triangle app (Gradle/NDK project) |
+| `sample/hellodigitalis/` | 22 ARM64-only sample app modules (Vulkan, GLES, JNI, audio, camera, SIMD, etc.) |
 
 ## Build
 
