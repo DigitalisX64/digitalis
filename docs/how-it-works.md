@@ -19,6 +19,10 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 13. [Debugging](#13-debugging)
 14. [What Digitalis Adds to Berberis](#14-what-digitalis-adds-to-berberis)
 
+**Appendix**
+
+- [A. How Berberis Translates RISC-V to x86_64](#appendix-a-how-berberis-translates-risc-v-to-x86_64)
+
 ---
 
 ## 1. Why Digitalis Exists
@@ -1072,3 +1076,210 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 **Sample Apps.** 22 ARM64-only sample app modules (ported from [android/ndk-samples](https://github.com/android/ndk-samples)) that serve as the integration test suite, covering Vulkan rendering, OpenGL ES 2.0/3.0, JNI, C++ exceptions, audio (OpenSL ES), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, and more. The original `hello-vulkan` module was written specifically for the Digitalis project.
 
 **Code Markers.** All Digitalis-specific additions to upstream Berberis files are marked with `// region digitalis` / `// endregion` comments (or `# region digitalis` in makefiles). This makes it easy to find what Digitalis changed versus what was already in Berberis.
+
+---
+
+## Appendix A: How Berberis Translates RISC-V to x86_64
+
+Digitalis adds ARM64 support to Berberis, but Berberis was originally built to translate **RISC-V to x86_64**. Understanding the upstream RISC-V backend helps you see what Digitalis reuses, what it replaces, and where the two approaches diverge.
+
+### RISC-V: A Quick Primer
+
+RISC-V is an open-source instruction set architecture (ISA). Like ARM64, it's a RISC (Reduced Instruction Set Computer) design — simple instructions, many registers, load/store architecture. But there are key differences:
+
+```mermaid
+graph LR
+    subgraph RISCV["RISC-V"]
+        direction TB
+        R_ENC["Variable-length instructions<br/><i>16-bit (compressed) + 32-bit</i>"]
+        R_REG["32 GP registers<br/><i>x0-x31 (x0 = hardwired zero)</i>"]
+        R_VEC["V-extension vectors<br/><i>variable-length vector registers</i>"]
+        R_FP["Separate FP registers<br/><i>f0-f31, NaN-boxed storage</i>"]
+    end
+
+    subgraph ARM64["ARM64"]
+        direction TB
+        A_ENC["Fixed-length instructions<br/><i>always 32-bit</i>"]
+        A_REG["31 GP registers<br/><i>X0-X30 (X31 = SP or ZR)</i>"]
+        A_VEC["NEON SIMD<br/><i>128-bit V0-V31</i>"]
+        A_FP["Shared SIMD/FP registers<br/><i>V0-V31 double as FP</i>"]
+    end
+```
+
+The most significant difference for translation is **instruction encoding**: RISC-V supports the "C" (compressed) extension, where common instructions have a 16-bit form alongside the standard 32-bit form. The decoder must check the lowest 2 bits of each instruction to determine its size:
+
+```
+RISC-V instruction stream (mixed 16-bit and 32-bit):
+┌────────┬──────────┬────────┬──────────┬────────┐
+│ 16-bit │ 32-bit   │ 16-bit │ 16-bit   │ 32-bit │
+│ c.add  │ add      │ c.li   │ c.beqz   │ lw     │
+│ 2 bytes│ 4 bytes  │ 2 bytes│ 2 bytes  │ 4 bytes│
+└────────┴──────────┴────────┴──────────┴────────┘
+Detection: if (insn & 0b11) != 0b11 → 16-bit, else → 32-bit
+```
+
+Compare this with ARM64's uniform 4-byte instructions — the RISC-V decoder has extra complexity from handling two instruction widths.
+
+### Shared Infrastructure
+
+Digitalis and the RISC-V backend share a large amount of code. Understanding what's shared vs what's architecture-specific is key to navigating the codebase:
+
+```mermaid
+graph TD
+    subgraph Shared["Shared Infrastructure"]
+        TC["TranslationCache<br/><i>lock-free lookup, state machine</i>"]
+        EG["ExecuteGuest()<br/><i>dispatch loop</i>"]
+        NB_FW["NativeBridge Framework<br/><i>callback interface</i>"]
+        ASM["x86_64 Assembler<br/><i>code generation backend</i>"]
+        PROXY["Proxy Libraries<br/><i>libc, libm, libvulkan, etc.</i>"]
+        GMS["GuestMapShadow<br/><i>address space management</i>"]
+        SIG["Signal Handling<br/><i>pending signals, recovery</i>"]
+        POOL["Code Pool<br/><i>translated code storage</i>"]
+    end
+
+    subgraph RISCV_Specific["RISC-V Specific"]
+        R_DEC["RISC-V Decoder<br/><i>16-bit + 32-bit instructions</i>"]
+        R_INT["RISC-V Interpreter"]
+        R_JIT["RISC-V Lite Translator"]
+        R_HEAVY["Heavy Optimizer<br/><i>two-gear system</i>"]
+        R_SYS["RISC-V Syscall Emulation"]
+        R_STATE["RISC-V Guest State<br/><i>x0-x31, f0-f31, v0-v31, CSRs</i>"]
+    end
+
+    subgraph ARM64_Specific["ARM64 Specific (Digitalis)"]
+        A_DEC["ARM64 Decoder<br/><i>fixed 32-bit instructions</i>"]
+        A_INT["ARM64 Interpreter"]
+        A_JIT["ARM64 Lite Translator"]
+        A_SYS["ARM64 Syscall Emulation"]
+        A_STATE["ARM64 Guest State<br/><i>X0-X30, V0-V31, NZCV</i>"]
+    end
+
+    Shared --- RISCV_Specific
+    Shared --- ARM64_Specific
+```
+
+The shared layer is substantial: the translation cache, dispatch loop, x86_64 assembler, proxy libraries, memory management, and signal handling are all reused. Each architecture provides its own decoder, interpreter, JIT, syscall emulation, and guest state definition.
+
+### The Two-Gear Translation Pipeline
+
+The biggest architectural difference between the RISC-V and ARM64 backends is the **translation pipeline**. RISC-V uses a sophisticated two-gear system; ARM64 uses a simpler single-gear approach.
+
+```mermaid
+graph TD
+    subgraph RISCV_Pipeline["RISC-V: Two-Gear Pipeline"]
+        R_NEW["New code region"] --> R_LITE["Gear 1: Lite Translator<br/><i>quick translation</i>"]
+        R_LITE --> R_CACHE["Install in cache<br/><i>kLiteTranslated</i>"]
+        R_CACHE --> R_RUN["Execute translated code"]
+        R_RUN --> R_COUNT["Invocation counter++"]
+        R_COUNT --> R_THRESH{"Counter >= 1000?<br/><i>kGearSwitchThreshold</i>"}
+        R_THRESH -->|"No"| R_RUN
+        R_THRESH -->|"Yes"| R_HEAVY_OPT["Gear 2: Heavy Optimizer<br/><i>liveness analysis, deep optimization<br/>max 200 instructions per region</i>"]
+        R_HEAVY_OPT --> R_UPGRADE["Replace in cache<br/><i>kHeavyOptimized</i>"]
+        R_UPGRADE --> R_RUN_OPT["Execute optimized code<br/><i>faster than lite translation</i>"]
+    end
+
+    subgraph ARM64_Pipeline["ARM64 (Digitalis): Single-Gear Pipeline"]
+        A_NEW["New code region"] --> A_LITE["Lite Translator<br/><i>translate on first encounter</i>"]
+        A_LITE --> A_CACHE["Install in cache<br/><i>kLiteTranslated</i>"]
+        A_CACHE --> A_RUN["Execute translated code"]
+        A_RUN --> A_DIRECT["Direct dispatch to next region<br/><i>allow_dispatch = true</i>"]
+        A_DIRECT --> A_RUN
+    end
+```
+
+**RISC-V's two-gear approach:**
+
+1. **Gear 1 — Lite Translation**: Quick translation on first encounter, same as ARM64. Produces working but not heavily optimized x86_64 code.
+2. **Invocation counting**: Each translated region has a counter. Every time the region executes, the counter increments.
+3. **Gear 2 — Heavy Optimization**: When the counter reaches `kGearSwitchThreshold` (1000 invocations), the heavy optimizer kicks in. It performs deep analysis — liveness analysis, register allocation optimization, and advanced code generation — to produce faster x86_64 code. The result replaces the lite-translated version in the cache.
+
+The heavy optimizer caps regions at 200 instructions to control memory consumption of its analysis data structures (particularly the `LivenessAnalyzer`).
+
+**ARM64's single-gear approach:**
+
+Digitalis translates every region once with the Lite Translator and doesn't re-optimize. The JIT is stable enough (only 16 known region breaks during development, all from register pressure) that the lite-translated code is good enough. Instead of investing in heavy optimization, Digitalis uses **direct dispatch** — translated regions jump directly to each other through the translation cache, skipping the `ExecuteGuest()` loop overhead.
+
+### RISC-V Translation Modes
+
+The RISC-V backend supports six different translation modes, selectable at build time:
+
+| Mode | Description |
+|------|-------------|
+| `kInterpretOnly` | No JIT — interpret everything |
+| `kLiteTranslateOrFallbackToInterpret` | Single-gear lite translation |
+| `kHeavyOptimizeOrFallbackToInterpret` | Skip lite, go straight to heavy optimizer |
+| `kHeavyOptimizeOrFallbackToLiteTranslator` | Try heavy first, fall back to lite |
+| `kLiteTranslateThenHeavyOptimize` | **Default (two-gear)** — lite first, then heavy |
+| `kNumModes` | (mode count sentinel) |
+
+ARM64 has no mode selection — it always does lite translation with interpreter fallback.
+
+### Guest State Comparison
+
+Both architectures maintain a `CPUState` struct representing the guest processor state, but the contents differ:
+
+```mermaid
+graph LR
+    subgraph RISCV_State["RISC-V CPUState"]
+        direction TB
+        RX["x[32] — GP registers<br/><i>x0 hardwired to zero</i>"]
+        RF["f[32] — FP registers<br/><i>NaN-boxed 64-bit storage</i>"]
+        RV["v[32] — Vector registers<br/><i>128-bit each</i>"]
+        R_EXTRA["vtype, vstart, vl, vcsr<br/><i>V-extension control state</i>"]
+        R_RES["reservation_address/value<br/><i>for LR/SC atomics</i>"]
+    end
+
+    subgraph ARM64_State["ARM64 CPUState"]
+        direction TB
+        AX["x[31] — GP registers<br/><i>SP handled separately</i>"]
+        AV["v[32] — SIMD/FP registers<br/><i>128-bit, shared SIMD and FP</i>"]
+        AF["flags — NZCV<br/><i>16-bit packed condition flags</i>"]
+        A_FPC["cached_fpcr / emulated_fpsr<br/><i>FP control and status</i>"]
+    end
+```
+
+Key differences:
+- RISC-V has **32 GP registers** (x0 hardwired to zero); ARM64 has **31** (X31 is either SP or ZR depending on context)
+- RISC-V has **separate FP registers** (f0-f31) using NaN-boxing — a 32-bit float is stored in a 64-bit slot with the upper 32 bits set to all ones. ARM64 **shares** its SIMD registers (V0-V31) for both FP and NEON operations.
+- RISC-V has **full V-extension state** (vtype, vl, vstart, vcsr) for its vector unit, which supports variable-length vectors. ARM64's NEON uses fixed 128-bit vectors with no extra control state.
+- RISC-V uses **LR/SC** (Load-Reserved / Store-Conditional) for atomics with a 64-bit reservation value. ARM64 uses **LDXP/STXP** (Load/Store Exclusive Pair) supporting 128-bit reservations.
+
+### Decoder Comparison
+
+| Feature | RISC-V Decoder | ARM64 Decoder |
+|---------|---------------|---------------|
+| File size | ~2,400 lines | ~3,500 lines |
+| Instruction sizes | 16-bit + 32-bit | 32-bit only |
+| Size detection | Check lowest 2 bits | Always 4 bytes |
+| Top-level dispatch | Opcode field (bits[6:0]) | op0 field (bits[28:25]) |
+| Compressed support | Yes (C extension) | No |
+| Extension support | M, A, F, D, C, V, Zb* | Base + SIMD/FP + CRC32 |
+
+The RISC-V decoder is shorter in lines but more complex logically due to the dual-width instruction handling. The ARM64 decoder is longer because ARM64's encoding has more instruction groups and more complex bit-field patterns (especially for SIMD/FP), but each instruction is simpler to locate since the width is always 4 bytes.
+
+### Calling Convention Comparison
+
+Both architectures use a similar register-based calling convention, but with different register assignments:
+
+| Role | RISC-V | ARM64 | x86_64 (target) |
+|------|--------|-------|------------------|
+| Integer args (1-8) | a0-a7 (x10-x17) | X0-X7 | RDI, RSI, RDX, RCX, R8, R9 (+stack) |
+| Integer return | a0-a1 (x10-x11) | X0-X1 | RAX, RDX |
+| FP args (1-8) | fa0-fa7 (f10-f17) | V0-V7 | XMM0-XMM7 |
+| FP return | fa0-fa1 (f10-f11) | V0-V1 | XMM0-XMM1 |
+| Syscall number | a7 (x17) | X8 | RAX |
+| Link register | ra (x1) | X30 | *(pushed to stack)* |
+
+Both source architectures pass up to 8 integer and 8 floating-point arguments in registers before spilling to the stack. The proxy libraries must convert from either source convention to x86_64's convention (which uses only 6 integer register arguments).
+
+### What This Means for Digitalis
+
+Digitalis benefits enormously from the shared infrastructure that was built for RISC-V translation. The translation cache, dispatch loop, proxy libraries, assembler, and NativeBridge integration all work unchanged. What Digitalis adds is:
+
+1. **ARM64 decoder** — simpler than RISC-V's (no variable-length instructions) but with more encoding complexity (SIMD/FP)
+2. **ARM64 lite translator** — larger code generator (~84KB vs ~22KB) due to ARM64's wider instruction set, especially SIMD
+3. **ARM64 interpreter** — full instruction semantics including NEON SIMD that the JIT doesn't cover
+4. **ARM64 syscall emulation** — different syscall numbers and ABI from both RISC-V and x86_64
+5. **No heavy optimizer** — ARM64 skips the two-gear pipeline in favor of simpler, direct-dispatch lite translation
+
+The single-gear decision reflects a pragmatic trade-off: the ARM64 lite translator produces good-enough code that the complexity of heavy optimization isn't yet justified. If performance-critical hot loops become a bottleneck in the future, the heavy optimizer infrastructure already exists in the shared codebase and could be adapted for ARM64.
