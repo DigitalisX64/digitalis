@@ -283,3 +283,83 @@ Three key data structures appear throughout the system:
 **`GuestAddr` / `ToHostAddr()` / `ToGuestAddr()`** convert between the guest address space (where ARM64 code thinks it's running) and the host address space (where the data actually lives in the x86_64 process). Guest code uses ARM64 addresses; the translator and proxy libraries use these functions to access the corresponding host memory.
 
 **`TranslationCache`** is the central lookup table mapping guest program counter addresses to host code pointers. It's the routing table for the entire system — every dispatch cycle starts with a cache lookup. It supports lock-free reads (via atomic pointer loads) and mutex-protected writes for thread safety.
+
+---
+
+## 5. How an ARM64 App Starts
+
+When an ARM64 APK launches on an x86_64 emulator, the Android framework detects that the app's native libraries are in `lib/arm64-v8a/` — an architecture the host can't run natively. Android checks if a NativeBridge is configured. On a Digitalis-enabled emulator, the system property `ro.dalvik.vm.native.bridge` is set to `libberberis_arm64.so`, telling Android to load Digitalis as the translation layer.
+
+Once loaded, Digitalis's guest loader creates an ARM64 execution environment inside the x86_64 process. It uses **TinyLoader**, a minimal ELF loader, to load the ARM64 versions of critical system files: `linker64` (the ARM64 dynamic linker), `libc.so`, and eventually the app's own native libraries. These ARM64 binaries are loaded into a **guest address space** tracked by `GuestMapShadow`, which maps guest addresses to host memory.
+
+The guest ARM64 linker takes over symbol resolution within the guest world. When it needs to load a library, Digitalis intercedes: it first tries loading from the ARM64 guest paths, and if the library isn't there (because it's a system library that only exists as an x86_64 host version), it loads the corresponding proxy library instead. These proxy libraries live at `/system/lib64/arm64/` and bridge guest API calls to host implementations.
+
+Once the guest environment is ready, the app's native code can execute — either through JNI calls from Java or through direct native activity entry points.
+
+### Going Deeper
+
+The NativeBridge integration is implemented in the `NdktNativeBridge` class, which provides Android's NativeBridge v8 callback interface. Key callbacks include:
+
+- **`Initialize()`**: one-time setup that launches the guest loader thread and registers the translation infrastructure
+- **`LoadLibrary()` / `LoadLibraryExt()`**: loads ARM64 .so files into the guest address space, falling back to host libraries when needed
+- **`GetTrampolineWithJNICallType()`**: creates x86_64 wrapper functions for guest JNI methods. The wrapper uses `WrapGuestJNIFunction()` to generate code that marshals arguments from the x86_64 ABI (RDI, RSI, RDX...) into the ARM64 ABI (X0-X7), calls `GuestCall::RunResInt64()` to enter guest execution, and converts the return value back.
+
+Digitalis adds several ARM64-specific enhancements to the NativeBridge integration:
+
+- **ARM64 namespace paths**: appends `/system/lib64/arm64/bootstrap:/system/lib64/arm64` to the guest linker's search paths so proxy libraries are discoverable
+- **vDSO whitelist**: adds `linux-vdso.so.1` to shared library whitelist for namespace linking, so the TinyLoader-loaded vDSO is visible across namespace boundaries
+- **libc mapping protection**: uses `GuestMapShadow::AddProtectedMapping()` to prevent guest code from tampering with libc.so memory mappings
+
+The `GuestLoader` class manages the guest runtime. Its `LinkerCallbacks` struct holds function pointers to the guest linker's exported symbols (`dlsym`, `dlopen`, `create_namespace`, etc.), allowing Digitalis to drive the guest linker programmatically from host code.
+
+---
+
+## 6. Decoding ARM64 Instructions
+
+Before Digitalis can translate or interpret an ARM64 instruction, it needs to figure out what that instruction *is*. This is the decoder's job.
+
+ARM64 instructions are always 4 bytes. The decoder reads these 32 bits and extracts the operation type, register operands, immediate values, and other fields. It then passes this structured information to either the JIT compiler or the interpreter through a bridge layer called the **SemanticsPlayer**.
+
+```mermaid
+graph LR
+    A["ARM64 bytes<br/>(4 bytes)"] --> B["Decoder<br/>bit-field parsing"]
+    B --> C["SemanticsPlayer<br/>semantic bridge"]
+    C --> D["LiteTranslator<br/>(JIT path)"]
+    C --> E["Interpreter<br/>(fallback path)"]
+```
+
+The architecture uses C++ templates to avoid runtime dispatch overhead. `Decoder<InsnConsumer>` is parameterized by its handler type. For JIT compilation, the chain is `Decoder<SemanticsPlayer<LiteTranslator>>`. For interpretation, it's `Decoder<SemanticsPlayer<Interpreter>>`. The SemanticsPlayer translates raw decoded fields into semantic operations (like "add these two registers" or "load from this address"), handling ARM64 quirks along the way.
+
+### Going Deeper
+
+#### Bit-Field Dispatch
+
+The decoder routes instructions through a hierarchy of bit checks. The top-level dispatch uses bits[28:25] (`op0`), which divides all ARM64 instructions into five groups:
+
+| op0 pattern | Group |
+|-------------|-------|
+| `100x` | Data Processing — Immediate |
+| `101x` | Branches, Exceptions, System |
+| `x1x0` | Loads and Stores |
+| `x101` | Data Processing — Register |
+| `x111` | SIMD and Floating Point |
+
+Within each group, further bits narrow down the specific instruction. For example, bit 29 distinguishes different load/store types, and bit 24 distinguishes single-structure from multi-structure SIMD operations.
+
+**Dispatch order matters.** Multiple instruction groups share encoding prefixes. Missing a distinguishing bit check routes instructions to the wrong handler *silently* — the decoder produces a valid-looking but semantically wrong result. No crash, just incorrect behavior that may not manifest until a memory boundary is hit. This has been a recurring source of bugs in Digitalis development.
+
+#### The X31 Special Case
+
+ARM64's register 31 is context-dependent: in some instructions it means **SP** (the stack pointer), and in others it means **ZR** (the zero register, which always reads as zero and discards writes). The SemanticsPlayer's `GetReg()` method handles this based on the instruction context, so the JIT and interpreter don't need to worry about it.
+
+#### Instruction Categories
+
+The decoder handles these ARM64 instruction categories:
+
+- **Logical**: AND, ORR, EOR, BIC (with immediate and register forms)
+- **Arithmetic**: ADD, SUB, ADC, SBC (with optional flag-setting variants)
+- **Data processing**: UDIV, SDIV, variable shifts (LSLV, LSRV, ASRV, RORV)
+- **Memory**: LDR, STR (with multiple addressing modes: immediate offset, register offset, pre/post-index)
+- **Control flow**: B, BL, B.cond, RET, CBZ, CBNZ, TBZ, TBNZ
+- **SIMD/FP**: vector arithmetic, permute, across-lanes, widening, narrowing
+- **CRC32**: CRC32B, CRC32H, CRC32W, CRC32X and their "C" variants (Digitalis-specific addition)
