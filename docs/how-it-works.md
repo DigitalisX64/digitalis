@@ -24,6 +24,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 
 - [A. How Berberis Translates RISC-V to x86_64](#appendix-a-how-berberis-translates-risc-v-to-x86_64)
 - [B. ARM64 to x86_64 Instruction Mapping](#appendix-b-arm64-to-x86_64-instruction-mapping)
+- [C. Source Directory Guide](#appendix-c-source-directory-guide)
 
 ---
 
@@ -1841,3 +1842,153 @@ pie title Instruction Translation Coverage
 ```
 
 The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores, atomics, basic FP, and SIMD load/store** — the instructions that make up ~98% of executed code in typical apps. The interpreter handles **syscalls, memory barriers, FP conversions, fused multiply-add, and the full NEON SIMD compute instruction set** (element-wise ops, permute, widening, reductions, etc.).
+
+---
+
+## Appendix C: Source Directory Guide
+
+All Berberis source code lives under `frameworks/libs/binary_translation/`. This appendix explains what each directory contains and how they connect.
+
+```mermaid
+graph TD
+    subgraph Core["Core Translation Pipeline"]
+        DEC["decoder/"]
+        INT["interpreter/"]
+        LT["lite_translator/"]
+        HO["heavy_optimizer/"]
+        RT["runtime/"]
+        RTP["runtime_primitives/"]
+    end
+
+    subgraph Frontend["Guest Frontend"]
+        GS["guest_state/"]
+        GA["guest_abi/"]
+        GLO["guest_loader/"]
+        GOP["guest_os_primitives/"]
+        TLO["tiny_loader/"]
+    end
+
+    subgraph Backend["Host Backend"]
+        ASM["assembler/"]
+        BE["backend/"]
+        CGL["code_gen_lib/"]
+        CC["calling_conventions/"]
+        ER["exec_region/"]
+    end
+
+    subgraph Bridge["Android Integration"]
+        NB_DIR["native_bridge/"]
+        AA["android_api/"]
+        JNI_DIR["jni/"]
+        NA["native_activity/"]
+        PL["proxy_loader/"]
+    end
+
+    subgraph System["System Emulation"]
+        KA["kernel_api/"]
+        INR["intrinsics/"]
+        INS["instrument/"]
+    end
+
+    subgraph Support["Support & Testing"]
+        BASE["base/"]
+        TU["test_utils/"]
+        TESTS["tests/"]
+        TOOLS["tools/"]
+        DAI["device_arch_info/"]
+        PR["program_runner/"]
+        PB["prebuilt/"]
+        DOCS["docs/"]
+    end
+
+    DEC --> INT
+    DEC --> LT
+    LT --> ASM
+    HO --> ASM
+    RT --> RTP
+    GLO --> TLO
+    NB_DIR --> GLO
+    AA --> PL
+```
+
+### Core Translation Pipeline
+
+| Directory | What It Does | Key Files |
+|-----------|-------------|-----------|
+| `decoder/` | Parses raw instruction bytes into structured operations. Contains architecture-specific decoders (`arm64/`, `riscv64/`) and the `SemanticsPlayer` bridge that connects the decoder to either the JIT or interpreter. | `decoder/include/berberis/decoder/arm64/decoder.h`, `semantics_player.h` |
+| `interpreter/` | Per-instruction simulation fallback. Implements the full instruction set for each architecture by directly updating `ThreadState`. Used for instructions the JIT can't handle. | `interpreter/arm64/interpreter.h` |
+| `lite_translator/` | The JIT compiler. Translates guest instruction regions into native x86_64 machine code. Contains the register allocator, code emitter, and region management for each architecture. | `lite_translator/arm64_to_x86_64/lite_translator.h`, `allocator.h`, `lite_translate_region.cc` |
+| `heavy_optimizer/` | Second-gear JIT for RISC-V. Performs deeper analysis (liveness, register allocation optimization) on hot code regions. **Not used by the ARM64 backend.** | `heavy_optimizer/riscv64/frontend.h` |
+| `runtime/` | Execution control for each architecture. Contains `ExecuteGuest()` (the dispatch loop), `TranslateRegion()` (JIT entry point), and architecture-specific translation configuration. | `runtime/execute_guest.cc`, `runtime/arm64/translator_x86_64.cc` |
+| `runtime_primitives/` | Shared infrastructure used by the runtime: `TranslationCache` (the code lookup table), `HostCodePiece` (translated code representation), code pool management, and entry point constants. | `runtime_primitives/translation_cache.h`, `runtime_library.h` |
+
+### Guest Frontend
+
+These directories handle the guest (translated) architecture — loading its code, managing its state, and understanding its ABI.
+
+| Directory | What It Does | Key Files |
+|-----------|-------------|-----------|
+| `guest_state/` | Defines `CPUState` and `ThreadState` for each guest architecture. `CPUState` holds registers, flags, and architecture-specific state. `ThreadState` adds thread metadata, signal status, and TLS. | `guest_state/arm64/include/.../guest_state_cpu_state.h` |
+| `guest_abi/` | Guest calling convention implementation. `GuestCall` and `GuestArgumentBuffer` marshal arguments between guest and host ABIs for function calls in both directions. | `guest_abi/arm64/include/.../guest_call_arch.h` |
+| `guest_loader/` | Loads ARM64 ELF files into the guest address space. `GuestLoader` manages the guest runtime, drives the guest linker, and holds `LinkerCallbacks` for programmatic linker control. | `guest_loader/guest_loader.cc` |
+| `guest_os_primitives/` | Low-level guest OS emulation: memory mapping shadow (`GuestMapShadow`), signal delivery, guest thread management, and address space tracking. | `guest_os_primitives/guest_map_shadow.h` |
+| `tiny_loader/` | A minimal ELF loader that reads ELF headers and loads segments into memory. Used by `GuestLoader` to load `linker64`, `libc.so`, and app libraries without relying on the host's dynamic linker. | `tiny_loader/tiny_loader.cc` |
+
+### Host Backend
+
+These directories handle the host (target) architecture — generating x86_64 machine code.
+
+| Directory | What It Does | Key Files |
+|-----------|-------------|-----------|
+| `assembler/` | x86_64 machine code assembler. Provides `Assembler` class with methods like `Addq()`, `Movq()`, `Jcc()` that emit the correct variable-length x86_64 byte sequences. Used by both the lite translator and heavy optimizer. | `assembler/x86_64.h` |
+| `backend/` | Abstraction layer between the optimizer's intermediate representation and the final x86_64 code emission. Used by the heavy optimizer (RISC-V). | `backend/x86_64/` |
+| `code_gen_lib/` | Shared code generation utilities: `MacroAssembler` (higher-level assembler with common patterns), label management, and code patching. | `code_gen_lib/code_gen_lib.h` |
+| `calling_conventions/` | Defines the host x86_64 calling convention: which registers are caller-saved vs callee-saved, argument passing rules, and stack frame layout. | `calling_conventions/calling_conventions_x86_64.h` |
+| `exec_region/` | Manages executable memory regions. Allocates RWX pages for JIT-compiled code, handles code cache memory pressure, and provides the code pool that `InstallTranslated()` writes to. | `exec_region/exec_region.cc` |
+
+### Android Integration
+
+These directories connect Berberis to Android's frameworks.
+
+| Directory | What It Does | Key Files |
+|-----------|-------------|-----------|
+| `native_bridge/` | Implements Android's NativeBridge callback interface (v8). The `NdktNativeBridge` class handles `Initialize()`, `LoadLibrary()`, JNI trampoline creation, and namespace management. This is the entry point where Android first calls into Digitalis. | `native_bridge/native_bridge.cc` |
+| `android_api/` | **Proxy libraries** — one subdirectory per Android system library (21 total). Each proxy (`libberberis_proxy_libXXX.so`) wraps a host library, converting arguments between ARM64 and x86_64 ABIs. See [Section 9](#9-talking-to-the-host-proxy-libraries). | `android_api/libvulkan/`, `android_api/libc/`, etc. |
+| `jni/` | JNI-specific bridging. `WrapGuestJNIFunction()` creates trampolines for ARM64 JNI methods that Java can call through x86_64 conventions. Handles "shorty" string parsing for argument type conversion. | `jni/jni_trampolines.cc` |
+| `native_activity/` | Wraps Android's `NativeActivity` entry points for guest code. When an ARM64 NativeActivity app launches, this module creates the necessary wrappers so `ANativeActivity_onCreate()` is called with the correct ABI. | `native_activity/native_activity.cc` |
+| `proxy_loader/` | Loads proxy libraries at runtime. Resolves symbols in proxy libraries and registers them in the guest linker's namespace so the guest ARM64 linker can find them. | `proxy_loader/proxy_loader.cc` |
+
+### System Emulation
+
+| Directory | What It Does | Key Files |
+|-----------|-------------|-----------|
+| `kernel_api/` | System call emulation. Translates guest syscall numbers and arguments to host equivalents. Contains architecture-specific emulation (`arm64/`, `riscv64/`) plus shared handlers for mmap, futex, and other complex syscalls. | `kernel_api/arm64/syscall_emulation.cc`, `kernel_api/sys_mman_emulation.cc` |
+| `intrinsics/` | Instruction-level intrinsic functions — operations that map to specific host CPU instructions (like CRC32, AES, or SIMD operations) rather than being emulated in software. Organized by source→target architecture combination. | `intrinsics/arm64_to_all/` |
+| `instrument/` | Instrumentation and crash handling hooks. Provides `OnCrash()` callback for signal handling (SIGSEGV, SIGABRT, SIGILL) and optional profiling entry points. | `instrument/instrument.cc` |
+
+### Support & Testing
+
+| Directory | What It Does |
+|-----------|-------------|
+| `base/` | Foundation utilities: logging (`ALOGE`, `ALOGD`), tracing (`TRACE` macro, `BERBERIS_TRACING`), configuration (`config_globals`), memory utilities, and bit manipulation helpers. |
+| `test_utils/` | Shared test infrastructure for host unit tests and emulator integration tests. |
+| `tests/` | Test suites — host tests, NDK program tests, inline assembly tests. ARM64 host tests: `berberis_arm64_host_tests`. |
+| `tools/` | Build-time tools for code generation and analysis. |
+| `device_arch_info/` | Architecture feature detection for the host CPU (AVX, SSE, etc.) — determines which host instructions the JIT can use. |
+| `program_runner/` | Standalone execution of guest binaries (RISC-V only). Allows running guest ELF executables outside Android. |
+| `prebuilt/` | Prebuilt configuration files, including `ld.config.arm64.txt` which defines the guest linker namespace search paths for proxy libraries. |
+| `docs/` | Upstream Berberis documentation (separate from this Digitalis docs directory). |
+
+### Where to Start for Common Tasks
+
+| Task | Start Here |
+|------|-----------|
+| Fix a wrong-instruction bug | `decoder/include/berberis/decoder/arm64/decoder.h` — check bit-field dispatch |
+| Add a new JIT-compiled instruction | `lite_translator/arm64_to_x86_64/lite_translator.h` — add translation method |
+| Add an interpreter-only instruction | `interpreter/arm64/interpreter.h` — add execution handler |
+| Fix a syscall emulation bug | `kernel_api/arm64/syscall_emulation.cc` |
+| Add a new proxy library | `android_api/` — create new subdirectory with ABI wrappers |
+| Debug a crash | `base/include/berberis/base/tracing.h` — enable `BERBERIS_TRACING` |
+| Write a host test | `lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc` |
+| Understand the dispatch loop | `runtime/execute_guest.cc` |
+| Understand register allocation | `lite_translator/arm64_to_x86_64/allocator.h` |
