@@ -18,6 +18,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 12. [System Libraries](#12-system-libraries)
 13. [Debugging](#13-debugging)
 14. [What Digitalis Adds to Berberis](#14-what-digitalis-adds-to-berberis)
+15. [Putting It All Together: The Vulkan Triangle](#15-putting-it-all-together-the-vulkan-triangle)
 
 **Appendix**
 
@@ -791,14 +792,57 @@ When ARM64 guest code calls `vkCreateInstance()` (Vulkan) or `malloc()` (libc), 
 
 A **calling convention** (or ABI — Application Binary Interface) is a contract between caller and callee: where arguments go, where the return value comes back, and which registers the callee may modify. ARM64 and x86_64 have completely different contracts, so every call that crosses the translation boundary needs argument conversion.
 
-**Proxy libraries** bridge this gap. For each Android system library, Digitalis provides a proxy — a host-architecture library named `libberberis_proxy_libXXX.so` — that:
+**Proxy libraries** bridge this gap. The word "proxy" here means the same thing as in everyday language: something that acts on behalf of something else. A proxy library **stands in for** a real system library. When ARM64 guest code calls `malloc()`, it doesn't call the real host `libc.so` (which is x86_64 and expects x86_64 arguments). Instead, it calls Digitalis's proxy `libberberis_proxy_libc.so`, which translates the call and forwards it to the real library.
 
-1. Receives the call from guest code (via the ARM64 ABI)
-2. Converts arguments to the x86_64 ABI
-3. Calls the real host library
-4. Converts the return value back to ARM64 conventions
+For each Android system library, Digitalis provides a proxy — a host-architecture `.so` file named `libberberis_proxy_libXXX.so`. Here's how a single function call flows through the proxy:
 
-The guest ARM64 linker resolves symbols to these proxy libraries, which are installed at `/system/lib64/arm64/`. From the guest code's perspective, it's calling a normal ARM64 library; the proxy transparently handles the translation.
+```mermaid
+graph LR
+    subgraph Guest["Guest World (ARM64)"]
+        CODE["ARM64 app code<br/><i>calls malloc(64)</i>"]
+        STUB["Guest linker stub<br/><i>resolves to proxy</i>"]
+    end
+
+    subgraph Proxy["Proxy Library (x86_64)"]
+        ENTRY["Proxy entry point<br/><i>libberberis_proxy_libc.so</i>"]
+        CONVERT_IN["Convert arguments<br/><i>X0 (size=64) → RDI (size=64)</i>"]
+        CONVERT_OUT["Convert return value<br/><i>RAX (pointer) → X0 (pointer)</i>"]
+    end
+
+    subgraph Host["Host World (x86_64)"]
+        REAL["Real host libc.so<br/><i>malloc(64)</i>"]
+    end
+
+    CODE --> STUB --> ENTRY --> CONVERT_IN --> REAL
+    REAL --> CONVERT_OUT --> CODE
+```
+
+The proxy does four things:
+
+1. **Receives the call** from guest code — arguments arrive in ARM64 registers (X0-X7)
+2. **Converts arguments** to the x86_64 ABI — moves them to the right x86_64 registers (RDI, RSI, RDX...) and converts any struct layouts
+3. **Calls the real host library** — the actual `malloc()`, `vkCreateInstance()`, etc.
+4. **Converts the return value** back — moves it from x86_64's RAX to ARM64's X0
+
+#### Why Not Just Call the Host Library Directly?
+
+You might wonder: if both ARM64 and x86_64 use the same data formats (little-endian, same sizes for int/long/pointer), why can't the translated code just call host functions directly?
+
+Three reasons:
+
+1. **Different argument registers.** ARM64 puts the first argument in X0; x86_64 puts it in RDI. If translated code just `call`'d into host `malloc`, the size parameter would be in the wrong register.
+
+2. **Different stack conventions.** ARM64's stack is 16-byte aligned with different rules for what gets pushed. x86_64 expects the stack to be 16-byte aligned before `call`, with a return address pushed by `call` itself.
+
+3. **Struct layouts may differ.** While most primitive types are the same size, some structs (like `stat`, used by file system calls) have different field ordering or padding between architectures.
+
+The proxy handles all three, making the boundary crossing invisible to both sides.
+
+#### How the Guest Linker Finds Proxies
+
+When the ARM64 guest linker needs to resolve a symbol like `malloc`, Digitalis has configured the linker namespace to search `/system/lib64/arm64/` first. This directory contains the proxy libraries. So `malloc` resolves to `libberberis_proxy_libc.so`'s implementation, not a real ARM64 libc (which doesn't exist on the x86_64 host).
+
+From the guest code's perspective, it's calling a normal ARM64 library. The proxy transparently handles the translation.
 
 ### Going Deeper
 
@@ -1080,7 +1124,294 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 ---
 
-## Appendix A: How Berberis Translates RISC-V to x86_64
+## 15. Putting It All Together: The Vulkan Triangle
+
+This section traces a real app — `hello-vulkan`, the original Digitalis proof of concept — through every layer of the translation system. It's an ARM64-only app that renders a colored triangle using Vulkan, running on an x86_64 emulator via Digitalis.
+
+### What the App Does
+
+The app is a pure C++ NativeActivity with ~400 lines of code. It initializes Vulkan, creates a graphics pipeline with embedded SPIR-V shaders, and renders a triangle with red/green/blue vertices in a loop. The triangle's vertex positions and colors are hardcoded in the vertex shader — there's no vertex buffer, no uniform buffers, no textures. This makes it the simplest possible Vulkan app while still exercising the full translation pipeline.
+
+### Phase 1: App Launch and NativeBridge Interception
+
+When the user taps the app icon, Android starts a new process:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant ART as Android Runtime
+    participant NB as NativeBridge<br/>(libberberis_arm64.so)
+    participant GL as GuestLoader
+    participant TL as TinyLoader
+
+    User->>ART: Tap app icon
+    ART->>ART: Read APK: only lib/arm64-v8a/ found
+    ART->>ART: Check ro.dalvik.vm.native.bridge
+    ART->>NB: Load libberberis_arm64.so
+    NB->>NB: Initialize()
+    NB->>GL: Spawn guest thread
+    GL->>TL: Load ARM64 linker64
+    GL->>TL: Load ARM64 libc.so
+    GL->>TL: Load ARM64 libhello_digitalis.so
+    TL-->>GL: Guest address space ready
+    GL->>GL: Register proxy libraries at /system/lib64/arm64/
+    GL-->>NB: Guest environment ready
+    ART->>NB: Call ANativeActivity_onCreate
+    NB->>NB: Create JNI trampoline<br/>(x86_64 ABI → ARM64 ABI)
+    NB-->>ART: Enter guest android_main()
+```
+
+The APK contains only `lib/arm64-v8a/libhello_digitalis.so` — no x86_64 library. ART detects this, loads Digitalis through NativeBridge, and Digitalis creates the ARM64 guest environment. The ARM64 dynamic linker resolves the app's Vulkan imports (like `vkCreateInstance`) to proxy libraries at `/system/lib64/arm64/`.
+
+### Phase 2: The Main Loop Under Translation
+
+Once `android_main()` starts executing, every ARM64 instruction runs through the Digitalis dispatch loop:
+
+```c
+// This ARM64 code runs on an x86_64 CPU via translation:
+void android_main(struct android_app* app) {
+    app->onAppCmd = handle_cmd;
+    
+    while (true) {
+        // Poll for events (triggers syscall emulation)
+        while (ALooper_pollOnce(...) >= 0) {
+            if (source) source->process(app, source);
+            if (app->destroyRequested) return;
+        }
+        // Render a frame (triggers proxy library calls)
+        vulkan_render_frame(&g_vulkan_state);
+    }
+}
+```
+
+Here's what happens to this code inside Digitalis:
+
+```mermaid
+graph TD
+    subgraph Dispatch["ExecuteGuest() Dispatch Loop"]
+        PC["Read PC from ThreadState"]
+        CACHE["TranslationCache lookup"]
+        RUN["Execute code"]
+        PC --> CACHE --> RUN --> PC
+    end
+
+    subgraph JIT_Work["JIT Translates android_main()"]
+        J1["ADD, SUB, MOV → movq, addq, subq"]
+        J2["LDR, STR → mov with memory operands"]
+        J3["CMP, B.EQ → testq + jcc"]
+        J4["BL handle_cmd → ExitRegion"]
+    end
+
+    subgraph Syscall_Work["Event Polling"]
+        S1["ALooper_pollOnce calls epoll_wait"]
+        S2["ARM64 SVC #0 instruction"]
+        S3["Interpreter catches SVC"]
+        S4["RunGuestSyscall: translate<br/>epoll_wait nr + args"]
+        S5["Host kernel: epoll_wait()"]
+        S1 --> S2 --> S3 --> S4 --> S5
+    end
+
+    subgraph Vulkan_Work["Vulkan Rendering"]
+        V1["vkWaitForFences → proxy → host Vulkan"]
+        V2["vkBeginCommandBuffer → proxy → host"]
+        V3["vkCmdDraw 3 vertices → proxy → host"]
+        V4["vkQueueSubmit → proxy → GFXStream"]
+        V5["GFXStream → Host GPU → triangle on screen"]
+        V1 --> V2 --> V3 --> V4 --> V5
+    end
+
+    RUN -->|"Arithmetic/branches"| JIT_Work
+    RUN -->|"System call"| Syscall_Work
+    RUN -->|"Vulkan API call"| Vulkan_Work
+```
+
+The main loop involves all three execution paths:
+- **JIT path**: The loop control flow (comparisons, branches, pointer loads) is translated to native x86_64 and cached — this runs at near-native speed
+- **Syscall path**: `ALooper_pollOnce()` eventually calls `epoll_wait`, which triggers an ARM64 SVC instruction caught by the interpreter
+- **Proxy path**: Every `vk*` call goes through the Vulkan proxy library
+
+### Phase 3: Vulkan Initialization — Proxy Libraries in Action
+
+When the app window becomes available, `vulkan_init()` runs. Here's the sequence of Vulkan calls and how each crosses the translation boundary:
+
+```mermaid
+sequenceDiagram
+    participant App as ARM64 App Code<br/>(JIT-translated)
+    participant Proxy as libberberis_proxy_<br/>libvulkan.so
+    participant Host as Host Vulkan
+    participant GFX as GFXStream<br/>VkDecoder
+    participant GPU as Host GPU
+
+    Note over App,GPU: Vulkan Initialization
+
+    App->>Proxy: vkCreateInstance(appInfo, extensions)
+    Proxy->>Proxy: Marshal VkInstanceCreateInfo<br/>from guest memory
+    Proxy->>Host: vkCreateInstance(...)
+    Host-->>Proxy: VkInstance handle
+    Proxy-->>App: handle in X0
+
+    App->>Proxy: vkEnumeratePhysicalDevices(instance, ...)
+    Proxy->>Host: vkEnumeratePhysicalDevices(...)
+    Host-->>App: device list
+
+    App->>Proxy: vkCreateDevice(physicalDevice, queueInfo, ...)
+    Proxy->>Proxy: Marshal VkDeviceCreateInfo<br/>(includes stack pointer to priority float)
+    Proxy->>Host: vkCreateDevice(...)
+    Host-->>App: VkDevice handle
+
+    App->>Proxy: vkCreateAndroidSurfaceKHR(instance, window, ...)
+    Note over Proxy: ANativeWindow* is a host pointer<br/>passed through without conversion
+    Proxy->>Host: vkCreateAndroidSurfaceKHR(...)
+    Host-->>App: VkSurfaceKHR handle
+
+    App->>Proxy: vkCreateSwapchainKHR(device, swapchainInfo, ...)
+    Proxy->>Host: vkCreateSwapchainKHR(...)
+    Host-->>App: VkSwapchainKHR handle
+
+    App->>Proxy: vkCreateShaderModule(device, spvCode, spvSize, ...)
+    Proxy->>Proxy: Copy SPIR-V bytecode<br/>from guest memory to host
+    Proxy->>Host: vkCreateShaderModule(...)
+    Host->>GFX: Compile shaders
+    GFX->>GPU: Upload shader programs
+    Host-->>App: VkShaderModule handles
+
+    App->>Proxy: vkCreateGraphicsPipelines(device, pipelineInfo, ...)
+    Proxy->>Host: vkCreateGraphicsPipelines(...)
+    Host-->>App: VkPipeline handle
+```
+
+Notice the proxy's marshalling work:
+- **Struct pointers** (like `VkInstanceCreateInfo*`): the proxy must read the struct from guest memory using `ToHostAddr()` and copy or translate it for the host
+- **Stack pointers** (like `&priority` in queue creation): these point into the guest ARM64 stack, which exists in the guest address space — the proxy converts the address
+- **Opaque handles** (like `ANativeWindow*`): these are host-side pointers passed through without conversion
+- **Bulk data** (like SPIR-V bytecode): copied from guest memory to host memory before passing to the host Vulkan driver
+
+### Phase 4: The Render Loop — Every Frame
+
+Each frame, the app records Vulkan commands and submits them to the GPU:
+
+```mermaid
+sequenceDiagram
+    participant App as ARM64 App
+    participant JIT as JIT-translated code
+    participant Proxy as Vulkan Proxy
+    participant GFX as GFXStream
+    participant GPU as Host GPU
+
+    Note over App,GPU: Every frame (~16ms at 60fps)
+
+    App->>Proxy: vkWaitForFences(fence, timeout=MAX)
+    Proxy->>GFX: Wait for GPU completion
+    GFX-->>Proxy: Fence signaled
+    Proxy-->>App: VK_SUCCESS
+
+    App->>Proxy: vkAcquireNextImageKHR(swapchain, ...)
+    Proxy-->>App: image_index
+
+    App->>JIT: Struct initialization (clear color, render pass begin)<br/>ADD, STR, MOV instructions → translated to x86_64
+    
+    App->>Proxy: vkBeginCommandBuffer(cmdBuffer)
+    App->>Proxy: vkCmdBeginRenderPass(cmdBuffer, renderPassInfo)
+    App->>Proxy: vkCmdBindPipeline(cmdBuffer, pipeline)
+    App->>Proxy: vkCmdDraw(cmdBuffer, 3, 1, 0, 0)
+    Note over Proxy: 3 vertices, 1 instance<br/>No vertex buffer needed —<br/>positions hardcoded in shader
+    App->>Proxy: vkCmdEndRenderPass(cmdBuffer)
+    App->>Proxy: vkEndCommandBuffer(cmdBuffer)
+
+    App->>Proxy: vkQueueSubmit(queue, submitInfo, fence)
+    Proxy->>GFX: Submit command buffer
+    GFX->>GPU: Execute render pass
+    GPU->>GPU: Run vertex shader (3 vertices)<br/>Run fragment shader (per pixel)<br/>Write to swapchain image
+    GFX-->>Proxy: Submitted
+
+    App->>Proxy: vkQueuePresentKHR(queue, presentInfo)
+    Proxy->>GFX: Present swapchain image
+    GFX->>GPU: Display frame
+    Note over GPU: Triangle appears on screen
+```
+
+The key `vkCmdDraw(cmdBuffer, 3, 1, 0, 0)` call draws 3 vertices with 1 instance. The GPU runs the vertex shader three times (with `gl_VertexIndex` = 0, 1, 2), which indexes into the hardcoded position and color arrays in the shader to produce the triangle's three corners.
+
+### Phase 5: What Gets Translated vs What Gets Proxied
+
+Not all code in the app takes the same path through Digitalis. Here's a breakdown:
+
+| Code Type | Example | Digitalis Path | Speed |
+|-----------|---------|---------------|-------|
+| Arithmetic & logic | `if (state->initialized)` | **JIT** — translated to native x86_64 | Near-native |
+| Memory access | `state->instance = instance` | **JIT** — `movq` with memory operand | Near-native |
+| Control flow | `while (true)`, `if/else` | **JIT** — `testq` + `jcc` | Near-native |
+| Struct initialization | `VkSubmitInfo info = {}` | **JIT** — series of `movq`/`movl` stores | Near-native |
+| Vulkan API calls | `vkCmdDraw(...)` | **Proxy** — marshal args, call host | Small overhead |
+| libc calls | `malloc()`, `memcpy()` | **Proxy** — forward to host libc | Small overhead |
+| Logging | `__android_log_print()` | **Proxy** — forward to host logging | Small overhead |
+| System calls | `epoll_wait()` (via ALooper) | **Interpreter** — syscall emulation | Moderate overhead |
+| Memory barriers | `DMB ISH` | **Interpreter** — often no-op on x86 TSO | Negligible |
+
+The vast majority of instructions in the render loop are struct field writes and Vulkan API calls — both fast paths. System calls only happen during event polling, not during rendering.
+
+### Tracing a Single Instruction Through the System
+
+To make this concrete, let's trace one ARM64 instruction from the app's initialization code:
+
+```
+ARM64 source:  state->device = device;    // Store VkDevice handle
+ARM64 asm:     STR X1, [X0, #24]          // Store X1 at address X0+24
+```
+
+**Step 1 — Decoder** reads 4 bytes at the current PC. Bits[28:25] = `x1x0` → Loads and Stores group. Further bits identify this as `STR` (store register) with immediate offset.
+
+**Step 2 — SemanticsPlayer** calls `LiteTranslator::Store()` with: source=X1, base=X0, offset=24, size=64-bit.
+
+**Step 3 — Allocator** maps guest registers to host registers:
+- X0 is already mapped to (say) RSI
+- X1 is already mapped to (say) RDI
+
+**Step 4 — Code emitter** generates:
+```
+x86_64:  mov [rsi + 24], rdi       ; 48 89 7E 18
+```
+
+With fault recovery code in case the address is invalid (jumps to `ExitGeneratedCode`).
+
+**Step 5 — InstallTranslated()** stores this (along with the rest of the region) in the TranslationCache at the guest PC address.
+
+**Step 6 — Next time** this address is reached, the cached x86_64 code runs directly — no decoding, no allocation, no emission. Just `mov [rsi + 24], rdi`.
+
+### The Complete Journey: From Tap to Triangle
+
+```mermaid
+graph TD
+    TAP["User taps app icon"] --> ART["ART detects arm64-v8a"]
+    ART --> NB["NativeBridge loads Digitalis"]
+    NB --> GUEST["Guest environment created<br/><i>linker64, libc, app .so loaded</i>"]
+    GUEST --> MAIN["android_main() enters dispatch loop"]
+
+    MAIN --> POLL["ALooper_pollOnce()"]
+    POLL -->|"syscall path"| EPOLL["epoll_wait via syscall emulation"]
+    EPOLL --> WINDOW["APP_CMD_INIT_WINDOW received"]
+    WINDOW --> VINIT["vulkan_init()"]
+
+    VINIT --> VK1["vkCreateInstance<br/><i>proxy → host Vulkan</i>"]
+    VK1 --> VK2["vkCreateDevice<br/><i>proxy → host Vulkan</i>"]
+    VK2 --> VK3["vkCreateSwapchain<br/><i>proxy → host Vulkan</i>"]
+    VK3 --> VK4["Load shaders<br/><i>SPIR-V copied guest → host</i>"]
+    VK4 --> VK5["vkCreateGraphicsPipelines<br/><i>proxy → host → GPU</i>"]
+
+    VK5 --> LOOP["Render loop begins"]
+    LOOP --> FENCE["vkWaitForFences<br/><i>proxy → wait for GPU</i>"]
+    FENCE --> ACQ["vkAcquireNextImageKHR"]
+    ACQ --> RECORD["Record command buffer<br/><i>struct init via JIT</i>"]
+    RECORD --> DRAW["vkCmdDraw 3 vertices<br/><i>proxy → host command buffer</i>"]
+    DRAW --> SUBMIT["vkQueueSubmit<br/><i>proxy → GFXStream → GPU</i>"]
+    SUBMIT --> PRESENT["vkQueuePresentKHR"]
+    PRESENT --> TRIANGLE["Triangle on screen"]
+    TRIANGLE --> LOOP
+```
+
+This is the complete path: a tap on the screen triggers process creation, NativeBridge interception, guest environment setup, JIT compilation of the main loop, syscall emulation for event polling, proxy library calls for Vulkan initialization and rendering, and finally GFXStream forwards the draw commands to the host GPU — which renders a colored triangle on screen at 60fps.
+
+---
 
 Digitalis adds ARM64 support to Berberis, but Berberis was originally built to translate **RISC-V to x86_64**. Understanding the upstream RISC-V backend helps you see what Digitalis reuses, what it replaces, and where the two approaches diverge.
 
