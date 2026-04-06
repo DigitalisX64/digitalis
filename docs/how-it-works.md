@@ -79,3 +79,81 @@ Digitalis combines both strategies. The JIT compiler (called the "Lite Translato
 The interpreter handles the rest: system calls (which need special emulation), complex SIMD instructions (pairwise operations, widening, cross-lane reductions), and any instruction the JIT hasn't implemented yet. When the JIT encounters an instruction it can't translate, it marks that location for interpreter handling, and the dispatch loop routes future executions of that address to the interpreter.
 
 This dual approach gives Digitalis near-native performance for the common case while maintaining correctness for the full ARM64 instruction set.
+
+---
+
+## 3. ARM64 and x86_64 — Two Different Worlds
+
+To understand what Digitalis translates, you need to know what ARM64 and x86_64 binaries look like and why they're so different.
+
+### What's Inside a Native Library
+
+Both ARM64 and x86_64 native libraries on Android use the **ELF** (Executable and Linkable Format) container. An ELF file has a header describing the target architecture, followed by sections: `.text` (executable code), `.data` (initialized data), `.bss` (uninitialized data), and symbol tables that map function names to addresses. The container format is the same on both architectures — what differs is the machine code inside `.text`.
+
+### How Android Packages Them
+
+Android APKs include native libraries under architecture-specific directories: `lib/arm64-v8a/` for ARM64 and `lib/x86_64/` for x86_64. Most apps ship both, but some — particularly games and Vulkan-based apps — ship only `lib/arm64-v8a/`. When an x86_64 emulator encounters an APK with only ARM64 libraries, it has no native code it can run. This is where Digitalis steps in.
+
+### ARM64 Instruction Encoding
+
+ARM64 (also called AArch64) uses **fixed-length instructions**: every instruction is exactly 4 bytes (32 bits). Different bit positions within those 32 bits encode the operation type, register numbers, and immediate values. Because every instruction is the same size, you always know where the next instruction starts — just add 4 bytes. This makes decoding straightforward.
+
+### x86_64 Instruction Encoding
+
+x86_64 uses **variable-length instructions**: anywhere from 1 to 15 bytes per instruction. An instruction can have optional prefix bytes, one or more opcode bytes, a ModR/M byte (specifying register/memory operands), a SIB byte (for complex addressing), displacement bytes, and immediate bytes. You can't find the start of the next instruction without fully decoding the current one.
+
+### Why This Matters for Digitalis
+
+Digitalis reads ARM64 instructions (input) and generates x86_64 instructions (output). Decoding the ARM64 input is easy thanks to fixed-width encoding. But *generating* x86_64 output is more complex — each instruction must be assembled from variable-length components with the correct prefix, opcode, and operand encoding bytes. A single ARM64 instruction often becomes 1 to 5 x86_64 instructions.
+
+### Going Deeper
+
+#### ARM64 Encoding Anatomy
+
+Consider `ADD X1, X2, X3` — a 64-bit register add. As a 32-bit word, the bits break down as:
+
+| Bits | Field | Value | Meaning |
+|------|-------|-------|---------|
+| [31] | sf | 1 | 64-bit operation |
+| [30] | op | 0 | ADD (not SUB) |
+| [29] | S | 0 | Don't set flags |
+| [28:24] | — | 01011 | Add/subtract shifted register group |
+| [23:22] | shift | 00 | No shift |
+| [20:16] | Rm | 00011 | Source register X3 |
+| [15:10] | imm6 | 000000 | Shift amount 0 |
+| [9:5] | Rn | 00010 | Source register X2 |
+| [4:0] | Rd | 00001 | Destination register X1 |
+
+There is no single contiguous "opcode" field. ARM64 uses **hierarchical bit-field dispatch**: the top-level encoding group is determined by bits[28:25] (called `op0`), and sub-groups are identified by further bit checks within each group. In Digitalis's decoder (`decoder.h`), this maps directly to a switch on `GetBits<25, 4>()`:
+
+- `100x` → Data Processing (Immediate)
+- `101x` → Branches, Exceptions, System
+- `x1x0` → Loads and Stores
+- `x101` → Data Processing (Register) — where our ADD lives
+- `x111` → SIMD and Floating Point
+
+#### x86_64 Encoding Anatomy
+
+The same `ADD X1, X2, X3` in x86_64 requires:
+
+- **REX.W prefix** (0x48): indicates 64-bit operand size
+- **Opcode** (0x01): ADD r/m64, r64
+- **ModR/M byte**: encodes that the source is one register and the destination is another
+
+The JIT's Assembler class handles this encoding via methods like `as_.Addq()`, which assembles the correct byte sequence automatically.
+
+#### Register Naming
+
+ARM64 and x86_64 use different register naming conventions:
+
+| ARM64 | Size | x86_64 Equivalent | Size |
+|-------|------|--------------------|------|
+| X0-X30 | 64-bit GP | RAX, RBX, RCX, ... | 64-bit GP |
+| W0-W30 | 32-bit (lower half of X) | EAX, EBX, ECX, ... | 32-bit (lower half) |
+| V0-V31 | 128-bit SIMD | XMM0-XMM15 | 128-bit SIMD |
+
+ARM64 has 31 general-purpose registers plus SP; x86_64 has only 16. This mismatch is one of the central challenges in translation (covered in [Section 8](#8-register-allocation)).
+
+#### Endianness and Alignment
+
+Both architectures use little-endian byte ordering on Android. However, ARM64 requires aligned memory access for certain instructions (e.g., `LDP`/`STP` require 8-byte alignment), while x86_64 handles unaligned access transparently (with a performance penalty). The translator must account for this when generating memory access code.
