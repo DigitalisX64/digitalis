@@ -186,8 +186,8 @@ graph TD
 
     subgraph JNI["JNI Entry"]
         JAVA["Java calls native method"]
-        TRAMP["GetTrampolineWithJNICallType()"]
-        WRAP["WrapGuestJNIFunction()<br/><i>x86_64 ABI &#8594; ARM64 ABI</i>"]
+        TRAMP["getTrampolineWithJNICallType()"]
+        WRAP["WrapGuestJNIFunction()<br/><i>x86_64 ABI → ARM64 ABI</i>"]
         GCALL["GuestCall::RunResInt64()"]
         JAVA --> TRAMP --> WRAP --> GCALL
     end
@@ -208,28 +208,29 @@ graph TD
         DECODE_J["Decoder reads 4-byte instruction"]
         BITFIELD["Bit-field dispatch<br/><i>op0 = bits 28:25</i>"]
         SEM_J["SemanticsPlayer bridges to LiteTranslator"]
-        ALLOC["Allocator maps guest regs &#8594; host regs<br/><i>13 GP register pool</i>"]
+        ALLOC["Allocator maps guest regs → host regs<br/><i>13 GP register pool</i>"]
         EMIT["Emit x86_64 machine code"]
         REGION{"Region end?<br/><i>branch / SVC / reg pressure</i>"}
         INSTALL["InstallTranslated() into cache"]
+        EXEC_J["Execute translated x86_64 code"]
         DECODE_J --> BITFIELD --> SEM_J --> ALLOC --> EMIT --> REGION
         REGION -->|No| DECODE_J
         REGION -->|Yes| INSTALL
+        INSTALL --> EXEC_J
     end
 
     subgraph Interp["Interpreter Path"]
         DECODE_I["Decoder reads 4-byte instruction"]
         SEM_I["SemanticsPlayer bridges to Interpreter"]
-        UPDATE["Update ThreadState directly"]
-        FAULT["FaultyLoad / FaultyStore<br/><i>safe memory access</i>"]
+        UPDATE["Update ThreadState directly<br/><i>FaultyLoad/FaultyStore for memory ops</i>"]
         SVC_CHECK{"SVC instruction?"}
-        DECODE_I --> SEM_I --> UPDATE --> FAULT --> SVC_CHECK
+        DECODE_I --> SEM_I --> UPDATE --> SVC_CHECK
         SVC_CHECK -->|No| DECODE_I
     end
 
     subgraph Syscall["Syscall Emulation"]
         RSYS["RunGuestSyscall()"]
-        XLATE_NUM["Translate syscall number<br/><i>ARM64 &#8594; x86_64</i>"]
+        XLATE_NUM["Translate syscall number<br/><i>ARM64 → x86_64</i>"]
         XLATE_ARGS["Convert args and structs"]
         HOST_KERN["Host kernel syscall"]
         RSYS --> XLATE_NUM --> XLATE_ARGS --> HOST_KERN
@@ -238,9 +239,9 @@ graph TD
     subgraph ProxyLib["Proxy Libraries — API Calls"]
         GUEST_API["Guest calls API<br/><i>e.g. vkCreateInstance()</i>"]
         PROXY["Proxy library<br/><i>libberberis_proxy_libvulkan.so</i>"]
-        MARSHAL["Marshal ARM64 args &#8594; x86_64"]
+        MARSHAL["Marshal ARM64 args → x86_64"]
         HOST_LIB["Host library"]
-        GPU["GFXStream VkDecoder &#8594; Host GPU"]
+        GPU["GFXStream VkDecoder → Host GPU"]
         GUEST_API --> PROXY --> MARSHAL --> HOST_LIB --> GPU
     end
 
@@ -256,11 +257,11 @@ graph TD
     GCALL --> RPC
     RUN -->|"Not translated"| DECODE_J
     RUN -->|"Interpreted"| DECODE_I
-    INSTALL --> RUN
+    EXEC_J --> RUN
     SVC_CHECK -->|Yes| RSYS
     HOST_KERN --> UPDATE
-    EMIT -->|"API call"| GUEST_API
-    GPU --> EMIT
+    EXEC_J -->|"API call"| GUEST_API
+    GPU --> EXEC_J
     MODIFY --> RPC
 ```
 
@@ -302,7 +303,7 @@ The NativeBridge integration is implemented in the `NdktNativeBridge` class, whi
 
 - **`Initialize()`**: one-time setup that launches the guest loader thread and registers the translation infrastructure
 - **`LoadLibrary()` / `LoadLibraryExt()`**: loads ARM64 .so files into the guest address space, falling back to host libraries when needed
-- **`GetTrampolineWithJNICallType()`**: creates x86_64 wrapper functions for guest JNI methods. The wrapper uses `WrapGuestJNIFunction()` to generate code that marshals arguments from the x86_64 ABI (RDI, RSI, RDX...) into the ARM64 ABI (X0-X7), calls `GuestCall::RunResInt64()` to enter guest execution, and converts the return value back.
+- **`native_bridge_getTrampolineWithJNICallType()`**: creates x86_64 wrapper functions for guest JNI methods. The wrapper uses `WrapGuestJNIFunction()` to generate code that marshals arguments from the x86_64 ABI (RDI, RSI, RDX...) into the ARM64 ABI (X0-X7), calls `GuestCall::RunResInt64()` to enter guest execution, and converts the return value back.
 
 Digitalis adds several ARM64-specific enhancements to the NativeBridge integration:
 
@@ -411,11 +412,12 @@ When JIT-compiled code reaches a branch to an address that hasn't been translate
 
 #### Condition Flags (NZCV)
 
-ARM64 tracks four condition flags after arithmetic operations: **N**egative, **Z**ero, **C**arry, and **O**verflow (NZCV). x86_64 has similar flags but stores them in a different format. The JIT translates between them using a four-instruction sequence:
+ARM64 tracks four condition flags after arithmetic operations: **N**egative, **Z**ero, **C**arry, and **O**verflow (NZCV). x86_64 has similar flags but stores them in a different format. The JIT translates between them using a multi-instruction sequence:
 
 1. **LAHF**: loads x86_64 flags (Sign, Zero, Carry) into the AH register
 2. **SETO**: captures the Overflow flag into a separate byte
 3. **AND + MOVW**: combines and packs them into ARM64's NZCV layout
+4. (For SUB/CMP: an additional **XORL** inverts the carry flag, since ARM64 uses an inverted borrow convention compared to x86_64)
 
 This is implemented in `EmitStoreArmNZCV()` in `lite_translator.h`.
 
@@ -444,7 +446,7 @@ Normally, when a JIT-compiled region finishes, control returns to the `ExecuteGu
 
 The interpreter implements the `SemanticsListener` interface, just like the JIT, but instead of generating code, it directly updates the `ThreadState` registers and memory.
 
-**`InterpretInsn()`** handles a single instruction: decode, execute, advance PC. **`InterpretBatch()`** is a Digitalis optimization that processes multiple instructions in a loop, reusing the Decoder and Interpreter objects instead of reconstructing them for each instruction. This reduces setup/teardown overhead by roughly 3x compared to per-instruction interpretation.
+**`InterpretInsn()`** handles a single instruction: decode, execute, advance PC. **`InterpretBatch()`** is a Digitalis optimization that processes multiple instructions in a loop, reusing the Decoder and Interpreter objects instead of reconstructing them for each instruction. Object construction accounts for roughly 60% of per-instruction cost, so batching yields around a 2.5x speedup.
 
 All memory accesses in the interpreter use **`FaultyLoad`** and **`FaultyStore`** instead of raw `memcpy`. This is essential: if an ARM64 instruction accesses invalid memory, the fault must be routed to the guest's signal handler, not the host's. Raw `memcpy` would cause a host SIGSEGV that bypasses the guest signal handling entirely. The Faulty variants let the runtime intercept the fault and deliver it as an ARM64 signal.
 
@@ -550,9 +552,9 @@ stateDiagram-v2
     NotTranslated --> Translating : JIT starts
     Translating --> LiteTranslated : JIT succeeds
     Translating --> Interpreted : JIT fails
-    NotTranslated --> Interpreted : marked for interpreter
-    LiteTranslated --> HeavyOptimized : gear-up threshold
 ```
+
+(Upstream Berberis also supports a `LiteTranslated → HeavyOptimized` gear-up transition via `kGearSwitchThreshold`, but this is not used in the ARM64 backend.)
 
 When translated code is cached, it runs repeatedly without any translation overhead. This is why JIT compilation pays off even though it's expensive the first time: hot loops execute the cached native code thousands of times.
 
@@ -680,7 +682,7 @@ graph TD
 
 Digitalis provides several tracing and logging mechanisms:
 
-- **`TRACE(...)` macro**: conditional tracing controlled by the `BERBERIS_TRACING` environment variable. Output includes PID and TID for multi-threaded debugging. Written via atomic `write()` calls for thread safety.
+- **`TRACE(...)` macro**: conditional tracing controlled by the `BERBERIS_TRACING` environment variable (or the `berberis.tracing` Android system property). Output includes PID and TID for multi-threaded debugging. Written via atomic `write()` calls for thread safety.
 - **`DIGITALIS_LOG(...)` macro**: Digitalis-specific debug-level Android log with tag "berberis". Defined in `native_bridge.cc` and used for NativeBridge operations (namespace creation, library loading, etc.).
 - **`TRACE_AND_ALOGD()` macro**: combined trace file output + Android logcat output in a single call.
 - **Inline profiling**: `g_translation_stats` tracks JIT compilation statistics, JIT break logging records when regions end early, and the dispatch watchdog detects potential infinite loops.
@@ -710,7 +712,7 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **JIT (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region.
 
-**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~3x speedup), and CRC32 instruction support.
+**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~2.5x speedup), and CRC32 instruction support.
 
 **Syscall Emulation.** ARM64-to-x86_64 syscall number mapping, the futex BSS workaround for Bionic's pthread_mutex implementation, pthread_once/call_once deadlock fixups for guest-host threading interaction, and BSS partial-page zeroing in `sys_mman_emulation.cc`.
 
