@@ -317,8 +317,8 @@ The same `ADD X1, X2, X3` in x86_64 requires:
 - **ModR/M byte**: encodes that the source is one register and the destination is another
 
 ```
-Byte layout:  48  01  D1
-              │   │   └── ModR/M: mod=11 (register), reg=010 (rdx), r/m=001 (rcx)
+Byte layout:  48  01  F1
+              │   │   └── ModR/M: mod=11 (register), reg=110 (rsi), r/m=001 (rcx)
               │   └────── Opcode: ADD r/m64, r64
               └────────── REX.W: 64-bit operand size
 ```
@@ -1466,7 +1466,7 @@ This section traces a real app — `hello-vulkan`, the original Digitalis proof 
 
 ### What the App Does
 
-The app is a pure C++ NativeActivity with ~400 lines of code. It initializes Vulkan, creates a graphics pipeline with embedded SPIR-V shaders, and renders a triangle with red/green/blue vertices in a loop. The triangle's vertex positions and colors are hardcoded in the vertex shader — there's no vertex buffer, no uniform buffers, no textures. This makes it the simplest possible Vulkan app while still exercising the full translation pipeline.
+The app is a pure C++ NativeActivity with ~550 lines of code. It initializes Vulkan, creates a graphics pipeline with embedded SPIR-V shaders, and renders a triangle with red/green/blue vertices in a loop. The triangle's vertex positions and colors are hardcoded in the vertex shader — there's no vertex buffer, no uniform buffers, no textures. This makes it the simplest possible Vulkan app while still exercising the full translation pipeline.
 
 ### Phase 1: App Launch and NativeBridge Interception
 
@@ -1771,7 +1771,7 @@ graph TD
         SUP_GS["guest_state/<br/><i>CPUState struct definitions<br/>per architecture</i>"]
         SUP_GSA["guest_state_accessor/<br/><i>Debug/crash reporting<br/>reads guest registers</i>"]
         SUP_VDSO["vdso/<br/><i>Guest-side runtime support<br/>native_bridge_trace()<br/>native_bridge_intercept_symbol()</i>"]
-        SUP_API["android_api/<br/><i>26 proxy library stubs<br/>with trampolines</i>"]
+        SUP_API["android_api/<br/><i>21 proxy library stubs<br/>with trampolines</i>"]
     end
 
     subgraph Impl_Layer["frameworks/libs/binary_translation/native_bridge/<br/><i>Berberis/Digitalis Implementation</i>"]
@@ -1838,9 +1838,9 @@ ART manages the NativeBridge lifecycle through a state machine:
 ```mermaid
 stateDiagram-v2
     [*] --> kNotSetup
-    kNotSetup --> kOpened : LoadNativeBridge()<br/>dlopen + dlsym NativeBridgeItf
-    kOpened --> kPreInitialized : PreInitializeNativeBridge()<br/>create code cache dir<br/>(elevated privileges)
-    kPreInitialized --> kInitialized : InitializeNativeBridge()<br/>calls bridge's initialize()<br/>(per-app process, after fork)
+    kNotSetup --> kOpened : LoadNativeBridge()
+    kOpened --> kPreInitialized : PreInitializeNativeBridge()
+    kPreInitialized --> kInitialized : InitializeNativeBridge()
     kOpened --> kClosed : Error
     kPreInitialized --> kClosed : Error
     kInitialized --> kClosed : UnloadNativeBridge()
