@@ -537,7 +537,7 @@ sequenceDiagram
 
 When an ARM64 APK launches on an x86_64 emulator, the Android framework detects that the app's native libraries are in `lib/arm64-v8a/` — an architecture the host can't run natively. Android checks if a NativeBridge is configured. On a Digitalis-enabled emulator, the system property `ro.dalvik.vm.native.bridge` is set to `libberberis_arm64.so`, telling Android to load Digitalis as the translation layer.
 
-Once loaded, Digitalis's guest loader creates an ARM64 execution environment inside the x86_64 process. It uses **TinyLoader**, a minimal ELF loader, to load the ARM64 versions of critical system files: `linker64` (the ARM64 dynamic linker), `libc.so`, and eventually the app's own native libraries. These ARM64 binaries are loaded into a **guest address space** tracked by `GuestMapShadow`, which maps guest addresses to host memory.
+Once loaded, Digitalis's guest loader creates an ARM64 execution environment inside the x86_64 process. It uses **TinyLoader**, a minimal ELF loader, to bootstrap three files: `app_process` (the Android process entry point), the guest vDSO, and `linker64` (the ARM64 dynamic linker). Once `linker64` is running (under translation), it loads `libc.so`, the app's native libraries, and everything else through normal dynamic linking. These ARM64 binaries are loaded into a **guest address space** tracked by `GuestMapShadow`, which maps guest addresses to host memory.
 
 The guest ARM64 linker takes over symbol resolution within the guest world. When it needs to load a library, Digitalis intercedes: it first tries loading from the ARM64 guest paths, and if the library isn't there (because it's a system library that only exists as an x86_64 host version), it loads the corresponding proxy library instead. These proxy libraries live at `/system/lib64/arm64/` and bridge guest API calls to host implementations.
 
@@ -597,7 +597,7 @@ Within each group, further bits narrow down the specific instruction. For exampl
 
 #### The X31 Special Case
 
-ARM64's register 31 is context-dependent: in some instructions it means **SP** (the stack pointer), and in others it means **ZR** (the zero register, which always reads as zero and discards writes). The SemanticsPlayer's `GetReg()` method handles this based on the instruction context, so the JIT and interpreter don't need to worry about it.
+ARM64's register 31 is context-dependent: in some instructions it means **SP** (the stack pointer), and in others it means **ZR** (the zero register, which always reads as zero and discards writes). The SemanticsPlayer handles this with two distinct methods: `GetRegOrZero()` (returns zero for register 31) and `GetRegOrSp()` (returns the stack pointer for register 31). The caller chooses which method based on the instruction semantics, so the JIT and interpreter don't need to worry about it.
 
 #### Instruction Categories
 
@@ -666,16 +666,18 @@ graph TD
 
 A region has one entry point (the starting PC) and continues until the compiler hits a reason to stop:
 
-- **Forward branch or call**: the target may not be compiled yet, so the region ends and control returns to the dispatch loop
-- **SVC instruction** (system call): requires special handling by the interpreter
+- **Unconditional branch or call**: the region ends because the target may not be compiled yet. (Conditional forward branches do *not* end the region — the JIT emits the taken-path exit and continues compiling the fall-through path.)
+- **Backward conditional branch**: ends the region to prevent infinite loops without signal checks
 - **Register pressure**: the register allocator is running low on available host registers (see `IsGpRegPoolLow()`)
 - **End of basic block**: any other termination condition
+
+Note: **SVC (system call)** is handled differently — it sets `success_ = false` (a translation failure), not a normal region end. This triggers the partial-success path described below.
 
 The infrastructure for **backward branch inlining** exists — `RegisterGuestPcLabel` creates a label at each guest PC, and `TryLocalBackwardBranch` could jump to it — but this is currently disabled because it would trap the CPU in tight loops without checking for pending signals between iterations.
 
 #### Trampolines
 
-When JIT-compiled code reaches a branch to an address that hasn't been translated yet, it can't just jump there. Instead, it jumps to a small **trampoline** — a code stub that saves the current state and returns control to `ExecuteGuest()`, which then handles the new address (either by JIT-compiling it or sending it to the interpreter).
+When JIT-compiled code reaches a branch to an address that hasn't been translated yet, it can't just jump there directly. With **direct dispatch** enabled (the default), the JIT emits code that looks up the target address in the translation cache and jumps to whatever code pointer is stored there — this might be already-translated code, a `kEntryNotTranslated` handler that triggers JIT compilation, or a `kEntryInterpret` handler. Control only returns to `ExecuteGuest()` when signals are pending or execution stops.
 
 #### Condition Flags (NZCV)
 
@@ -686,7 +688,7 @@ graph LR
     FLAGS["x86_64 FLAGS register<br/><i>SF, ZF, CF, OF</i>"]
     FLAGS -->|"LAHF"| AH["AH register<br/><i>SF, ZF, CF</i>"]
     FLAGS -->|"SETO"| OV["Overflow byte<br/><i>OF</i>"]
-    AH -->|"AND + MOVW"| NZCV["ARM64 NZCV<br/><i>bits 31:28</i>"]
+    AH -->|"AND + MOVW"| NZCV["Packed NZCV<br/><i>N=bit15 Z=bit14 C=bit8 V=bit0</i>"]
     OV -->|"AND + MOVW"| NZCV
     NZCV -->|"SUB/CMP only:<br/>XORL inverts C"| NZCV_FINAL["Final NZCV<br/><i>stored in ThreadState</i>"]
     NZCV -->|"ADD/other"| NZCV_FINAL
@@ -714,7 +716,7 @@ When the JIT encounters an instruction it can't translate (e.g., a complex SIMD 
 
 #### Partial-Success Compilation
 
-If the JIT fails partway through a region (say, instruction 8 of 12 is unsupported), it doesn't discard all the work. `TryLiteTranslateAndInstallRegion()` re-translates just the successful prefix (instructions 1-7) and installs that in the cache. The unsupported instruction at position 8 is marked for the interpreter. This maximizes the amount of code that runs as native x86_64.
+If the JIT fails partway through a region (say, instruction 8 of 12 is unsupported), it doesn't discard all the work. `TryLiteTranslateAndInstallRegion()` re-translates just the successful prefix (instructions 1-7) and installs that in the cache. The unsupported instruction at position 8 will be marked for the interpreter *lazily* — when the translated prefix finishes executing and the dispatch loop encounters position 8 as `kEntryNotTranslated`, it tries to JIT it, fails on the first instruction, and then marks it as `kInterpreted`. This maximizes the amount of code that runs as native x86_64.
 
 #### Direct Dispatch (Region Chaining)
 
@@ -918,7 +920,7 @@ Digitalis includes several hard-won fixes for subtle syscall issues:
 
 **BSS partial-page zeroing.** In `sys_mman_emulation.cc`, when a file-backed mmap ends in the middle of a page, Digitalis explicitly zeroes the remainder of that page. This ensures `.bss` data (which follows `.data` in the same page) starts clean.
 
-**pthread_once / call_once deadlock fixups.** When guest and host threading primitives interact (guest code calling host libc, which uses its own mutexes), deadlocks can occur. Digitalis includes targeted fixes to break these cycles.
+**Threading avoidance patterns.** Guest and host threading primitives can interact in problematic ways (e.g., guest code calling host libc, which uses its own mutexes). Digitalis and Berberis avoid constructs like `pthread_once` in critical paths to prevent potential deadlocks.
 
 ---
 
@@ -940,7 +942,7 @@ graph TD
     E -->|"kEntryStop"| F["Exit dispatch loop"]
     E -->|"kEntryNotTranslated"| G["Trampoline triggers JIT<br/>TranslateRegion"]
     E -->|"kEntryInterpret"| H["Trampoline invokes<br/>InterpretBatch"]
-    E -->|"kEntryTranslating"| I["Another thread is<br/>translating — wait"]
+    E -->|"kEntryTranslating"| I["Another thread is<br/>translating — retry"]
     E -->|"Translated code address"| J["berberis_RunGeneratedCode<br/><i>execute native x86_64</i>"]
     G --> K["Code installed in cache"]
     K --> A
@@ -1119,9 +1121,9 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~2.5x speedup), and CRC32 instruction support.
 
-**Syscall Emulation.** ARM64-to-x86_64 syscall number mapping, the futex BSS workaround for Bionic's pthread_mutex implementation, pthread_once/call_once deadlock fixups for guest-host threading interaction, and BSS partial-page zeroing in `sys_mman_emulation.cc`.
+**Syscall Emulation.** ARM64-to-x86_64 syscall number mapping, the futex BSS workaround for Bionic's pthread_mutex implementation, and BSS partial-page zeroing in `sys_mman_emulation.cc`.
 
-**Guest Loader.** ARM64-specific namespace path configuration (`/system/lib64/arm64/`), vDSO whitelist for cross-namespace visibility, libc.so mapping protection via `GuestMapShadow`, and guest linker namespace fallback for incomplete ARM64 configs.
+**Guest Loader.** ARM64-specific namespace path configuration (`/system/lib64/arm64/`), vDSO whitelist for cross-namespace visibility, and guest linker namespace fallback for incomplete ARM64 configs. (The libc.so mapping protection via `GuestMapShadow` is upstream Berberis infrastructure that Digitalis relies on.)
 
 **Product Configuration.** `sdk_phone64_x86_64_digitalis.mk` — the emulator product definition that enables ARM64 translation, sets the NativeBridge system property, and includes all proxy libraries.
 
@@ -1245,26 +1247,26 @@ graph LR
 
 The assembler handles all the complexity of x86_64 encoding: REX prefixes for 64-bit operations, ModR/M bytes for register/memory operands, SIB bytes for complex addressing, and choosing between 8-bit, 32-bit, and 64-bit immediates.
 
-**`MacroAssembler`** (`code_gen_lib/`) sits on top of the raw assembler and provides higher-level patterns: function prologues/epilogues, label-based jumps (resolved to relative offsets when the code is finalized), and common multi-instruction sequences.
+**`MacroAssembler`** (`intrinsics/all_to_x86_64/`) sits on top of the raw assembler and provides higher-level patterns: function prologues/epilogues and common multi-instruction sequences. Label-based jumps are a feature of the base `Assembler` class itself (`assembler/common.h`), resolved to relative offsets when the code is finalized. The `code_gen_lib/` directory provides additional emission helpers like `EmitDirectDispatch` and `EmitSyscall`.
 
 ### Executable Memory: From Bytes to Runnable Code
 
-Generated bytes aren't useful unless the CPU can execute them. Modern operating systems mark memory pages as either writable (for data) or executable (for code) — but not both simultaneously (a security feature called W^X or "write XOR execute").
+Generated bytes aren't useful unless the CPU can execute them. Modern operating systems enforce **W^X** ("write XOR execute") — memory pages can be either writable or executable, but not both simultaneously. This is a security feature that prevents code injection attacks.
 
-The **`exec_region/`** directory manages executable memory:
+The **`exec_region/`** directory solves this with a **dual-mapping** technique: it creates a `memfd` (anonymous file in memory) and maps it into the process **twice** at different addresses — once as read+write (for the JIT to write generated code) and once as read+execute (for the CPU to run it). Both mappings see the same underlying memory, so writes through the R+W view are immediately visible through the R+X view.
 
 ```mermaid
 graph TD
-    A["JIT generates x86_64 bytes<br/>into a temporary buffer"] --> B["Request executable region<br/>from code pool"]
-    B --> C["exec_region allocates pages<br/><i>mmap with PROT_READ | PROT_WRITE</i>"]
-    C --> D["Copy generated code<br/>into the region"]
-    D --> E["Change permissions<br/><i>mprotect to PROT_READ | PROT_EXEC</i>"]
-    E --> F["Return HostCodePiece<br/><i>pointer to executable code</i>"]
+    A["JIT generates x86_64 bytes<br/>into a temporary buffer"] --> B["Request region from code pool"]
+    B --> C["exec_region provides two views<br/>of the same memfd"]
+    C --> D["Write code through R+W mapping"]
+    D --> E["Code is immediately executable<br/>through R+X mapping<br/><i>no mprotect needed</i>"]
+    E --> F["Return HostCodePiece<br/><i>pointer to R+X view</i>"]
     F --> G["TranslationCache stores pointer<br/>at guest PC address"]
-    G --> H["berberis_RunGeneratedCode<br/>can now jump to this address"]
+    G --> H["berberis_RunGeneratedCode<br/>jumps to R+X address"]
 ```
 
-The **code pool** pre-allocates large chunks of executable memory and parcels them out to individual translated regions. This avoids the overhead of calling `mmap`/`mprotect` for every small translation. When a region is invalidated (rare), the code pool can reclaim the space.
+The **code pool** pre-allocates large `memfd`-backed regions and parcels them out to individual translated regions, avoiding per-translation system call overhead.
 
 ### Labels and Backpatching
 
@@ -1302,8 +1304,8 @@ graph TD
     end
     subgraph Finalize["4. Finalize"]
         F1["Region complete:<br/>backpatch all labels"]
-        F2["Copy to executable memory<br/>(exec_region)"]
-        F3["Set permissions R+X"]
+        F2["Write to R+W view<br/>(exec_region dual mapping)"]
+        F3["Immediately visible via R+X view"]
     end
     subgraph Cache["5. Cache"]
         C1["InstallTranslated<br/>stores HostCodePiece in<br/>TranslationCache"]
@@ -1377,52 +1379,54 @@ graph TD
 
 ### FaultyLoad / FaultyStore
 
-In the **interpreter**, every memory access uses `FaultyLoad` and `FaultyStore` instead of raw `memcpy`. These special accessors:
+In the **interpreter**, every memory access uses `FaultyLoad` and `FaultyStore` instead of raw `memcpy`. These are implemented as inline assembly with **statically registered recovery labels** — the recovery addresses are registered once during initialization via `AddFaultyMemoryAccessRecoveryCode()`, not dynamically before each access.
 
-1. **Register a recovery point** before the access — a saved state that can be restored if a fault occurs
-2. **Perform the memory access** — this might trigger a host SIGSEGV
-3. **If the access succeeds**, the recovery point is discarded
-4. **If a fault occurs**, the signal handler uses the recovery point to know which guest instruction was executing and how to unwind
+When a fault occurs during a FaultyLoad/FaultyStore:
+1. The host signal handler looks up the faulting instruction address in the recovery map
+2. It finds the matching recovery label (registered at init time)
+3. It redirects execution to the recovery code, which sets a fault flag in the return value
+4. The interpreter checks the flag and routes the fault to the guest signal handler
 
 Without these, a raw `memcpy` in the interpreter would cause a host SIGSEGV with no way to identify which guest instruction triggered it or deliver the signal to the guest handler.
 
 ### Recovery Code in JIT-compiled Regions
 
-JIT-compiled code is trickier — there's no per-instruction interpreter state to recover from. Instead, every JIT-generated load/store instruction is paired with **recovery metadata**:
+JIT-compiled code is trickier — there's no per-instruction interpreter state to recover from. Instead, every JIT-generated load/store instruction is paired with a **recovery code stub**:
 
 ```mermaid
 graph LR
     subgraph JIT_Code["JIT-Generated Code"]
-        I1["mov rcx, [rsi+24]<br/><i>@ host address 0x4000100</i>"]
+        I1["mov rcx, [rsi+16]<br/><i>@ host address 0x4000100</i>"]
         I2["add rcx, 42<br/><i>@ host address 0x4000104</i>"]
+        RS["Recovery stub @ 0x4000108<br/><i>ExitGeneratedCode(0x7000200C)</i>"]
     end
 
-    subgraph Recovery["Recovery Table"]
-        R1["0x4000100 → guest PC 0x7000200C<br/><i>if fault here, guest was at LDR</i>"]
+    subgraph Recovery["Recovery Map"]
+        R1["0x4000100 → 0x4000108<br/><i>fault addr → recovery stub addr</i>"]
     end
 
     subgraph Handler["On SIGSEGV at 0x4000100"]
-        H1["Look up 0x4000100 in recovery table"]
-        H2["Found: guest PC = 0x7000200C"]
-        H3["Set ThreadState.pc = 0x7000200C"]
-        H4["Jump to ExitGeneratedCode"]
+        H1["Look up 0x4000100 in recovery map"]
+        H2["Found: recovery stub at 0x4000108"]
+        H3["Set host RIP = 0x4000108"]
+        H4["Recovery stub runs:<br/>sets guest PC, exits generated code"]
     end
 
     I1 -.->|"fault!"| Handler
     Recovery -.-> H1
 ```
 
-When the JIT emits a load or store, it also records a recovery entry: "if a fault happens at this host address, the corresponding guest PC is X." The signal handler uses this table to map from the faulting host instruction back to the guest instruction that caused it.
+When the JIT emits a load or store, it also emits a small recovery stub that knows the corresponding guest PC. The recovery map stores `{fault_address → recovery_stub_address}`. On fault, the signal handler redirects execution to the recovery stub, which calls `ExitGeneratedCode` with the correct guest PC embedded in it.
 
 ### The Signal Delivery Chain
 
-After the fault is caught and the guest PC is identified, the signal must be delivered to the guest app in ARM64 format:
+After the fault is caught and the guest PC is identified, the signal must be delivered to the guest app. Digitalis uses a **synchronous call** approach rather than the kernel's signal-frame mechanism:
 
-1. **Convert signal info**: the host `siginfo_t` is converted to an ARM64-compatible `siginfo_t` (different struct layout)
-2. **Build signal frame**: an ARM64 signal frame is pushed onto the guest stack (register save area, return address pointing to `sigreturn`)
-3. **Set guest PC to handler**: the guest signal handler address replaces the current PC
-4. **Resume execution**: the dispatch loop runs the guest signal handler as normal ARM64 code (JIT-translated)
-5. **Signal return**: when the handler finishes, `sigreturn` restores the saved registers and resumes execution at the original fault point (or wherever the handler directed)
+1. **Save guest CPU state**: `GuestContext::Save` copies the current `CPUState` (registers, flags, PC) into a `Guest_ucontext` structure
+2. **Convert signal info**: the host `siginfo_t` fields are copied with minor fixups (e.g., `si_addr` for SIGILL/SIGFPE)
+3. **Call guest handler synchronously**: `GuestCall::RunVoid` invokes the guest's registered signal handler with the signal number, siginfo, and context as arguments — this runs as normal translated ARM64 code
+4. **Restore guest CPU state**: when the handler returns, `GuestContext::Restore` restores the (possibly modified) CPU state from the context
+5. **Resume execution**: the dispatch loop continues from wherever the restored PC points
 
 ### Pending Signals
 
@@ -1469,11 +1473,12 @@ sequenceDiagram
     ART->>NB: Load libberberis_arm64.so
     NB->>NB: Initialize()
     NB->>GL: Spawn guest thread
+    GL->>TL: Load ARM64 app_process
+    GL->>TL: Load ARM64 vDSO
     GL->>TL: Load ARM64 linker64
-    GL->>TL: Load ARM64 libc.so
-    GL->>TL: Load ARM64 libhello_digitalis.so
-    TL-->>GL: Guest address space ready
+    TL-->>GL: Initial binaries loaded
     GL->>GL: Register proxy libraries at /system/lib64/arm64/
+    Note over Linker: Guest linker loads libc.so, app .so via dlopen_ext
     GL-->>NB: Guest environment ready
     ART->>NB: Call ANativeActivity_onCreate
     NB->>NB: Create JNI trampoline<br/>(x86_64 ABI → ARM64 ABI)
@@ -1753,8 +1758,7 @@ graph TD
     subgraph Support_Layer["frameworks/libs/native_bridge_support/<br/><i>Shared Support Libraries</i>"]
         SUP_GS["guest_state/<br/><i>CPUState struct definitions<br/>per architecture</i>"]
         SUP_GSA["guest_state_accessor/<br/><i>Debug/crash reporting<br/>reads guest registers</i>"]
-        SUP_VDSO["vdso/<br/><i>Guest-side runtime support<br/>native_bridge_trace()<br/>native_bridge_intercept_symbol()</i>"]
-        SUP_API["android_api/<br/><i>21 proxy library stubs<br/>with trampolines</i>"]
+        SUP_API["android_api/<br/><i>21 proxy library stubs + vdso/<br/>native_bridge_trace() etc.</i>"]
     end
 
     subgraph Impl_Layer["frameworks/libs/binary_translation/native_bridge/<br/><i>Berberis/Digitalis Implementation</i>"]
@@ -1841,7 +1845,7 @@ The NativeBridge implementation exports a single C symbol — `NativeBridgeItf` 
 
 | Version | Key Additions |
 |---------|--------------|
-| **v1** | Base: `initialize`, `loadLibrary`, `getTrampoline`, `isSupported` |
+| **v1** | Base: `initialize`, `loadLibrary`, `getTrampoline`, `isSupported`, `getAppEnv` |
 | **v2** | Signal handling (`getSignalHandler` for SIGSEGV routing) |
 | **v3** | Linker namespace support (`createNamespace`, `linkNamespaces`, `loadLibraryExt`) — critical for library isolation |
 | **v4** | Vendor namespace (Treble "sphal" separation) |
