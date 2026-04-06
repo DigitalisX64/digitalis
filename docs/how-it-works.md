@@ -18,7 +18,10 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 12. [System Libraries](#12-system-libraries)
 13. [Debugging](#13-debugging)
 14. [What Digitalis Adds to Berberis](#14-what-digitalis-adds-to-berberis)
-15. [Putting It All Together: The Vulkan Triangle](#15-putting-it-all-together-the-vulkan-triangle)
+15. [ELF Loading and the Guest Address Space](#15-elf-loading-and-the-guest-address-space)
+16. [Machine Code Generation](#16-machine-code-generation)
+17. [Signal Handling and Fault Recovery](#17-signal-handling-and-fault-recovery)
+18. [Putting It All Together: The Vulkan Triangle](#18-putting-it-all-together-the-vulkan-triangle)
 
 **Appendix**
 
@@ -1125,7 +1128,336 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 ---
 
-## 15. Putting It All Together: The Vulkan Triangle
+## 15. ELF Loading and the Guest Address Space
+
+When Digitalis needs to run an ARM64 binary on an x86_64 host, it can't just hand the binary to the operating system — the OS would reject it as the wrong architecture. Instead, Digitalis must load the binary itself, set up memory exactly as an ARM64 OS would, and manage a parallel "guest world" inside the host process.
+
+### What ELF Loading Is
+
+An ELF (Executable and Linkable Format) file isn't just a blob of instructions. It's a structured container that tells the OS how to set up a program in memory:
+
+```mermaid
+graph TD
+    subgraph ELF["ARM64 ELF File (libhello_digitalis.so)"]
+        HDR["ELF Header<br/><i>magic: 7f 45 4c 46<br/>class: 64-bit<br/>machine: AArch64<br/>entry point address</i>"]
+        PHD["Program Headers<br/><i>describe memory segments</i>"]
+        SEG1["LOAD segment 1<br/><i>.text (code) + .rodata<br/>permissions: R-X (read+execute)</i>"]
+        SEG2["LOAD segment 2<br/><i>.data + .bss<br/>permissions: RW- (read+write)</i>"]
+        DYN["DYNAMIC segment<br/><i>symbol tables, relocation entries<br/>needed shared libraries</i>"]
+        HDR --> PHD
+        PHD --> SEG1
+        PHD --> SEG2
+        PHD --> DYN
+    end
+```
+
+A normal OS loader reads the program headers, allocates memory at the specified addresses, copies each segment from the file into memory with the right permissions (read/write/execute), and resolves symbol references to shared libraries. The host Linux kernel does this for x86_64 binaries automatically — but it can't do it for ARM64 binaries.
+
+### TinyLoader: A Minimal ELF Loader
+
+Digitalis includes **TinyLoader** (`tiny_loader/`), a minimal ELF loader that does in userspace what the kernel normally does:
+
+```mermaid
+graph TD
+    A["Read ELF header<br/><i>verify magic number, architecture</i>"] --> B["Parse program headers<br/><i>find LOAD segments</i>"]
+    B --> C["For each LOAD segment:"]
+    C --> D["mmap() memory region<br/><i>at specified virtual address<br/>with specified permissions</i>"]
+    D --> E["Copy segment data from file<br/><i>into mapped memory</i>"]
+    E --> F["Zero .bss portion<br/><i>uninitialized data after<br/>file-backed content</i>"]
+    F --> G{"More segments?"}
+    G -->|"Yes"| C
+    G -->|"No"| H["Return entry point address"]
+```
+
+TinyLoader is deliberately simple — it loads ELF segments into memory but doesn't resolve symbols or handle relocations. That's the job of the guest dynamic linker (`linker64`), which TinyLoader loads first.
+
+### The Guest Address Space
+
+The host x86_64 process has one address space. Digitalis carves out a region within it for guest ARM64 code and data. This creates a **dual address space** where guest code thinks it's running at ARM64 addresses, but the actual memory is at different host addresses:
+
+```mermaid
+graph LR
+    subgraph Guest["Guest View (what ARM64 code sees)"]
+        direction TB
+        G1["0x7000000000: linker64"]
+        G2["0x7000100000: libc.so"]
+        G3["0x7000200000: libhello_digitalis.so"]
+        G4["0x7FFFFFFFE000: guest stack"]
+    end
+
+    subgraph Host["Host Reality (where memory actually is)"]
+        direction TB
+        H1["0x100000000: linker64 data"]
+        H2["0x100100000: libc.so data"]
+        H3["0x100200000: app data"]
+        H4["0x200000000: guest stack data"]
+    end
+
+    subgraph Shadow["GuestMapShadow"]
+        direction TB
+        S["Tracks: guest addr → host addr<br/>Permissions: R/W/X per page<br/>Protected regions: libc mappings"]
+    end
+
+    Guest -->|"ToHostAddr()"| Host
+    Host -->|"ToGuestAddr()"| Guest
+    Shadow --- Guest
+    Shadow --- Host
+```
+
+**`GuestMapShadow`** (`guest_os_primitives/`) is the bookkeeper for this dual address space. It tracks which guest addresses are valid, what permissions they have, and where they map in host memory. Every memory access from translated code goes through this mapping.
+
+**`ToHostAddr<T>(guest_addr)`** converts a guest ARM64 address to a host pointer — this is used everywhere the translator or proxy libraries need to access guest memory.
+
+**`ToGuestAddr(host_ptr)`** does the reverse — used when returning memory addresses to guest code (like the result of `malloc()`).
+
+### Why Not Just Run at the Same Addresses?
+
+You might wonder why we need address translation at all. Three reasons:
+
+1. **Address space conflicts.** The host process already has code and data at many addresses. Guest ARM64 code expects to load at specific addresses that may overlap with host mappings.
+2. **Permission tracking.** The translator needs to know which guest addresses are executable (to decide whether to JIT them) and which are writable (to detect self-modifying code). `GuestMapShadow` tracks this separately from the host's page permissions.
+3. **Protection.** Guest code shouldn't be able to tamper with host data structures. `GuestMapShadow::AddProtectedMapping()` prevents guest writes to critical regions like libc.so mappings.
+
+### The Guest Dynamic Linker
+
+After TinyLoader loads the basic ELF files into memory, the **guest ARM64 `linker64`** takes over. This is Android's standard ARM64 dynamic linker, running under translation — it doesn't know it's being translated. It resolves symbols, processes relocations, and loads additional shared libraries.
+
+Digitalis drives the guest linker programmatically through `LinkerCallbacks` — function pointers to the guest linker's exported symbols (`dlopen`, `dlsym`, `create_namespace`). When the guest linker needs to load a library, Digitalis intercedes via the NativeBridge callbacks, routing to either a real ARM64 library or a proxy.
+
+---
+
+## 16. Machine Code Generation
+
+The JIT (Lite Translator) doesn't execute ARM64 instructions — it *generates x86_64 instructions*. Understanding how raw machine code bytes are produced and made executable is key to understanding the translator.
+
+### The Assembler: Building x86_64 Bytes
+
+The `assembler/` directory contains an x86_64 assembler — a class that knows how to encode every x86_64 instruction as a sequence of bytes. When the JIT calls `as_.Addq(rcx, rsi)`, the assembler produces the bytes `48 01 F1`:
+
+```mermaid
+graph LR
+    subgraph JIT["JIT calls assembler methods"]
+        J1["as_.Movq(rcx, rsi)"]
+        J2["as_.Addq(rcx, 42)"]
+        J3["as_.Movq(mem, rcx)"]
+    end
+
+    subgraph ASM["Assembler encodes to bytes"]
+        A1["48 89 F1<br/><i>REX.W + MOV + ModR/M</i>"]
+        A2["48 83 C1 2A<br/><i>REX.W + ADD imm8 + ModR/M + 42</i>"]
+        A3["48 89 4E 18<br/><i>REX.W + MOV + ModR/M + disp8</i>"]
+    end
+
+    subgraph Pool["Code buffer"]
+        B["48 89 F1 48 83 C1 2A 48 89 4E 18"]
+    end
+
+    J1 --> A1 --> Pool
+    J2 --> A2 --> Pool
+    J3 --> A3 --> Pool
+```
+
+The assembler handles all the complexity of x86_64 encoding: REX prefixes for 64-bit operations, ModR/M bytes for register/memory operands, SIB bytes for complex addressing, and choosing between 8-bit, 32-bit, and 64-bit immediates.
+
+**`MacroAssembler`** (`code_gen_lib/`) sits on top of the raw assembler and provides higher-level patterns: function prologues/epilogues, label-based jumps (resolved to relative offsets when the code is finalized), and common multi-instruction sequences.
+
+### Executable Memory: From Bytes to Runnable Code
+
+Generated bytes aren't useful unless the CPU can execute them. Modern operating systems mark memory pages as either writable (for data) or executable (for code) — but not both simultaneously (a security feature called W^X or "write XOR execute").
+
+The **`exec_region/`** directory manages executable memory:
+
+```mermaid
+graph TD
+    A["JIT generates x86_64 bytes<br/>into a temporary buffer"] --> B["Request executable region<br/>from code pool"]
+    B --> C["exec_region allocates pages<br/><i>mmap with PROT_READ | PROT_WRITE</i>"]
+    C --> D["Copy generated code<br/>into the region"]
+    D --> E["Change permissions<br/><i>mprotect to PROT_READ | PROT_EXEC</i>"]
+    E --> F["Return HostCodePiece<br/><i>pointer to executable code</i>"]
+    F --> G["TranslationCache stores pointer<br/>at guest PC address"]
+    G --> H["berberis_RunGeneratedCode<br/>can now jump to this address"]
+```
+
+The **code pool** pre-allocates large chunks of executable memory and parcels them out to individual translated regions. This avoids the overhead of calling `mmap`/`mprotect` for every small translation. When a region is invalidated (rare), the code pool can reclaim the space.
+
+### Labels and Backpatching
+
+When the JIT generates a conditional branch (like `B.EQ label`), it doesn't know the target address yet — the code for the target hasn't been emitted. The assembler uses **labels** to handle this:
+
+```mermaid
+graph TD
+    A["JIT emits: jz LABEL_SKIP<br/><i>offset unknown — emit placeholder</i>"] --> B["JIT continues emitting<br/>more instructions"]
+    B --> C["JIT binds LABEL_SKIP<br/><i>now we know the address</i>"]
+    C --> D["Assembler backpatches:<br/>fill in the real offset<br/>in the placeholder bytes"]
+```
+
+1. When a forward jump is emitted, the assembler writes a placeholder offset (e.g., `0x00000000`)
+2. The assembler records this location and the label it refers to
+3. When the target label is later bound to a specific position, the assembler goes back and overwrites the placeholder with the correct relative offset
+
+This is called **backpatching** and is standard in assemblers and compilers.
+
+### The Code Generation Pipeline
+
+Putting it all together, here's the complete pipeline from ARM64 instruction to executable x86_64:
+
+```mermaid
+graph TD
+    subgraph Decode["1. Decode"]
+        D["ARM64 bytes<br/>4 bytes at guest PC"]
+    end
+    subgraph Translate["2. Translate"]
+        T1["SemanticsPlayer maps to<br/>LiteTranslator method"]
+        T2["LiteTranslator calls<br/>Assembler methods"]
+    end
+    subgraph Assemble["3. Assemble"]
+        A1["Assembler encodes<br/>x86_64 bytes"]
+        A2["Labels recorded<br/>for forward jumps"]
+    end
+    subgraph Finalize["4. Finalize"]
+        F1["Region complete:<br/>backpatch all labels"]
+        F2["Copy to executable memory<br/>(exec_region)"]
+        F3["Set permissions R+X"]
+    end
+    subgraph Cache["5. Cache"]
+        C1["InstallTranslated<br/>stores HostCodePiece in<br/>TranslationCache"]
+    end
+    subgraph Run["6. Execute"]
+        R["berberis_RunGeneratedCode<br/>jumps to code address"]
+    end
+
+    D --> T1 --> T2 --> A1 --> A2 --> F1 --> F2 --> F3 --> C1 --> R
+```
+
+### Intrinsics: When Host Instructions Map Directly
+
+Some ARM64 operations have direct x86_64 equivalents — no complex translation needed. The **`intrinsics/`** directory provides these mappings:
+
+- **CRC32**: ARM64's `CRC32B/H/W/X` instructions map to x86_64's `CRC32` instruction (with the SSE4.2 extension)
+- **Bit manipulation**: ARM64's `REV` (byte reverse) maps to x86_64's `BSWAP`
+- **Count leading zeros**: ARM64's `CLZ` maps to x86_64's `BSR` + XOR
+- **Population count**: ARM64's `CNT` can use x86_64's `POPCNT`
+
+When a direct mapping exists, the JIT emits a single x86_64 instruction instead of emulating the operation with multiple instructions. The `intrinsics/` directory organizes these by source architecture (`arm64_to_all/`, `riscv64_to_all/`).
+
+---
+
+## 17. Signal Handling and Fault Recovery
+
+When translated code crashes — accesses invalid memory, divides by zero, or hits an illegal instruction — the host OS delivers a signal (SIGSEGV, SIGFPE, SIGILL). But the crash happened in *guest* code, so the signal must be delivered to the *guest's* signal handler, not the host's. This is one of the trickiest parts of binary translation.
+
+### The Problem
+
+Consider this scenario:
+
+```mermaid
+sequenceDiagram
+    participant Guest as ARM64 App
+    participant JIT as JIT-compiled Code<br/>(running on host CPU)
+    participant Host as Host Linux Kernel
+    participant GSH as Guest Signal Handler
+
+    Guest->>JIT: LDR X1, [X0] (load from address in X0)
+    Note over JIT: X0 contains invalid address 0xDEAD
+    JIT->>Host: mov rcx, [mapped_addr] triggers fault
+    Host->>Host: SIGSEGV!
+    Note over Host: Who should handle this?<br/>The HOST's signal handler?<br/>Or the GUEST's?
+    Host-->>GSH: Must route to guest handler
+    GSH->>GSH: Guest app handles the fault<br/>(maybe recovers, maybe crashes)
+```
+
+If Digitalis didn't intercept the signal, the host process would crash with a SIGSEGV, and the guest app would never get a chance to handle it. Many apps install signal handlers for legitimate reasons (crash reporting, memory-mapped I/O, custom allocators).
+
+### How Fault Recovery Works
+
+The **`instrument/`** directory provides crash hooks, and **`guest_os_primitives/`** manages signal delivery. Here's the flow:
+
+```mermaid
+graph TD
+    A["Host CPU executes translated code"] --> B["Memory fault occurs<br/><i>e.g., load from unmapped address</i>"]
+    B --> C["Host kernel delivers SIGSEGV<br/>to Digitalis signal handler"]
+    C --> D{"Fault in translated code?"}
+    D -->|"Yes"| E["Look up guest PC from<br/>recovery code table"]
+    E --> F["Set ThreadState.pc<br/>to faulting guest instruction"]
+    F --> G["Set pending_signals_status"]
+    G --> H["Return to ExecuteGuest loop"]
+    H --> I["Loop checks pending signals"]
+    I --> J["Deliver signal to guest handler<br/><i>with ARM64 siginfo_t</i>"]
+    J --> K{"Guest handler action?"}
+    K -->|"Recovers"| L["Modified PC in ThreadState<br/>execution continues"]
+    K -->|"Doesn't handle"| M["Guest app crashes<br/>(SIGABRT, core dump)"]
+    D -->|"No — host code fault"| N["Real host crash<br/>something is seriously wrong"]
+```
+
+### FaultyLoad / FaultyStore
+
+In the **interpreter**, every memory access uses `FaultyLoad` and `FaultyStore` instead of raw `memcpy`. These special accessors:
+
+1. **Register a recovery point** before the access — a saved state that can be restored if a fault occurs
+2. **Perform the memory access** — this might trigger a host SIGSEGV
+3. **If the access succeeds**, the recovery point is discarded
+4. **If a fault occurs**, the signal handler uses the recovery point to know which guest instruction was executing and how to unwind
+
+Without these, a raw `memcpy` in the interpreter would cause a host SIGSEGV with no way to identify which guest instruction triggered it or deliver the signal to the guest handler.
+
+### Recovery Code in JIT-compiled Regions
+
+JIT-compiled code is trickier — there's no per-instruction interpreter state to recover from. Instead, every JIT-generated load/store instruction is paired with **recovery metadata**:
+
+```mermaid
+graph LR
+    subgraph JIT_Code["JIT-Generated Code"]
+        I1["mov rcx, [rsi+24]<br/><i>@ host address 0x4000100</i>"]
+        I2["add rcx, 42<br/><i>@ host address 0x4000104</i>"]
+    end
+
+    subgraph Recovery["Recovery Table"]
+        R1["0x4000100 → guest PC 0x7000200C<br/><i>if fault here, guest was at LDR</i>"]
+    end
+
+    subgraph Handler["On SIGSEGV at 0x4000100"]
+        H1["Look up 0x4000100 in recovery table"]
+        H2["Found: guest PC = 0x7000200C"]
+        H3["Set ThreadState.pc = 0x7000200C"]
+        H4["Jump to ExitGeneratedCode"]
+    end
+
+    I1 -.->|"fault!"| Handler
+    Recovery -.-> H1
+```
+
+When the JIT emits a load or store, it also records a recovery entry: "if a fault happens at this host address, the corresponding guest PC is X." The signal handler uses this table to map from the faulting host instruction back to the guest instruction that caused it.
+
+### The Signal Delivery Chain
+
+After the fault is caught and the guest PC is identified, the signal must be delivered to the guest app in ARM64 format:
+
+1. **Convert signal info**: the host `siginfo_t` is converted to an ARM64-compatible `siginfo_t` (different struct layout)
+2. **Build signal frame**: an ARM64 signal frame is pushed onto the guest stack (register save area, return address pointing to `sigreturn`)
+3. **Set guest PC to handler**: the guest signal handler address replaces the current PC
+4. **Resume execution**: the dispatch loop runs the guest signal handler as normal ARM64 code (JIT-translated)
+5. **Signal return**: when the handler finishes, `sigreturn` restores the saved registers and resumes execution at the original fault point (or wherever the handler directed)
+
+### Pending Signals
+
+The dispatch loop checks for pending signals on every iteration:
+
+```c
+// In ExecuteGuest() — simplified:
+for (;;) {
+    if (ArePendingSignalsPresent(*state)) {
+        thread->ProcessPendingSignals();  // deliver to guest handler
+    }
+    auto code = cache->GetHostCodePtr(pc)->load();
+    berberis_RunGeneratedCode(state, code);
+}
+```
+
+This means signals are only delivered at region boundaries — not in the middle of a translated region. This is safe because ARM64 guarantees that signals are delivered between instructions, not during them. The dispatch loop naturally provides this boundary.
+
+---
+
+## 18. Putting It All Together: The Vulkan Triangle
 
 This section traces a real app — `hello-vulkan`, the original Digitalis proof of concept — through every layer of the translation system. It's an ARM64-only app that renders a colored triangle using Vulkan, running on an x86_64 emulator via Digitalis.
 
