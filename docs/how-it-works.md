@@ -1328,6 +1328,74 @@ Not all ARM64 instructions have hardware equivalents on x86_64. For example, ARM
 
 The **`intrinsics/`** directory (`arm64_to_all/`, `riscv64_to_all/`) provides architecture-specific intrinsic function implementations. For the ARM64 backend, this directory is currently minimal — most direct mappings live in the JIT itself.
 
+### SSE and AVX Support
+
+The x86_64 instruction set has several generations of SIMD extensions: SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2 (all using 128-bit XMM registers), AVX/AVX2 (256-bit YMM registers), and AVX-512 (512-bit ZMM registers). Digitalis uses these selectively:
+
+```mermaid
+graph LR
+    subgraph Assumed["Always Assumed Available"]
+        SSE2["SSE2<br/><i>baseline for x86_64<br/>no runtime check</i>"]
+    end
+
+    subgraph Used["Actively Used in ARM64 JIT"]
+        direction TB
+        U1["SSE: Movq, Pxor"]
+        U2["SSE2: Movdqu<br/><i>128-bit NEON load/store</i>"]
+        U3["SSE2: Addsd, Subsd<br/>Mulsd, Divsd<br/><i>scalar FP arithmetic</i>"]
+        U4["SSE2: Ucomisd<br/><i>FP compare for FCMP</i>"]
+    end
+
+    subgraph Detected["Runtime-Detected but<br/>Not Used in ARM64 JIT"]
+        direction TB
+        D1["SSE3, SSSE3"]
+        D2["SSE4.1, SSE4.2"]
+        D3["AVX, AVX2 (256-bit YMM)"]
+        D4["AES, CLMUL, FMA"]
+    end
+
+    subgraph Unsupported["Not Supported"]
+        direction TB
+        N1["AVX-512 (ZMM)<br/><i>no ZMM register definitions</i>"]
+        N2["Hardware CRC32 (SSE4.2)<br/><i>interpreter uses software loop</i>"]
+    end
+```
+
+#### Minimum Host CPU Requirement
+
+Digitalis assumes **SSE2 is always available** — this is the x86_64 baseline (mandated by the AMD64 spec). There is no runtime check for SSE2; all x86_64 CPUs support it.
+
+#### What the ARM64 JIT Actually Uses
+
+The JIT emits SSE and SSE2 instructions only. Specifically:
+
+- **NEON loads/stores** (LDR/STR on V, D, S, H, B registers) → `Movdqu` (128-bit), `Movq` (64-bit), or scalar `Mov` instructions with `Pxor` to zero upper bits
+- **NEON zero init** (MOVI Vd.2D, #0) → `Pxor xmm, xmm`
+- **Floating-point arithmetic** (FADD, FSUB, FMUL, FDIV) → `Addsd`, `Subsd`, `Mulsd`, `Divsd` (scalar double) or `Addss`, `Subss`, `Mulss`, `Divss` (scalar single)
+- **Floating-point compare** (FCMP) → `Ucomisd` / `Ucomiss`
+
+All SIMD operations use **128-bit XMM registers** — never YMM or ZMM.
+
+#### ARM64 V-Register Mapping
+
+ARM64 has 32 V registers (V0-V31, 128-bit each); x86_64 has 16 XMM registers (XMM0-XMM15). Rather than maintaining a persistent mapping, the JIT keeps V register values in the `ThreadState.cpu.v[]` array in memory and allocates temporary XMM registers for each operation. Values are loaded into XMM, operated on, then stored back. This simplifies register allocation at the cost of extra memory traffic.
+
+#### CPU Feature Detection
+
+The `device_arch_info/` and `runtime_primitives/platform.cc` infrastructure detects all major x86_64 SIMD features at runtime via CPUID: SSE3, SSSE3, SSE4.1, SSE4.2, AVX, AVX2, AES, CLMUL, FMA, BMI/BMI2, LZCNT, POPCNT, SHA, PDEP. The detection results are exposed as `host_platform::kHasSSE3`, `host_platform::kHasAVX`, etc.
+
+**However, the ARM64 JIT does not currently consume this information** — it emits the same SSE/SSE2 instructions regardless of what the host CPU supports. The detection infrastructure exists for future enhancement and for the RISC-V backend (which uses some conditional AVX — e.g., `Vmovapd` for aligned double moves when `kHasAVX` is true, falling back to `Vmovaps`).
+
+#### What's Not Used
+
+- **AVX (256-bit YMM)**: The assembler supports AVX instructions (`Vmovapd`, `Vmovdqu`, `Vmovsd`, etc.) and defines YMM registers, but the ARM64 JIT does not emit any of them. All SIMD stays at 128-bit XMM.
+- **AVX-512 (512-bit ZMM)**: Not supported at all — no ZMM register definitions in the assembler, no AVX-512 instruction emission anywhere.
+- **Hardware CRC32 (SSE4.2)**: Despite x86_64 having a dedicated `crc32` instruction, Digitalis's CRC32 support is entirely software — the interpreter computes CRC32 with bitwise operations using polynomial constants (`0xEDB88320` for ISO 3309, `0x82F63B78` for Castagnoli). Using hardware CRC32 would be a future optimization opportunity.
+
+#### Why SSE2 Is Enough for Now
+
+ARM64 NEON is a 128-bit SIMD ISA, the same width as x86_64 SSE. A direct 1:1 width match means SSE2 provides adequate primitives for most NEON operations. AVX-256 could potentially accelerate certain batch operations (like pair loads `LDP Qd1, Qd2`), but the current implementation compiles these as two 128-bit `Movdqu` instructions. The performance trade-off of adding AVX code paths versus keeping the JIT simple hasn't been explored yet.
+
 ---
 
 ## 17. Signal Handling and Fault Recovery
