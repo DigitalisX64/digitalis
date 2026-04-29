@@ -72,6 +72,14 @@ Run host unit tests:
 out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_tests --gtest_filter='Arm64*'
 ```
 
+Verify the upstream ARM64 build still works (regression check before committing):
+```bash
+source build/envsetup.sh
+lunch sdk_phone64_arm64_minigbm-trunk_staging-userdebug
+m
+```
+After this finishes, switch back to the Digitalis target with `lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug` before resuming x86_64 work.
+
 Test all sample modules on the emulator:
 ```bash
 .claude/scripts/test-samples.sh                # test all 22 modules
@@ -120,4 +128,5 @@ These are the most-modified files and the ones you'll touch most often:
 - **Use FaultyLoad/FaultyStore for all interpreter memory accesses.** Raw memcpy causes host SIGSEGV that bypasses guest signal handlers.
 - **Digitalis-specific code is marked with `// region digitalis` / `// endregion` comments** (or `# region digitalis` in makefiles). This distinguishes Digitalis additions from upstream Berberis code.
 - **Fix root causes in the translator, not workarounds in samples.** When a sample app fails, the bug is in the binary translator (decoder, interpreter, lite translator, proxy libraries, syscall emulation), not the app. Do not modify code under `sample/hellodigitalis/` to work around translator bugs unless explicitly asked to.
+- **Don't break the upstream ARM64 build.** Before committing, verify `lunch sdk_phone64_arm64_minigbm-trunk_staging-userdebug && m` still builds clean. Berberis lives in shared paths (`frameworks/libs/binary_translation/`), so translator edits, makefile changes, and proxy-library changes can leak into the native ARM64 image. New commits must keep the existing ARM64 build green. After verifying, switch back to the Digitalis target before resuming x86_64 work.
 
