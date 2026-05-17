@@ -6,7 +6,7 @@ ARM64-to-x86_64 binary translation for Android, built on AOSP's Berberis NativeB
 
 This is an AOSP (Android Open Source Project) source tree with modifications to the Berberis binary translator to support ARM64-to-x86_64 translation. Berberis originally supported only RISC-V-to-x86_64; Digitalis adds the ARM64 backend.
 
-The `sample/hellodigitalis/` project contains 22 ARM64-only sample app modules (ported from [android/ndk-samples](https://github.com/android/ndk-samples)) that serve as the integration test suite. These cover Vulkan, OpenGL ES, JNI, audio, camera, MIDI, sensors, SIMD, and more — all running on an x86_64 emulator via NativeBridge translation.
+The `sample/hellodigitalis/` project contains 26 ARM64-only sample app modules (ported from [android/ndk-samples](https://github.com/android/ndk-samples), plus Digitalis-specific proxy-lib smoke tests) that serve as the integration test suite. These cover Vulkan, OpenGL ES (1.x & 2/3), JNI, audio (OpenSLES & AAudio), camera, MIDI, sensors, SIMD, NDK binder, and NNAPI — all running on an x86_64 emulator via NativeBridge translation.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ All paths relative to repo root.
 | `frameworks/libs/binary_translation/prebuilt/` | Prebuilt configs including `ld.config.arm64.txt` |
 | `device/generic/goldfish/` | Emulator (goldfish) product definitions |
 | `device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_digitalis.mk` | Digitalis product config |
-| `sample/hellodigitalis/` | 22 ARM64-only sample app modules (Vulkan, GLES, JNI, audio, camera, SIMD, etc.) |
+| `sample/hellodigitalis/` | 26 ARM64-only sample app modules (Vulkan, GLES 1/2/3, JNI, OpenSLES + AAudio, camera, MIDI, SIMD, NDK binder, NNAPI, etc.) |
 
 ## Build
 
@@ -60,7 +60,7 @@ emulator -memory 4096 -writable-system -partition-size 65536 -qemu -cpu host &
 
 Install and run sample apps:
 ```bash
-# Build all 22 sample modules (ARM64-only APKs)
+# Build all 26 sample modules (ARM64-only APKs)
 cd sample/hellodigitalis && ./gradlew assembleDebug
 # Install and run the Vulkan triangle
 adb install hello-vulkan/build/outputs/apk/debug/hello-vulkan-debug.apk
@@ -82,13 +82,13 @@ After this finishes, switch back to the Digitalis target with `lunch sdk_phone64
 
 Test all sample modules on the emulator:
 ```bash
-.claude/scripts/test-samples.sh                # test all 22 modules
+.claude/scripts/test-samples.sh                # test all 26 modules
 .claude/scripts/test-samples.sh hello-vulkan   # test a single module
 ```
 
 Run screenshot tests (validates visual output against reference images):
 ```bash
-.claude/scripts/test-samples.sh --screenshots              # test all 22 modules
+.claude/scripts/test-samples.sh --screenshots              # test all 26 modules
 .claude/scripts/test-samples.sh --screenshots hello-vulkan  # test a single module
 ```
 
@@ -112,7 +112,7 @@ These are the most-modified files and the ones you'll touch most often:
 - **`kernel_api/arm64/syscall_emulation.cc`** — Syscall forwarding, futex workarounds, call_once/pthread_once deadlock fixups.
 - **`kernel_api/sys_mman_emulation.cc`** — BSS partial-page zeroing after file-backed mmaps.
 - **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
-- **`sample/hellodigitalis/`** — 22 ARM64-only sample app modules (ported from android/ndk-samples). Use `/test-samples` to test on the emulator.
+- **`sample/hellodigitalis/`** — 26 ARM64-only sample app modules (22 ported from android/ndk-samples + 4 Digitalis proxy-lib smoke tests: hello-gles1, hello-aaudio, hello-binder-ndk, hello-nnapi). Use `/test-samples` to test on the emulator.
 
 ## Git Conventions
 

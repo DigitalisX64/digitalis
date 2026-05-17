@@ -78,6 +78,10 @@ declare -A MODULES=(
     ["unit-test"]="com.example.hellodigitalis.unittest/com.example.hellodigitalis.unittest.MainActivity"
     ["vectorization"]="com.android.ndk.samples.vectorization/com.android.ndk.samples.vectorization.VectorizationActivity"
     ["orderfile"]="com.example.hellodigitalis.orderfile/com.example.hellodigitalis.orderfile.MainActivity"
+    ["hello-gles1"]="com.example.hellodigitalis.hellogles1/com.example.hellogles1.MainActivity"
+    ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
+    ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk/com.example.hellobinderndk.MainActivity"
+    ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
 )
 
 # Test package names (applicationId + ".test")
@@ -104,6 +108,10 @@ declare -A TEST_PACKAGES=(
     ["unit-test"]="com.example.hellodigitalis.unittest.test"
     ["vectorization"]="com.android.ndk.samples.vectorization.test"
     ["orderfile"]="com.example.hellodigitalis.orderfile.test"
+    ["hello-gles1"]="com.example.hellodigitalis.hellogles1.test"
+    ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
+    ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.test"
+    ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
 )
 
 # Fully qualified test class names
@@ -130,6 +138,10 @@ declare -A TEST_CLASSES=(
     ["unit-test"]="com.example.hellodigitalis.unittest.ScreenshotTest"
     ["vectorization"]="com.android.ndk.samples.vectorization.ScreenshotTest"
     ["orderfile"]="com.example.hellodigitalis.orderfile.ScreenshotTest"
+    ["hello-gles1"]="com.example.hellodigitalis.hellogles1.ScreenshotTest"
+    ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.ScreenshotTest"
+    ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.ScreenshotTest"
+    ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
 )
 
 # Ordered list for consistent output
@@ -139,6 +151,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
+    hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
 )
 
 # Check emulator
