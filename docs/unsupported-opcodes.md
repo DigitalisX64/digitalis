@@ -1,8 +1,11 @@
-# Unsupported ARM64 Opcodes
+# ARM64 Opcode Support Gaps
 
-ARM64 instructions and instruction families that the Digitalis backend currently does **not** support — neither in the JIT (`lite_translator/arm64_to_x86_64/`) nor in the interpreter (`interpreter/arm64/`).
+Two kinds of gap exist in the Digitalis ARM64 backend:
 
-For everything that **is** supported (JIT or interpreter path), see [Appendix B in `how-it-works.md`](how-it-works.md#appendix-b-arm64-to-x86_64-instruction-mapping).
+1. **Not supported at all** — the decoder either rejects the instruction with `Undefined()` or never decodes it. Sections 1 and 2 below.
+2. **Supported but only by the interpreter** — the instruction runs, but the JIT (`lite_translator/arm64_to_x86_64/`) won't translate it. Every guest region containing one ends and the instruction is handled by per-instruction simulation. Functionally correct, but ~10–100× slower per instance. Section 3 below.
+
+For everything that **is** JIT-translated (the fast path), see [Appendix B in `how-it-works.md`](how-it-works.md#appendix-b-arm64-to-x86_64-instruction-mapping).
 
 All line references are into `frameworks/libs/binary_translation/decoder/include/berberis/decoder/arm64/decoder.h` unless noted.
 
@@ -46,7 +49,61 @@ The decoder doesn't have any case for these — the instruction bits hit one of 
 
 ---
 
-## 3. Practical impact
+## 3. Supported only in the interpreter (no JIT path)
+
+These instructions run correctly but force the dispatcher out of the JIT. The lite translator either has no handler or explicitly falls back; the interpreter (`interpreter/arm64/interpreter.h`) implements them. Where a region contains one of these, the JIT terminates at that point, the interpreter executes the instruction, and the dispatcher resumes JIT for the next region.
+
+### Scalar floating point
+
+| Family | Instructions | Why interpreter-only |
+|---|---|---|
+| FP conversions | `FCVT Sd, Dd` (single↔double), `FCVTZS`, `FCVTZU`, `SCVTF`, `UCVTF` | Saturation / NaN edge cases differ between ARM and x86; lite translator falls through to `Undefined()` |
+| Fused multiply-add | `FMADD`, `FMSUB`, `FNMADD`, `FNMSUB` | JIT sets `success_ = false` for the 3-source FP group (`lite_translator.h:1540`) |
+| Single-source | `FABS`, `FNEG`, `FSQRT` | JIT 1-source handler only covers `FMOV`; others fall through (`lite_translator.h:2060`) |
+| FP conditional select | `FCSEL Dd, Dn, Dm, cond` | Explicitly deferred — `lite_translator.h:1527`: *"FCSEL: fall back to interpreter (condition flag checking complex in JIT)"* |
+| FP rounding | `FRINTA`, `FRINTN`, `FRINTP`, `FRINTM`, `FRINTZ`, `FRINTX`, `FRINTI` | All handled in interpreter at `interpreter/arm64/interpreter.h:2640+`; no JIT case |
+
+### NEON / SIMD compute (vector)
+
+The JIT supports SIMD **loads/stores** (`MOVI Vd.2D, #0`, `LDR Q/D/S/H/B`, `STR Q/D/S/H/B`, `LDP/STP Q,Q`) and the broadcast form of `DUP V, W` plus `ADD V` for some sizes. Almost every other vector op is interpreter-only:
+
+| Group | Examples |
+|---|---|
+| Element-wise arithmetic | `ADD V`, `SUB V`, `MUL V`, `MLA V`, `MLS V` |
+| Element-wise logical | `AND V`, `ORR V`, `EOR V`, `BIC V`, `ORN V`, `NOT V` |
+| Compare | `CMEQ V`, `CMGT V`, `CMLE V`, `CMHI V`, `CMHS V`, `CMTST V`, `CMLT V` |
+| Min / max | `SMAX V`, `SMIN V`, `UMAX V`, `UMIN V`, `FMAX V`, `FMIN V` |
+| Single-source | `ABS V`, `NEG V`, `CNT V`, `REV16 V`, `REV32 V`, `REV64 V` |
+| Pairwise & across-lanes | `ADDP V`, `ADDV V`, `SADDLV V`, `UADDLV V`, `UMAXV V`, `UMINV V` |
+| Permute | `DUP V, V[i]` (element form), `INS V[i], X`, `UMOV X, V[i]`, `EXT V`, `TRN1/TRN2 V`, `ZIP1/ZIP2 V`, `UZP1/UZP2 V` |
+| Multi-structure load / store | `LD2`, `LD3`, `LD4`, `ST2`, `ST3`, `ST4` (the single-reg `LD1`/`ST1` is JIT'd) |
+| Widening arithmetic | `UADDL`, `SADDL`, `UMULL`, `SMULL`, `UMLAL`, `SMLAL` |
+| Vector shifts by immediate | `SHL V`, `SSHR V`, `USHR V`, `SLI V`, `SRI V` |
+| Vector FP | `FADD V`, `FMUL V`, `FMLA V`, `FMLS V` (any FP arithmetic on a vector) |
+| Table lookup | `TBL`, `TBX` |
+| CRC32 | `CRC32B/H/W/X`, `CRC32CB/CH/CW/CX` (Digitalis-specific addition; software polynomial) |
+
+### Scalar bitfield & system
+
+| Family | Instructions | Notes |
+|---|---|---|
+| General bitfield | `BFM` (full form), `SBFM` / `UBFM` outside the alias subset | Aliases the JIT *does* handle: `LSL imm`, `LSR imm`, `ASR imm`, `SXTB/H/W`, `UXTB/H`, `EXTR` (see Appendix B) |
+| System registers (MRS / MSR) | Everything except the four JIT-handled ones: `TPIDR_EL0`, `NZCV`, `CTR_EL0`, `DCZID_EL0` | Interpreter generally implements these as no-ops or constants; see `interpreter.h` system-register switch |
+
+### Why this matters
+
+The interpreter is ~10–100× slower per instruction than JIT-translated code, plus each interpreter-only instruction forces a region exit and dispatcher round-trip. For a tight inner loop, a single interpreter-only opcode can dominate the loop's runtime. The highest-value optimisations are:
+
+| Promotion target | Typical app affected |
+|---|---|
+| `FCVTZS` / `SCVTF` (scalar conversions) | Any code mixing ints and floats — graphics math, audio |
+| Vector `FADD V` / `FMUL V` / `FMLA V` | Audio DSP, ML inference, vertex shaders |
+| `FCSEL` | Branchless FP code |
+| Multi-structure `LDn` / `STn` | Interleaved RGBA/PCM data |
+
+---
+
+## 4. Practical impact
 
 What matters in practice for ARM64-only Android apps running on the Digitalis emulator:
 
@@ -62,7 +119,7 @@ What matters in practice for ARM64-only Android apps running on the Digitalis em
 
 ---
 
-## 4. Where to add support
+## 5. Where to add support
 
 For instructions in [Section 1](#1-rejections-inside-the-supported-encoding-space) (already in the decoder reach):
 

@@ -2225,8 +2225,8 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `ADDS/SUBS` (set flags) | same + `LAHF`+`SETO`+`AND`+`MOVW` | JIT | NZCV stored to ThreadState |
 | `ADD Xd, Xn, Xm, LSL #s` | shift src2 via `shlq`, then `addq` | JIT | Supports LSL/LSR/ASR/ROR |
 | `ADD Xd, Xn, Xm, UXTB #s` | `movzxbl` (extend) + shift + `addq` | JIT | 8 extension types supported |
-| `ADC Xd, Xn, Xm` | — | Interpreter | Add with carry |
-| `SBC Xd, Xn, Xm` | — | Interpreter | Subtract with carry |
+| `ADC Xd, Xn, Xm` | uses NZCV `C`, `addq` + flag pack | JIT | Add with carry; `AddSubWithCarry()` in `lite_translator.h` |
+| `SBC Xd, Xn, Xm` | uses NZCV `C`, `sbbq` + flag pack | JIT | Subtract with carry |
 | `NEG Xd, Xm` | alias for `SUB Xd, XZR, Xm` | JIT | |
 
 ### Logic
@@ -2392,7 +2392,7 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `MSR TPIDR_EL0, Xn` | `movq [ThreadState.tls], src` | JIT | Write TLS pointer |
 | `MRS/MSR` (other regs) | — | Interpreter | |
 | `DMB / DSB / ISB` | *no x86 emitted* | JIT (no-op) | Decoder routes to `Nop()`; x86 TSO already provides the orderings the guest needs |
-| `BRK #imm` | — | Interpreter | Breakpoint |
+| `BRK #imm` | — | *Unsupported* | Decoder rejects with `Undefined()` (only `SVC` is decoded in the exception group; see `decoder.h:1272`). Sanitizer / debug builds that emit `BRK` will fault on Digitalis. See [`unsupported-opcodes.md`](unsupported-opcodes.md#1-rejections-inside-the-supported-encoding-space). |
 
 ### SIMD / NEON
 
