@@ -2515,7 +2515,7 @@ graph TD
 | `lite_translator/` | The JIT compiler. Translates guest instruction regions into native x86_64 machine code. Contains the register allocator, code emitter, and region management for each architecture. | `lite_translator/arm64_to_x86_64/lite_translator.h`, `allocator.h`, `lite_translate_region.cc` |
 | `heavy_optimizer/` | Second-gear JIT for RISC-V. Performs deeper analysis (liveness, register allocation optimization) on hot code regions. **Not used by the ARM64 backend.** | `heavy_optimizer/riscv64/frontend.h` |
 | `runtime/` | Execution control for each architecture. Contains `ExecuteGuest()` (the dispatch loop), `TranslateRegion()` (JIT entry point), and architecture-specific translation configuration. | `runtime/execute_guest.cc`, `runtime/arm64/translator_x86_64.cc` |
-| `runtime_primitives/` | Shared infrastructure used by the runtime: `TranslationCache` (the code lookup table), `HostCodePiece` (translated code representation), code pool management, and entry point constants. | `runtime_primitives/translation_cache.h`, `runtime_library.h` |
+| `runtime_primitives/` | Shared infrastructure used by the runtime: `TranslationCache` (the code lookup table), `HostCodePiece` (translated code representation), code pool management, the W^X dual-mapped exec regions, and entry point constants. | `runtime_primitives/include/berberis/runtime_primitives/translation_cache.h`, `runtime_library.h` |
 
 ### Guest Frontend
 
@@ -2523,10 +2523,10 @@ These directories handle the guest (translated) architecture — loading its cod
 
 | Directory | What It Does | Key Files |
 |-----------|-------------|-----------|
-| `guest_state/` | Defines `CPUState` and `ThreadState` for each guest architecture. `CPUState` holds registers, flags, and architecture-specific state. `ThreadState` adds thread metadata, signal status, and TLS. | `guest_state/arm64/include/.../guest_state_cpu_state.h` |
-| `guest_abi/` | Guest calling convention implementation. `GuestCall` and `GuestArgumentBuffer` marshal arguments between guest and host ABIs for function calls in both directions. | `guest_abi/arm64/include/.../guest_call_arch.h` |
+| `guest_state/` | Defines per-arch state structures. The `CPUState` struct itself (registers, flags, SIMD file) lives in `frameworks/libs/native_bridge_support/guest_state/`; the per-arch wrappers here pull it in via `guest_state_arch.h`. `ThreadState` adds thread metadata, signal status, and TLS. | `guest_state/arm64/include/berberis/guest_state/guest_state_arch.h` |
+| `guest_abi/` | Guest calling convention implementation. `GuestCall` and `GuestArgumentBuffer` marshal arguments between guest and host ABIs for function calls in both directions. | `guest_abi/arm64/include/berberis/guest_abi/guest_call_arch.h` |
 | `guest_loader/` | Loads ARM64 ELF files into the guest address space. `GuestLoader` manages the guest runtime, drives the guest linker, and holds `LinkerCallbacks` for programmatic linker control. | `guest_loader/guest_loader.cc` |
-| `guest_os_primitives/` | Low-level guest OS emulation: memory mapping shadow (`GuestMapShadow`), signal delivery, guest thread management, and address space tracking. | `guest_os_primitives/guest_map_shadow.h` |
+| `guest_os_primitives/` | Low-level guest OS emulation: memory mapping shadow (`GuestMapShadow`), signal delivery, guest thread management, and address space tracking. | `guest_os_primitives/guest_map_shadow.cc`, `guest_os_primitives/include/berberis/guest_os_primitives/guest_map_shadow.h` |
 | `tiny_loader/` | A minimal ELF loader that reads ELF headers and loads segments into memory. Used by `GuestLoader` to load `linker64`, `libc.so`, and app libraries without relying on the host's dynamic linker. | `tiny_loader/tiny_loader.cc` |
 
 ### Host Backend
@@ -2535,11 +2535,11 @@ These directories handle the host (target) architecture — generating x86_64 ma
 
 | Directory | What It Does | Key Files |
 |-----------|-------------|-----------|
-| `assembler/` | x86_64 machine code assembler. Provides `Assembler` class with methods like `Addq()`, `Movq()`, `Jcc()` that emit the correct variable-length x86_64 byte sequences. Used by both the lite translator and heavy optimizer. | `assembler/x86_64.h` |
+| `assembler/` | x86_64 machine code assembler. Provides `Assembler` class with methods like `Addq()`, `Movq()`, `Jcc()` that emit the correct variable-length x86_64 byte sequences. Used by both the lite translator and heavy optimizer. | `assembler/include/berberis/assembler/x86_64.h` |
 | `backend/` | Abstraction layer between the optimizer's intermediate representation and the final x86_64 code emission. Used by the heavy optimizer (RISC-V). | `backend/x86_64/` |
-| `code_gen_lib/` | Shared code generation utilities: `MacroAssembler` (higher-level assembler with common patterns), label management, and code patching. | `code_gen_lib/code_gen_lib.h` |
-| `calling_conventions/` | Defines the host x86_64 calling convention: which registers are caller-saved vs callee-saved, argument passing rules, and stack frame layout. | `calling_conventions/calling_conventions_x86_64.h` |
-| `exec_region/` | Manages executable memory regions. Allocates RWX pages for JIT-compiled code, handles code cache memory pressure, and provides the code pool that `InstallTranslated()` writes to. | `exec_region/exec_region.cc` |
+| `code_gen_lib/` | Shared code generation utilities: `MacroAssembler` (higher-level assembler with common patterns), label management, and code patching. | `code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h` |
+| `calling_conventions/` | Defines the host x86_64 calling convention: which registers are caller-saved vs callee-saved, argument passing rules, and stack frame layout. | `calling_conventions/include/berberis/calling_conventions/calling_conventions_x86_64.h` |
+| `exec_region/` | Manages executable memory regions. The actual W^X dual-mapping for the translation cache lives in `runtime_primitives/exec_region_anonymous.cc` and `exec_region_elf_backed.cc` (one R+X view for the CPU, one R+W alias for the JIT writes). | `exec_region/exec_region.cc`, `runtime_primitives/exec_region_anonymous.cc` |
 
 ### Android Integration
 
@@ -2550,7 +2550,7 @@ These directories connect Berberis to Android's frameworks.
 | `native_bridge/` | Implements Android's NativeBridge callback interface (v8). The `NdktNativeBridge` class handles `Initialize()`, `LoadLibrary()`, JNI trampoline creation, and namespace management. This is the entry point where Android first calls into Digitalis. | `native_bridge/native_bridge.cc` |
 | `android_api/` | **Proxy libraries** — one subdirectory per Android system library (21 total). Each proxy (`libberberis_proxy_libXXX.so`) wraps a host library, converting arguments between ARM64 and x86_64 ABIs. See [Section 9](#9-talking-to-the-host-proxy-libraries). | `android_api/libvulkan/`, `android_api/libc/`, etc. |
 | `jni/` | JNI-specific bridging. `WrapGuestJNIFunction()` creates trampolines for ARM64 JNI methods that Java can call through x86_64 conventions. Handles "shorty" string parsing for argument type conversion. | `jni/jni_trampolines.cc` |
-| `native_activity/` | Wraps Android's `NativeActivity` entry points for guest code. When an ARM64 NativeActivity app launches, this module creates the necessary wrappers so `ANativeActivity_onCreate()` is called with the correct ABI. | `native_activity/native_activity.cc` |
+| `native_activity/` | Wraps Android's `NativeActivity` entry points for guest code. When an ARM64 NativeActivity app launches, this module creates the necessary wrappers so `ANativeActivity_onCreate()` is called with the correct ABI. | `native_activity/native_activity_wrapper.cc` |
 | `proxy_loader/` | Loads proxy libraries at runtime. Resolves symbols in proxy libraries and registers them in the guest linker's namespace so the guest ARM64 linker can find them. | `proxy_loader/proxy_loader.cc` |
 
 ### System Emulation
