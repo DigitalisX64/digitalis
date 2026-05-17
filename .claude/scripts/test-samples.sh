@@ -83,6 +83,7 @@ declare -A MODULES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk/com.example.hellobinderndk.MainActivity"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector/com.example.hellofpvector.MainActivity"
+    ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
 )
 
 # Test package names (applicationId + ".test")
@@ -114,6 +115,7 @@ declare -A TEST_PACKAGES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.test"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.test"
+    ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.test"
 )
 
 # Fully qualified test class names
@@ -145,6 +147,7 @@ declare -A TEST_CLASSES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.ScreenshotTest"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
+    ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.ScreenshotTest"
 )
 
 # Ordered list for consistent output
@@ -155,7 +158,7 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
-    hello-fp-vector
+    hello-fp-vector hello-ld-interleave
 )
 
 # Check emulator
