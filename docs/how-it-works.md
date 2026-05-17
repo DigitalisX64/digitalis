@@ -25,6 +25,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 17. [Signal Handling and Fault Recovery](#17-signal-handling-and-fault-recovery)
 18. [Putting It All Together: The Vulkan Triangle](#18-putting-it-all-together-the-vulkan-triangle)
 19. [Android's NativeBridge Framework](#19-androids-nativebridge-framework)
+20. [binfmt_misc: Running Guest Binaries Directly](#20-binfmt_misc-running-guest-binaries-directly)
 
 **Appendix**
 
@@ -505,6 +506,8 @@ Three key data structures appear throughout the system:
 ---
 
 ## 5. How an ARM64 App Starts
+
+This section covers **Path A** — the NativeBridge-driven launch flow used when an ARM64 APK is started by the Android framework. ARM64 guest code can also enter Digitalis a second way (kernel-level `binfmt_misc` dispatch of an ARM64 ELF invoked via `execve()`); see [§20](#20-binfmt_misc-running-guest-binaries-directly) for that path.
 
 ```mermaid
 sequenceDiagram
@@ -1130,7 +1133,9 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Sample Apps.** 26 ARM64-only sample app modules — 22 ported from [android/ndk-samples](https://github.com/android/ndk-samples) plus 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, and NNAPI. The original `hello-vulkan` module was written specifically for the Digitalis project.
 
-**Distribution Artifact Allowlist.** `berberis_config.mk` defines `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` — the explicit list of files allowed in the Digitalis system image (used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST` in `enable_arm64_to_x86_64.mk`). Mirroring the upstream RISC-V coverage, it enumerates 69 paths in total: the 21 `libberberis_proxy_*.so` stubs, 42 guest ARM64 system libs under `system/lib64/arm64/` (libc, libm, libvulkan, libdl, libicu, libsqlite, libssl, libcrypto, libcompiler_rt, libnative_bridge_vdso, …), `libberberis_arm64.so`, `libberberis_exec_region.so`, the ARM64 `app_process64` and `linker64`, `system/etc/init/berberis.rc`, and `system/etc/ld.config.arm64.txt`. The complete list is what makes a Digitalis build pass the AOSP artifact-allowlist check (closes [DigitalisX64/digitalis#1](https://github.com/DigitalisX64/digitalis/issues/1)).
+**Distribution Artifact Allowlist.** `berberis_config.mk` defines `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` — the explicit list of files allowed in the Digitalis system image (used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST` in `enable_arm64_to_x86_64.mk`). Mirroring the upstream RISC-V coverage, it enumerates 73 paths in total: the 21 `libberberis_proxy_*.so` stubs, 42 guest ARM64 system libs under `system/lib64/arm64/` (libc, libm, libvulkan, libdl, libicu, libsqlite, libssl, libcrypto, libcompiler_rt, libnative_bridge_vdso, …), `libberberis_arm64.so`, `libberberis_exec_region.so`, the ARM64 `app_process64` and `linker64`, the two binfmt_misc magic files (`arm64_exe`, `arm64_dyn`), the two ARM64 program-runner binaries (`berberis_program_runner_arm64`, `berberis_program_runner_binfmt_misc_arm64`), `system/etc/init/berberis.rc`, and `system/etc/ld.config.arm64.txt`. The complete list is what makes a Digitalis build pass the AOSP artifact-allowlist check (closes [DigitalisX64/digitalis#1](https://github.com/DigitalisX64/digitalis/issues/1)).
+
+**binfmt_misc Parity with RISC-V.** Berberis upstream has shipped kernel-level `binfmt_misc` dispatch for RISC-V guest binaries from the beginning (`binfmt_misc/riscv64_exe` + `binfmt_misc/riscv64_dyn` + `berberis_program_runner_binfmt_misc_riscv64`). Digitalis adds the matching set for ARM64 (`binfmt_misc/arm64_exe`, `binfmt_misc/arm64_dyn`, `berberis_program_runner_binfmt_misc_arm64`, `berberis_program_runner_arm64`) plus the init-script block that registers them when `ro.enable.native.bridge.exec=1` and `ro.dalvik.vm.isa.arm64=x86_64` are set — both already set by `enable_arm64_to_x86_64.mk`. This enables shell-launched ARM64 binaries, gtest executables, and any `execve()`-spawned ARM64 subprocess to run on a Digitalis emulator. See [Section 20](#20-binfmt_misc-running-guest-binaries-directly) for the full path.
 
 **Code Markers.** All Digitalis-specific additions to upstream Berberis files are marked with `// region digitalis` / `// endregion` comments (or `# region digitalis` in makefiles). This makes it easy to find what Digitalis changed versus what was already in Berberis.
 
@@ -2003,6 +2008,118 @@ frameworks/libs/binary_translation/native_bridge/ # Berberis/Digitalis implement
 ```
 
 The **`guest_state_accessor`** deserves a special mention: when an app crashes under translation, Android's crash reporter (`debuggerd`) needs to display the guest CPU registers (ARM64 X0-X30), not the host registers (x86_64 RAX-R15). The accessor provides a `LoadGuestStateRegisters()` function that reads the guest state from a special TLS slot (`TLS_SLOT_NATIVE_BRIDGE_GUEST_STATE`) where Berberis stores it. The guest state data starts with a signature (`0x5349'5245'4252'4542` = "BERBERIS") followed by architecture-specific register data.
+
+---
+
+## 20. binfmt_misc: Running Guest Binaries Directly
+
+[Section 5](#5-how-an-arm64-app-starts) covered **Path A** — the NativeBridge-driven flow used when an ARM64 APK launches from the Android framework. This section covers **Path B** — the alternate launch route for ARM64 guest code that doesn't go through an app at all: **`binfmt_misc`**, the Linux kernel mechanism that auto-invokes a registered user-space interpreter when `execve()` sees a foreign-ABI ELF.
+
+Path B is used for:
+
+- `adb shell ./my-arm64-binary` — running a bare ELF directly from the shell
+- ARM64 gtest binaries pushed to `/data/local/tmp/` for on-device testing
+- ARM64 shell utilities (`strace`, custom debug tools)
+- Any subprocess that another process spawns via `execve()` of an ARM64 ELF
+
+Berberis on the RISC-V side has had `binfmt_misc` support from the beginning. Digitalis now matches that to keep the two backends consistent.
+
+### How binfmt_misc Dispatch Works
+
+```mermaid
+sequenceDiagram
+    participant Shell as adb shell
+    participant Kernel as Host Linux kernel
+    participant Runner as berberis_program_runner_binfmt_misc_arm64
+    participant Berberis as libberberis_arm64.so
+
+    Shell->>Kernel: execve("./my-arm64-binary")
+    Kernel->>Kernel: Read ELF header bytes
+    Kernel->>Kernel: Match against /proc/sys/fs/binfmt_misc entries
+    Note over Kernel: arm64_exe matches:<br/>ELFCLASS64 + ET_EXEC + EM_AARCH64 (0xb7)
+    Kernel->>Runner: Rewrite exec to:<br/>runner ./my-arm64-binary
+    Runner->>Berberis: InitBerberis()
+    Runner->>Berberis: GuestLoader::StartExecutable()
+    Berberis->>Berberis: Dispatcher loop, JIT/interpreter
+    Berberis-->>Shell: process exits normally
+```
+
+The kernel intercepts the original `execve()`, recognises the ELF header, and rewrites the exec into a different one that invokes the registered interpreter with the original path as an argument. The interpreter — `berberis_program_runner_binfmt_misc_arm64` — is itself a native x86_64 binary that loads `libberberis_arm64.so` (the same library NativeBridge uses) and hands the guest binary to `GuestLoader::StartExecutable()`, which then runs it under the same dispatcher / JIT / interpreter stack covered in sections 7 and 11.
+
+### Registration: Magic Files and the Init Block
+
+The kernel needs two pieces of information per foreign ABI: the **magic bytes** that identify it, and the **interpreter** to invoke. Digitalis ships two magic files under `system/etc/binfmt_misc/`:
+
+| File | Matches |
+|---|---|
+| `arm64_exe` | ELFCLASS64 + little-endian + `ET_EXEC` (`e_type=2`) + `EM_AARCH64` (0xb7) |
+| `arm64_dyn` | Same as above but `ET_DYN` (`e_type=3`) — position-independent executables, the modern default for NDK and most Android binaries |
+
+Each file's contents follow the Linux `binfmt_misc` registration format documented in `Documentation/admin-guide/binfmt-misc.rst`:
+
+```
+:arm64_exe:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7::/system/bin/berberis_program_runner_binfmt_misc_arm64:P
+```
+
+| Field | Value | Meaning |
+|---|---|---|
+| name | `arm64_exe` | Registration identifier in `/proc/sys/fs/binfmt_misc/` |
+| type | `M` | Match by magic bytes |
+| offset | *(empty)* | Default 0 — magic starts at byte 0 of the ELF |
+| magic | `\x7fELF…\xb7` | 19 bytes covering the ELF identification + low byte of `e_machine` |
+| mask | *(empty)* | Default all-1s — every magic byte must match exactly |
+| interpreter | `/system/bin/berberis_program_runner_binfmt_misc_arm64` | The native x86_64 program the kernel runs |
+| flags | `P` | Preserve `argv[0]` so the interpreter sees the original guest binary path |
+
+The init script `system/etc/init/berberis.rc` registers them when the system properties are right:
+
+```
+on early-init && property:ro.enable.native.bridge.exec=1
+    mount binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+
+on property:ro.enable.native.bridge.exec=1 && property:ro.dalvik.vm.isa.arm64=x86_64
+    copy /system/etc/binfmt_misc/arm64_exe /proc/sys/fs/binfmt_misc/register
+    copy /system/etc/binfmt_misc/arm64_dyn /proc/sys/fs/binfmt_misc/register
+```
+
+Both properties are set by `enable_arm64_to_x86_64.mk` (which the Digitalis product inherits), so registration happens automatically on a Digitalis emulator with no extra opt-in required.
+
+### Two Program Runners, Same Library
+
+Digitalis ships two binaries under `system/bin/`:
+
+| Binary | Purpose | Linked guest backend |
+|---|---|---|
+| `berberis_program_runner_arm64` | CLI runner for manual testing: `runner [-l loader] [-s vdso] guest_executable [args…]` (`program_runner/main.cc`) | `libberberis_arm64.so` |
+| `berberis_program_runner_binfmt_misc_arm64` | Kernel-invoked binfmt_misc interpreter — simpler argv shape suited to the kernel's invocation convention (`program_runner/main_binfmt_misc.cc`) | `libberberis_arm64.so` |
+
+Both share `program_runner/program_runner.cc`, which calls `InitBerberis()` and `GuestLoader::StartExecutable()` — the same functions NativeBridge ultimately reaches through a different path. So `binfmt_misc` and NativeBridge converge on the same guest loader and the same translator; only the launch wrapper differs.
+
+### Path A vs Path B at a Glance
+
+| Aspect | Path A — NativeBridge | Path B — binfmt_misc |
+|---|---|---|
+| Triggered by | Android `ActivityManager` launching an APK | Kernel seeing `execve()` of an ARM64 ELF |
+| Entry point | `dlopen(libberberis_arm64.so)` + `dlsym("NativeBridgeItf")` + JNI trampolines | `execve()` of `berberis_program_runner_binfmt_misc_arm64` |
+| Guest loaded by | `NdktNativeBridge::LoadLibrary()` → `GuestLoader` | program runner → `GuestLoader::StartExecutable()` |
+| Typical workloads | All ARM64-only APKs in the sample suite | Shell tools, gtest binaries, debugging utilities, subprocess `execve()` |
+| Required for | Every ARM64-only Android app | Tests, CI, shell scripts, system flows that exec foreign binaries |
+| Shared infrastructure | `libberberis_arm64.so`, dispatcher loop, JIT + interpreter, all 21 proxy libs | Same |
+
+The two paths are **complementary, not alternative**. Most workloads use Path A; Path B fills the smaller but real gap for non-app guest code — bringing Digitalis to parity with what Berberis RISC-V has shipped since day one.
+
+### Files in the Distribution
+
+Path B adds these four entries to `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64`:
+
+```
+system/bin/berberis_program_runner_binfmt_misc_arm64
+system/bin/berberis_program_runner_arm64
+system/etc/binfmt_misc/arm64_dyn
+system/etc/binfmt_misc/arm64_exe
+```
+
+Build modules: `berberis_program_runner_binfmt_misc_arm64`, `berberis_program_runner_arm64` (cc_binary in `program_runner/Android.bp`), `arm64_dyn`, `arm64_exe` (prebuilt_etc in `prebuilt/Android.bp`). All are pulled into the system image by `BERBERIS_PRODUCT_PACKAGES_ARM64_TO_X86_64`.
 
 ---
 
