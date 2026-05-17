@@ -249,6 +249,29 @@ for mod in "${MODULE_ORDER[@]}"; do
     sleep 1
 done
 
+# VulkanCapsViewer end-to-end smoke target (required, runs only in
+# liveness mode and only when no -single-module FILTER is set).
+if [[ -z "$FILTER" ]]; then
+    VKCAPS="${WORK_DIR}/sample/hellodigitalis/vulkancapsviewer-test/test.sh"
+    if [[ -x "$VKCAPS" ]]; then
+        echo ""
+        echo "--- vulkancapsviewer-test (required smoke target) ---"
+        total=$((total + 1))
+        if bash "$VKCAPS"; then
+            pass=$((pass + 1))
+        else
+            rc=$?
+            if [[ $rc -eq 77 ]]; then
+                echo "  SKIP: vulkancapsviewer (no prebuilt APK in prebuilt/)"
+                total=$((total - 1))
+            else
+                crash=$((crash + 1))
+                echo "  FAIL: vulkancapsviewer (exit $rc)"
+            fi
+        fi
+    fi
+fi
+
 echo ""
 echo "═══════════════════════════════════════════════"
 echo "  Results: $pass PASS / $crash CRASH / $total total"
