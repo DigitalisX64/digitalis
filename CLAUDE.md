@@ -118,6 +118,38 @@ These are the most-modified files and the ones you'll touch most often:
 
 - **No Co-Authored-By lines.** Do not add `Co-Authored-By` trailers to commit messages.
 
+## Debugging Prebuilt APKs
+
+When a prebuilt third-party APK (Facebook, WhatsApp, VulkanCapsViewer, etc.) fails on the emulator, **prefer tracing-based diagnostic** over static code audit. Static audit alone routinely takes many build/push cycles to converge; a single trace usually points straight at the offending guest PC.
+
+**Setup** (per emulator boot):
+
+```bash
+adb root
+adb shell setenforce 0                                       # SELinux Permissive — needed to setprop berberis.tracing
+adb shell setprop berberis.tracing '<pkg>=digitalis-trace.log'   # e.g. com.facebook.katana=digitalis-trace.log
+adb shell am force-stop <pkg>
+adb shell am start -n <pkg>/<launch-activity>
+sleep 18
+adb shell 'chmod 644 /data/user/0/<pkg>/digitalis-trace.log'
+adb pull /data/user/0/<pkg>/digitalis-trace.log /tmp/trace.log
+```
+
+Relative trace filenames land in the app's private dir (`/data/user/0/<pkg>/`). Absolute paths are rejected by `TraceToFile` unless the dir is owned by the app uid. The `BERBERIS_TRACING` env var also works but is read once at zygote fork time; `setprop` is the only reliable way to set it per-app.
+
+**Why `setenforce 0` is fine for debugging:**
+- It's emulator-local and reverts on the next reboot.
+- The property service rejects `setprop berberis.tracing` under Enforcing because no `property_contexts` rule exists for it. Adding such a rule means editing SELinux policy and rebuilding; flipping to Permissive is the temporary equivalent.
+- **Always restore Enforcing (`adb shell setenforce 1`) when done debugging**, and never commit Permissive into product config.
+
+**Reading the trace:**
+- `berberis: dispatch#N pc=… x0=… x29=… x30=… sp=…` — the field labeled `sp=` is actually **x1** (see `runtime/arm64/translator_x86_64.cc:196`).
+- `berberis: trans#N pc=… size=… JIT|INTERP …` — a new translation cache entry. Cross-reference `pc` against `link_map[i]: <base> <lib>` lines (also logged) to compute `lib_offset = pc - base`, then disasm at that offset with `prebuilts/clang/host/linux-x86/llvm-binutils-stable/llvm-objdump -d <pulled-lib>` to see the guest instruction.
+- `berberis: interp #N pc=…` — emitted every 5 million interpreter instructions; if you see it during a small region, that region is interp-bailout-hot and worth JIT-implementing.
+- Wrong-output bugs (Brotli/zstd checksum mismatches, "Bad context map", etc.) point at decoder mis-dispatch — verify the JIT-bailed-out instruction's encoding against the ARM ARM and confirm it routes to the right handler.
+
+**Don't bisect via SIGILL substitution as the first move.** Replacing a handler with `Undefined()` and watching for SIGILL only proves whether that handler is hit; tracing both narrows the hit set and shows the operand values, which is far more useful per build/push cycle.
+
 ## Critical Conventions
 
 - **Decoder dispatch order matters.** Multiple instruction groups share encoding prefixes. Always check distinguishing bits (bit29 for LD/ST, bit24 for single/multi struct, bits[11:10] for three-diff/three-same). Missing a bit routes instructions to the wrong handler silently.
