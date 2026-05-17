@@ -2337,6 +2337,8 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `LDAR Xd, [Xn]` | plain `movq` | JIT | x86 TSO provides acquire for free |
 | `STLR Xd, [Xn]` | plain `movq` | JIT | x86 TSO provides release for free |
 | `CAS Xs, Xt, [Xn]` | `lock cmpxchg [mem], desired` | JIT | Compare-and-swap |
+| `LDADD Ws, Wt, [Xn]` | `lock xadd [mem], src` | JIT | Atomic fetch-add (the LDADD / LDSET / LDEOR / LDCLR / LDSMAX / LDSMIN / LDUMAX / LDUMIN family) |
+| `SWP Ws, Wt, [Xn]` | `lock xchg [mem], src` | JIT | Atomic swap |
 | `LDXR Xd, [Xn]` | load + store reservation in ThreadState | JIT | Exclusive load |
 | `STXR Wd, Xs, [Xn]` | CAS loop using reservation | JIT | Exclusive store |
 | Pre/post-index addressing | compute addr + load/store + writeback | JIT | `[Xn, #off]!` and `[Xn], #off` |
@@ -2389,7 +2391,7 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `MSR NZCV, Xn` | remap bits + store to ThreadState | JIT | Write condition flags |
 | `MSR TPIDR_EL0, Xn` | `movq [ThreadState.tls], src` | JIT | Write TLS pointer |
 | `MRS/MSR` (other regs) | — | Interpreter | |
-| `DMB / DSB / ISB` | — | Interpreter | Barriers (x86 TSO handles most cases) |
+| `DMB / DSB / ISB` | *no x86 emitted* | JIT (no-op) | Decoder routes to `Nop()`; x86 TSO already provides the orderings the guest needs |
 | `BRK #imm` | — | Interpreter | Breakpoint |
 
 ### SIMD / NEON
@@ -2569,7 +2571,7 @@ These directories connect Berberis to Android's frameworks.
 | `tools/` | Build-time tools for code generation and analysis. |
 | `device_arch_info/` | Architecture feature detection for the host CPU (AVX, SSE, etc.) — determines which host instructions the JIT can use. |
 | `program_runner/` | Standalone execution of guest binaries (RISC-V only). Allows running guest ELF executables outside Android. |
-| `prebuilt/` | Prebuilt configuration files, including `ld.config.arm64.txt` which defines the guest linker namespace search paths for proxy libraries. |
+| `prebuilt/` | Prebuilt configuration files, including `prebuilt/system/etc/ld.config.arm64.txt` (the source for the installed `system/etc/ld.config.arm64.txt`) which defines the guest linker namespace search paths for proxy libraries. |
 | `docs/` | Upstream Berberis documentation (separate from this Digitalis docs directory). |
 
 ### Where to Start for Common Tasks
@@ -2721,16 +2723,17 @@ The most common ARM64 function-prologue opcode. Pre-index `!` means SP is update
 ; ARM64 (0x9a820020)
 CSEL X0, X1, X2, EQ
 
-; x86_64
-movzx eax, word [rbp + nzcv_off]
-test  ax, 0x4000            ; Z bit in packed NZCV
-mov   rax, [rbp + x2_off]   ; else value
-mov   rdx, [rbp + x1_off]   ; then value
-cmovnz rax, rdx
+; x86_64 (branch-style, what Berberis actually emits)
+mov   rax, [rbp + x2_off]   ; load else value first
+movzx ecx, word [rbp + nzcv_off]
+bt    ecx, 14               ; test Z bit
+jnc   L_done                ; Z==0 -> keep else value
+mov   rax, [rbp + x1_off]   ; Z==1 -> overwrite with then value
+L_done:
 mov   [rbp + x0_off], rax
 ```
 
-x86's `cmovcc` family maps cleanly. The allocator temporarily reserves RDX for the "then" value.
+The lite translator uses a load-else-then-branch pattern (rather than `cmovcc`) so the same emitter handles CSINC / CSINV / CSNEG by applying `INC` / `NOT` / `NEG` to the loaded else value before the conditional overwrite.
 
 #### BL and RET — call and return
 
@@ -2806,7 +2809,7 @@ ARM64 exposes 31 GP registers (X0–X30) + SP + PC. x86_64 has 16. After reserva
 | **RBP** | Reserved — points at ThreadState |
 | **RSP** | Reserved — host stack pointer |
 
-When all 13 slots are full and another guest register is needed, the allocator spills to a temp loaded from / stored to ThreadState memory rather than terminating the region. SP, NZCV, and V0–V31 always live in ThreadState memory. See [section 8](#8-register-allocation).
+When all 13 GP slots are full and another guest register is needed, the allocator spills to a temp loaded from / stored to ThreadState memory rather than terminating the region. The FP/SIMD register file (V0–V31) has its own allocator that pins guest V-regs to the 16 host XMM registers (xmm0–xmm15); cross-bank moves like `FMOV X,D` must flush an XMM-pinned V-reg back to ThreadState before the GP side can read it. SP and NZCV always live in ThreadState memory. See [section 8](#8-register-allocation).
 
 ### D.5 Translation Lifecycle
 
@@ -2878,7 +2881,7 @@ Syscalls are always interpreter-only because they cross the kernel boundary and 
 flowchart TD
     SVC["SVC #0<br/>X8 = syscall_nr, X0..X5 = args"] --> TRX["Syscall number<br/>ARM64 → x86_64 table lookup"]
     TRX --> SPEC{Special case?}
-    SPEC -- yes --> FIX["Per-syscall fixup<br/>futex / pthread_once / mmap / structs"]
+    SPEC -- yes --> FIX["Per-syscall fixup<br/>futex BSS / mmap / errno / structs"]
     SPEC -- no --> HOST[Host syscall instruction]
     FIX --> HOST
     HOST --> RET["Translate result<br/>RAX → guest X0"]
