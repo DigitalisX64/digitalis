@@ -31,6 +31,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 - [A. How Berberis Translates RISC-V to x86_64](#appendix-a-how-berberis-translates-risc-v-to-x86_64)
 - [B. ARM64 to x86_64 Instruction Mapping](#appendix-b-arm64-to-x86_64-instruction-mapping)
 - [C. Source Directory Guide](#appendix-c-source-directory-guide)
+- [D. Architecture Walkthrough (Diagrams + Worked Examples)](#appendix-d-architecture-walkthrough-diagrams--worked-examples)
 
 ---
 
@@ -44,7 +45,7 @@ Digitalis solves this by translating ARM64 machine code to x86_64 machine code a
 
 Digitalis is built on top of [Berberis](https://android.googlesource.com/platform/frameworks/libs/binary_translation/), Google's open-source binary translator in the Android Open Source Project (AOSP). Berberis was originally designed for RISC-V-to-x86_64 translation and is already integrated with Android's NativeBridge system — the framework that Android uses to run apps built for a different CPU architecture. Digitalis adds the entire ARM64 backend: an ARM64 instruction decoder, a JIT compiler that generates x86_64 machine code, an interpreter for instructions the JIT can't handle, syscall translation, and proxy libraries that bridge ARM64 API calls to host libraries.
 
-The project includes 22 ARM64-only sample app modules under `sample/hellodigitalis/` — ported from Google's [android/ndk-samples](https://github.com/android/ndk-samples) — covering Vulkan, OpenGL ES, JNI, audio, camera, MIDI, sensors, SIMD, and more. All 22 run successfully on an x86_64 emulator through Digitalis translation.
+The project includes 26 ARM64-only sample app modules under `sample/hellodigitalis/` — 22 ported from Google's [android/ndk-samples](https://github.com/android/ndk-samples) plus 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, and NNAPI. All 26 run successfully on an x86_64 emulator through Digitalis translation.
 
 ---
 
@@ -1017,11 +1018,11 @@ An ARM64 Android app doesn't just run its own code — it calls dozens of system
 
 **Vulkan is the primary use case.** ARM64-only games and graphics apps almost always use Vulkan for rendering. The Vulkan proxy path — guest call to `libberberis_proxy_libvulkan.so` to GFXStream's VkDecoder to the host GPU — is the most exercised and most important translation path.
 
-**Proxy coverage determines app compatibility.** If an app calls a system library that doesn't have a proxy, the guest linker can't resolve the symbol and the app crashes. The set of proxy libraries defines the universe of apps that can run under Digitalis. The current 21 proxies cover the most commonly used Android NDK APIs.
+**Proxy coverage determines app compatibility.** If an app calls a system library that doesn't have a proxy, the guest linker can't resolve the symbol and the app crashes. The set of proxy libraries defines the universe of apps that can run under Digitalis. The current 21 proxies cover the most commonly used Android NDK APIs, and each one is exercised by at least one module in the `sample/hellodigitalis/` integration suite — `hello-gles1` for GLES 1.x, `hello-aaudio` for AAudio, `hello-binder-ndk` for binder_ndk, `hello-nnapi` for NNAPI, and the ported android/ndk-samples for everything else.
 
 ### Going Deeper
 
-Proxy libraries are registered in the build system via `berberis_config.mk`, which defines `BERBERIS_PRODUCT_PACKAGES_ARM64_TO_X86_64` — the complete list of packages installed on a Digitalis-enabled emulator. The guest namespace is configured so the ARM64 linker searches `/system/lib64/arm64/` for these proxies.
+Proxy libraries are registered in the build system via `berberis_config.mk`, which defines two related lists: `BERBERIS_PRODUCT_PACKAGES_ARM64_TO_X86_64` (the build modules installed on a Digitalis-enabled emulator) and `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` (the explicit artifact-path allowlist used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST` to whitelist exactly what ships under `system/`). The guest namespace is configured so the ARM64 linker searches `/system/lib64/arm64/` for these proxies.
 
 **Adding a new proxy** involves: creating the ABI wrapper (converting calling conventions), handling any struct layout differences between ARM64 and x86_64, registering the proxy in `berberis_config.mk`, and testing with sample apps that exercise the new API.
 
@@ -1127,7 +1128,9 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Product Configuration.** `sdk_phone64_x86_64_digitalis.mk` — the emulator product definition that enables ARM64 translation, sets the NativeBridge system property, and includes all proxy libraries.
 
-**Sample Apps.** 22 ARM64-only sample app modules (ported from [android/ndk-samples](https://github.com/android/ndk-samples)) that serve as the integration test suite, covering Vulkan rendering, OpenGL ES 2.0/3.0, JNI, C++ exceptions, audio (OpenSL ES), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, and more. The original `hello-vulkan` module was written specifically for the Digitalis project.
+**Sample Apps.** 26 ARM64-only sample app modules — 22 ported from [android/ndk-samples](https://github.com/android/ndk-samples) plus 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, and NNAPI. The original `hello-vulkan` module was written specifically for the Digitalis project.
+
+**Distribution Artifact Allowlist.** `berberis_config.mk` defines `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` — the explicit list of files allowed in the Digitalis system image (used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST`). Mirroring the upstream RISC-V coverage, it enumerates the 21 proxy libs, the 41 guest ARM64 system libs under `system/lib64/arm64/`, the ARM64 `app_process64` / `linker64`, `system/etc/init/berberis.rc`, and `system/etc/ld.config.arm64.txt`. The complete list is what makes a Digitalis build pass the AOSP artifact-allowlist check (closes [DigitalisX64/digitalis#1](https://github.com/DigitalisX64/digitalis/issues/1)).
 
 **Code Markers.** All Digitalis-specific additions to upstream Berberis files are marked with `// region digitalis` / `// endregion` comments (or `# region digitalis` in makefiles). This makes it easy to find what Digitalis changed versus what was already in Berberis.
 
@@ -2582,3 +2585,334 @@ These directories connect Berberis to Android's frameworks.
 | Write a host test | `lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc` |
 | Understand the dispatch loop | `runtime/execute_guest.cc` |
 | Understand register allocation | `lite_translator/arm64_to_x86_64/allocator.h` |
+
+---
+
+## Appendix D: Architecture Walkthrough (Diagrams + Worked Examples)
+
+Diagram-first companion to sections 4–11 and Appendices B–C. An interactive version of this material with hover tooltips and tabbed worked examples is hosted at <https://digitalisx64.github.io/architecture.html>.
+
+### D.1 End-to-End Pipeline
+
+What happens between `am start` and the first executed x86_64 instruction.
+
+```mermaid
+flowchart TD
+    APK["ARM64 APK<br/>(arm64-v8a only)"]
+    AF["Android Framework<br/>(x86_64 host)"]
+    NB["NativeBridge<br/>libberberis_arm64.so"]
+    GL["Guest Loader<br/>TinyLoader → linker64"]
+    APP["ARM64 App Code + Libs<br/>app .so · libc · libm · libvulkan"]
+    TR["Translator<br/>JIT | Interpreter"]
+    PX["Proxy Libraries<br/>libberberis_proxy_*.so"]
+    HOST["Host x86_64 APIs<br/>libvulkan + GFXStream VkDecoder"]
+    PIX[Pixels on screen]
+
+    APK --> AF --> NB --> GL --> APP --> TR --> PX --> HOST --> PIX
+```
+
+See [section 4](#4-the-big-picture) for the prose walkthrough; the diagram above is the index.
+
+### D.2 Dual Dispatch — JIT and Interpreter
+
+| Engine | Coverage | Handles |
+|---|---|---|
+| Lite Translator (JIT) | ~98% of executed instructions | integer, branch, load/store, system, basic SIMD |
+| Interpreter | fallback | syscalls, complex SIMD (pairwise, widening, permute, across-lanes), CRC32, scalar FP conversions |
+
+A `kInterpreted` marker is installed at any guest PC the JIT can't handle, so subsequent dispatcher entries route directly to the interpreter instead of re-attempting compilation. See [section 7](#7-two-execution-paths-jit-and-interpreter) and [section 11](#11-translation-cache-and-dispatch-loop).
+
+### D.3 Worked Examples — ARM64 → x86_64
+
+Ten representative cases showing what the lite translator actually emits. The full mapping is in [Appendix B](#appendix-b-arm64-to-x86_64-instruction-mapping); these examples zoom in on the most pedagogically interesting backend details.
+
+#### ADD X0, X1, X2 — add two registers
+
+```
+; ARM64 (0x8b020020)
+ADD X0, X1, X2
+
+; x86_64 (worst case: both sources spilled)
+mov  rax, [rbp + x1_off]
+add  rax, [rbp + x2_off]
+mov  [rbp + x0_off], rax
+```
+
+Three host ops; no flag emission. If a source is pinned to a host register the loads collapse away.
+
+#### ADDS X0, X1, X2 — flag-setting variant
+
+```
+; ARM64 (0xab020020)
+ADDS X0, X1, X2
+
+; x86_64
+mov   rax, [rbp + x1_off]
+add   rax, [rbp + x2_off]   ; sets RFLAGS
+mov   [rbp + x0_off], rax
+lahf                        ; SF/ZF/CF → AH
+seto  al                    ; OF → AL
+and   ax, 0xc101            ; isolate N, Z, C, V
+mov   [rbp + nzcv_off], ax  ; pack into ThreadState NZCV
+```
+
+This four-instruction flag-capture tail (LAHF + SETO + AND + MOVW) is the canonical NZCV emission pattern. Any spill between `add` and `lahf` must use PUSH/POP — not SUB RSP — to preserve RFLAGS. See [§ D.7](#d7-nzcv-flag-emission).
+
+#### MUL X0, X1, X2 — multiply (the RDX dance)
+
+```
+; ARM64 (0x9b027c20)
+MUL X0, X1, X2
+
+; x86_64
+push rdx                    ; preserve any guest reg pinned to rdx
+mov  rax, [rbp + x1_off]
+mul  qword [rbp + x2_off]   ; RDX:RAX = RAX * mem
+mov  [rbp + x0_off], rax
+pop  rdx
+```
+
+x86 `mul` clobbers both RDX and RAX. RDX stays in the allocator's GP pool but must be saved/restored around MUL and DIV; PUSH/POP preserves flags.
+
+#### UDIV X0, X1, X2 — unsigned divide
+
+```
+; ARM64 (0x9ac20820)
+UDIV X0, X1, X2
+
+; x86_64
+push rdx
+mov  rcx, [rbp + x2_off]
+test rcx, rcx               ; divide-by-zero?
+jz   L_zero                 ; ARM returns 0; x86 would trap (#DE)
+xor  edx, edx
+mov  rax, [rbp + x1_off]
+div  rcx                    ; RAX = RDX:RAX / rcx
+mov  [rbp + x0_off], rax
+jmp  L_done
+L_zero: mov qword [rbp + x0_off], 0
+L_done: pop rdx
+```
+
+The explicit zero check preserves ARM's "divide-by-zero returns 0" semantics. SDIV additionally guards `INT_MIN / -1` overflow.
+
+#### STP X29, X30, [SP, #-16]! — function prologue
+
+```
+; ARM64 (0xa9bf7bfd)
+STP X29, X30, [SP, #-16]!
+
+; x86_64
+mov  rax, [rbp + sp_off]
+sub  rax, 16                ; pre-decrement guest SP
+mov  rcx, [rbp + x29_off]
+mov  [rax],     rcx         ; store X29
+mov  rcx, [rbp + x30_off]
+mov  [rax + 8], rcx         ; store X30 (LR)
+mov  [rbp + sp_off], rax    ; write SP back
+```
+
+The most common ARM64 function-prologue opcode. Pre-index `!` means SP is updated before the store; post-index (no `!`) updates after.
+
+#### CSEL X0, X1, X2, EQ — branchless select
+
+```
+; ARM64 (0x9a820020)
+CSEL X0, X1, X2, EQ
+
+; x86_64
+movzx eax, word [rbp + nzcv_off]
+test  ax, 0x4000            ; Z bit in packed NZCV
+mov   rax, [rbp + x2_off]   ; else value
+mov   rdx, [rbp + x1_off]   ; then value
+cmovnz rax, rdx
+mov   [rbp + x0_off], rax
+```
+
+x86's `cmovcc` family maps cleanly. The allocator temporarily reserves RDX for the "then" value.
+
+#### BL and RET — call and return
+
+```
+; BL foo (0x94000000 + imm26<<2)
+mov  qword [rbp + x30_off], <next_guest_pc>  ; LR ← PC+4
+mov  rax, <callee_pc>                        ; new guest PC
+ret                                          ; exit to dispatcher
+
+; RET (0xd65f03c0) — alias for RET X30
+mov  rax, [rbp + x30_off]                    ; new guest PC = LR
+ret                                          ; exit to dispatcher
+```
+
+Both terminate the JIT region. The dispatcher looks up the new guest PC in the translation cache and resumes there. Host return-address prediction helps because the host `ret` here is paired with the host `call` that entered the dispatcher.
+
+#### FMOV X0, D0 — cross-bank register move (the bug case)
+
+```
+; ARM64 (0x9e660000)
+FMOV X0, D0
+
+; x86_64
+; If D0/V0 is pinned to xmm10, the allocator must flush xmm10 to
+; [rbp + v0_off] FIRST. The historical bug (fixed in commit
+; 23f12f72) was skipping that flush and reading a stale slot.
+movq rax, qword [rbp + v0_off]
+mov  [rbp + x0_off], rax
+```
+
+Cross-bank moves go through memory because the GP and FP register files have independent host-pin mappings.
+
+#### CAS W0, W1, [X2] — atomic compare-and-swap
+
+```
+; ARM64 (0x88a07c40)
+CAS W0, W1, [X2]
+
+; x86_64
+mov  rax, [rbp + x2_off]    ; guest pointer
+mov  eax, [rbp + x0_off]    ; expected → EAX
+mov  edx, [rbp + x1_off]    ; new value  → EDX
+lock cmpxchg [rax], edx     ; atomic CAS
+mov  [rbp + x0_off], rax    ; old value → W0 (zero-extends X0)
+```
+
+Maps almost 1-to-1 onto x86 `lock cmpxchg`. CAS, SWP, and LDADD share encoding prefixes — getting the decoder dispatch order wrong silently routes them to each other (see [section 6](#6-decoding-arm64-instructions)).
+
+#### STLR W0, [X1] — store-release
+
+```
+; ARM64 (0x889ffc20)
+STLR W0, [X1]
+
+; x86_64
+mov  rax, [rbp + x1_off]
+mov  ecx, [rbp + x0_off]
+mov  [rax], ecx             ; x86 TSO gives release for free
+```
+
+x86's memory model provides release semantics for ordinary stores; no fence needed. The historical issue was in the decoder routing STLR to a sibling handler (fixed in commit `f5876fad`).
+
+### D.4 Register Mapping at a Glance
+
+ARM64 exposes 31 GP registers (X0–X30) + SP + PC. x86_64 has 16. After reservations the JIT has **13 GP slots** for guest registers.
+
+| Pool slot | Notes |
+|---|---|
+| RBX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 | Allocatable; no special handling |
+| RDX | In pool; saved/restored around MUL and DIV |
+| RCX | In pool; saved/restored around variable shifts |
+| **RAX** | Reserved — holds the current guest PC |
+| **RBP** | Reserved — points at ThreadState |
+| **RSP** | Reserved — host stack pointer |
+
+When all 13 slots are full and another guest register is needed, the allocator spills to a temp loaded from / stored to ThreadState memory rather than terminating the region. SP, NZCV, and V0–V31 always live in ThreadState memory. See [section 8](#8-register-allocation).
+
+### D.5 Translation Lifecycle
+
+```mermaid
+flowchart LR
+    PC[Guest PC] --> CACHE{Translation<br/>Cache?}
+    CACHE -- hit --> EXEC[Execute<br/>cached x86_64]
+    CACHE -- miss --> DEC[Decoder<br/>classify opcode]
+    DEC --> JITQ{JIT-able?}
+    JITQ -- yes --> JIT[Lite Translator<br/>emit + install]
+    JITQ -- no --> INT[Interpreter<br/>install kInterpreted]
+    JIT --> EXEC
+    INT --> EXEC
+    EXEC -.region exit.-> PC
+```
+
+A region exits and returns to the dispatcher on: an out-of-region branch, a syscall, a call/return, register pressure, or any JIT-unsupported opcode. See [section 11](#11-translation-cache-and-dispatch-loop).
+
+### D.6 Translation Cache Anatomy
+
+```mermaid
+flowchart LR
+    subgraph HASH["Hash map · guest PC → entry"]
+        H1["0x7f00_4400 → entry A"]
+        H2["0x7f00_4420 → entry B"]
+        H3["0x7f00_4480 → kInterpreted"]
+        H4["0x7f00_4500 → entry C"]
+    end
+    subgraph BLOB["Translation cache · R+W+X memory"]
+        A["entry A: prolog | x86_64 body | epilog"]
+        B["entry B: alternate entry into region A"]
+        I["interpreter trampoline"]
+        C["entry C: prolog | x86_64 body | epilog"]
+    end
+    H1 --> A
+    H2 --> B
+    H3 --> I
+    H4 --> C
+```
+
+The cache is per-process, lives in R+W+X memory (the JIT writes new code into pages the host CPU executes from), and is keyed by guest PC. A region's prolog loads any pinned guest regs from ThreadState; the body is the translated x86_64; the epilog spills back and `ret`s to the dispatcher. Hot direct branches between regions can be patched to jump straight through.
+
+### D.7 NZCV Flag Emission
+
+ARM64 packs four condition bits — N, Z, C, V — into a register, while x86 keeps them spread across RFLAGS in a different layout. After every flag-setting op, the JIT pulls the bits out of RFLAGS and packs them into the layout the ARM cc-evaluators expect:
+
+```
+; after the flag-setting op (ADDS/SUBS/ANDS/CMP/TST/...)
+lahf                  ; SF, ZF, AF, PF, CF → AH
+seto  al              ; OF → AL
+and   ax, 0xc101      ; isolate N, Z, C, V
+mov   [rbp + nzcv_off], ax
+```
+
+| ARM bit | x86 source | Why |
+|---|---|---|
+| N | SF (bit 15 of AX after LAHF) | Sign bit |
+| Z | ZF (bit 14) | Result was zero |
+| C | CF (bit 8), inverted for SUB | ARM `C = NOT borrow` on subtraction |
+| V | OF (bit 0 of AL after SETO) | Signed overflow |
+
+`PUSH`/`POP` and `LEA` do not affect RFLAGS, but `SUB RSP, imm` and `ADD RSP, imm` do — so any allocator spills between the flag-setting op and `LAHF` must use PUSH/POP, never SUB RSP, or the captured flags reflect the spill instead of the guest op. See [section 16](#16-machine-code-generation).
+
+### D.8 Syscall Emulation Path
+
+Syscalls are always interpreter-only because they cross the kernel boundary and can have side effects (signals, exec) the JIT can't model.
+
+```mermaid
+flowchart TD
+    SVC["SVC #0<br/>X8 = syscall_nr, X0..X5 = args"] --> TRX["Syscall number<br/>ARM64 → x86_64 table lookup"]
+    TRX --> SPEC{Special case?}
+    SPEC -- yes --> FIX["Per-syscall fixup<br/>futex / pthread_once / mmap / structs"]
+    SPEC -- no --> HOST[Host syscall instruction]
+    FIX --> HOST
+    HOST --> RET["Translate result<br/>RAX → guest X0"]
+    RET --> RES[Resume guest at PC+4]
+```
+
+Concrete fixups (`kernel_api/arm64/syscall_emulation.cc` and `sys_mman_emulation.cc`):
+
+| Syscall | Fixup |
+|---|---|
+| `futex` | Pointer-arg translation; some value-bag handling differs by bit-width |
+| `pthread_once` / `call_once` | Recursive-call deadlock fixup — guest TLS view of the once-flag would otherwise self-block |
+| `mmap` (file-backed) | BSS partial-page zeroing required by NDK 28+ APK lib loads |
+| Struct-layout args | A handful of syscalls take structs whose ABIs differ; those are recopied with the right field offsets |
+
+See [section 10](#10-syscall-emulation).
+
+### D.9 Proxy Library Forwarding
+
+System-library calls (Vulkan, libc, libm, AAudio, etc.) don't get translated instruction by instruction — they're redirected to native x86_64 host implementations through proxy stubs.
+
+```mermaid
+sequenceDiagram
+    participant G as Guest ARM64
+    participant P as Proxy (ARM64 stub)
+    participant H as Host x86_64
+    G->>P: app calls vkCreateInstance(…)
+    Note over P: ld.config.arm64.txt<br/>redirects dlsym to proxy
+    P->>H: marshal args, AAPCS64 → System V
+    H-->>P: VkResult (in x86_64 regs)
+    P-->>G: repack result for guest (AAPCS64)
+```
+
+21 proxy libraries cover libc, libm, libvulkan, libEGL, libGLESv1_CM/v2/v3, libOpenSLES, libaaudio, libamidi, libandroid, libcamera2ndk, libmediandk, libbinder_ndk, libneuralnetworks, libjnigraphics, libnativewindow, libnativehelper, libandroid_runtime, libOpenMAXAL, and libwebviewchromium_plat_support. Redirects are declared in `system/etc/ld.config.arm64.txt`. See [section 9](#9-talking-to-the-host-proxy-libraries).
+
+### D.10 Module Map
+
+See [Appendix C](#appendix-c-source-directory-guide) for the full directory-by-directory guide to where each piece of the translator lives.
