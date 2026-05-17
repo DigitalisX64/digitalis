@@ -109,7 +109,7 @@ These are the most-modified files and the ones you'll touch most often:
 - **`decoder/include/berberis/decoder/arm64/decoder.h`** — ARM64 instruction bit decoding. Many bugs have been opcode dispatch ordering issues here.
 - **`decoder/include/berberis/decoder/arm64/semantics_player.h`** — Bridges decoder to translator/interpreter.
 - **`interpreter/arm64/interpreter.h`** — All interpreter-only SIMD instructions (pairwise, widening, permute, compare, across-lanes, CRC32, scalar conversions).
-- **`kernel_api/arm64/syscall_emulation.cc`** — Syscall forwarding, futex workarounds, call_once/pthread_once deadlock fixups.
+- **`kernel_api/arm64/syscall_emulation.cc`** — Syscall forwarding, futex workarounds, errno/struct-layout translation.
 - **`kernel_api/sys_mman_emulation.cc`** — BSS partial-page zeroing after file-backed mmaps.
 - **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
 - **`sample/hellodigitalis/`** — 26 ARM64-only sample app modules (22 ported from android/ndk-samples + 4 Digitalis proxy-lib smoke tests: hello-gles1, hello-aaudio, hello-binder-ndk, hello-nnapi). Use `/test-samples` to test on the emulator.

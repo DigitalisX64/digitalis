@@ -2667,7 +2667,8 @@ MUL X0, X1, X2
 ; x86_64
 push rdx                    ; preserve any guest reg pinned to rdx
 mov  rax, [rbp + x1_off]
-mul  qword [rbp + x2_off]   ; RDX:RAX = RAX * mem
+mov  rcx, [rbp + x2_off]
+mul  rcx                    ; RDX:RAX = RAX * rcx (unsigned MUL)
 mov  [rbp + x0_off], rax
 pop  rdx
 ```
@@ -2765,14 +2766,14 @@ Cross-bank moves go through memory because the GP and FP register files have ind
 #### CAS W0, W1, [X2] — atomic compare-and-swap
 
 ```
-; ARM64 (0x88a07c40)
+; ARM64 (0x88a07c41)
 CAS W0, W1, [X2]
 
 ; x86_64
-mov  rax, [rbp + x2_off]    ; guest pointer
+mov  rcx, [rbp + x2_off]    ; guest pointer (use rcx — rax is needed for EAX)
 mov  eax, [rbp + x0_off]    ; expected → EAX
 mov  edx, [rbp + x1_off]    ; new value  → EDX
-lock cmpxchg [rax], edx     ; atomic CAS
+lock cmpxchg [rcx], edx     ; atomic CAS
 mov  [rbp + x0_off], rax    ; old value → W0 (zero-extends X0)
 ```
 
@@ -2846,7 +2847,7 @@ flowchart LR
     H4 --> C
 ```
 
-The cache is per-process, lives in R+W+X memory (the JIT writes new code into pages the host CPU executes from), and is keyed by guest PC. A region's prolog loads any pinned guest regs from ThreadState; the body is the translated x86_64; the epilog spills back and `ret`s to the dispatcher. Hot direct branches between regions can be patched to jump straight through.
+The cache is per-process and keyed by guest PC. To respect W^X, the underlying memory is mapped twice from the same memfd: an `R+X` view the host CPU executes from, and an `R+W` alias the JIT writes new code into (see `runtime_primitives/exec_region_anonymous.cc` and `exec_region_elf_backed.cc`). A region's prolog loads any pinned guest regs from ThreadState; the body is the translated x86_64; the epilog spills back and `ret`s to the dispatcher. Hot direct branches between regions can be patched to jump straight through.
 
 ### D.7 NZCV Flag Emission
 
@@ -2889,7 +2890,6 @@ Concrete fixups (`kernel_api/arm64/syscall_emulation.cc` and `sys_mman_emulation
 | Syscall | Fixup |
 |---|---|
 | `futex` | Pointer-arg translation; some value-bag handling differs by bit-width |
-| `pthread_once` / `call_once` | Recursive-call deadlock fixup — guest TLS view of the once-flag would otherwise self-block |
 | `mmap` (file-backed) | BSS partial-page zeroing required by NDK 28+ APK lib loads |
 | Struct-layout args | A handful of syscalls take structs whose ABIs differ; those are recopied with the right field offsets |
 
