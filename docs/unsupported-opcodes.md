@@ -79,7 +79,8 @@ The JIT supports SIMD **loads/stores** (`MOVI Vd.2D, #0`, `LDR Q/D/S/H/B`, `STR 
 | Multi-structure load / store | `LD2`, `LD3`, `LD4`, `ST2`, `ST3`, `ST4` (the single-reg `LD1`/`ST1` is JIT'd) |
 | Widening arithmetic | `UADDL`, `SADDL`, `UMULL`, `SMULL`, `UMLAL`, `SMLAL` |
 | Vector shifts by immediate | `SHL V`, `SSHR V`, `USHR V`, `SLI V`, `SRI V` |
-| Vector FP | `FADD V`, `FMUL V`, `FMLA V`, `FMLS V` (any FP arithmetic on a vector) |
+| Vector FP — interpreter-supported | `FADD V`, `FSUB V`, `FMUL V`, `FMLA V`, `FMLS V` on `.4S` and `.2D`. |
+| Vector FP — unsupported | `FDIV V`, `FMAX V`, `FMIN V`, `FCMEQ V`, `FCMGE V`, `FCMGT V`, `FRECPS V`, `FRSQRTS V`, `FABD V`, `FMULX V`, `FMAXNM V`, `FMINNM V`. Listed in [§1](#1-rejections-inside-the-supported-encoding-space). |
 | Table lookup | `TBL`, `TBX` |
 | CRC32 | `CRC32B/H/W/X`, `CRC32CB/CH/CW/CX` (Digitalis-specific addition; software polynomial) |
 

@@ -82,6 +82,7 @@ declare -A MODULES=(
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk/com.example.hellobinderndk.MainActivity"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
+    ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector/com.example.hellofpvector.MainActivity"
 )
 
 # Test package names (applicationId + ".test")
@@ -112,6 +113,7 @@ declare -A TEST_PACKAGES=(
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.test"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
+    ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.test"
 )
 
 # Fully qualified test class names
@@ -142,6 +144,7 @@ declare -A TEST_CLASSES=(
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.ScreenshotTest"
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.ScreenshotTest"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
+    ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
 )
 
 # Ordered list for consistent output
@@ -152,6 +155,7 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
+    hello-fp-vector
 )
 
 # Check emulator

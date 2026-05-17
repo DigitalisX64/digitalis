@@ -1082,7 +1082,7 @@ graph TD
 
 1. **Reproduce**: run `test-samples.sh <module>` to confirm the app crashes (reports `CRASH` status)
 2. **Collect logs**: `adb logcat | grep -E "berberis|SIGSEGV|Fatal"` — look for the crash address and signal type
-3. **Enable tracing**: set the `BERBERIS_TRACING` environment variable to a file path to capture detailed translation logs
+3. **Enable tracing**: set the `BERBERIS_TRACING` environment variable to a file path to capture detailed translation logs. The conventional Digitalis path is `/data/local/tmp/digitalis-trace.log` — `setprop berberis.tracing /data/local/tmp/digitalis-trace.log` enables it system-wide, or `BERBERIS_TRACING=/data/local/tmp/digitalis-trace.log am start …` per-launch
 4. **Identify the guest PC**: the crash or trace log shows which ARM64 address was being executed when things went wrong
 5. **Disassemble**: use `llvm-objdump -d <guest.so>` to find the ARM64 instruction at that address
 6. **Diagnose**: check whether the decoder is routing the instruction correctly, whether the JIT is generating the right x86_64 code, or whether the interpreter is executing it correctly
@@ -1099,7 +1099,7 @@ Digitalis provides several tracing and logging mechanisms:
 - **Inline profiling**: `g_translation_stats` tracks JIT compilation statistics, JIT break logging records when regions end early, and the dispatch watchdog detects potential infinite loops.
 
 Tracing modes supported by `BERBERIS_TRACING`:
-- **File output**: set to a path (e.g., `/data/local/tmp/trace.log`), or `1`/`2` for stdout/stderr
+- **File output**: set to a path (the Digitalis convention is `/data/local/tmp/digitalis-trace.log`), or `1`/`2` for stdout/stderr
 - **TCP socket**: set to `:<port>` (e.g., `:9999`) for real-time tracing over network
 - **Package-specific**: set to `com.example.app=/path/to/trace` to trace only a specific app
 
