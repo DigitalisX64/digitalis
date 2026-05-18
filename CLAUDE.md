@@ -98,6 +98,15 @@ Update reference images (after intentional rendering changes):
 .claude/scripts/test-samples.sh --update-references hello-vulkan  # single module
 ```
 
+## Prebuilt-APK regression (sample/prebuilts/)
+
+If `sample/prebuilts/` exists and contains one or more `*.apk` files, treat them as **extra regression targets** for normal verification (alongside `test-samples.sh`). The expectation:
+
+- Install every APK under `sample/prebuilts/` on the booted Digitalis emulator (`adb install -r`).
+- Launch each one's main activity and watch for `Fatal signal`, `Undefined arm64 instruction`, `FATAL EXCEPTION`, or the process disappearing inside a short watch window. Any of those is a regression.
+- Run this in addition to (not instead of) `test-samples.sh`. Do not add per-APK helper scripts or per-APK CLAUDE.md sections — keep the workflow generic over whatever is dropped into `sample/prebuilts/`.
+- The APKs themselves are not committed in repos that are part of the manifest; the directory is intentionally a drop-in spot.
+
 ## Key Files for Development
 
 These are the most-modified files and the ones you'll touch most often:
@@ -120,7 +129,7 @@ These are the most-modified files and the ones you'll touch most often:
 
 ## Debugging Prebuilt APKs
 
-When a prebuilt third-party APK (Facebook, WhatsApp, VulkanCapsViewer, etc.) fails on the emulator, **prefer tracing-based diagnostic** over static code audit. Static audit alone routinely takes many build/push cycles to converge; a single trace usually points straight at the offending guest PC.
+When a prebuilt third-party APK (Facebook, WhatsApp, etc.) fails on the emulator, **prefer tracing-based diagnostic** over static code audit. Static audit alone routinely takes many build/push cycles to converge; a single trace usually points straight at the offending guest PC.
 
 **Setup** (per emulator boot):
 
