@@ -84,6 +84,7 @@ declare -A MODULES=(
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector/com.example.hellofpvector.MainActivity"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
+    ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
 )
 
 # Test package names (applicationId + ".test")
@@ -116,6 +117,7 @@ declare -A TEST_PACKAGES=(
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.test"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.test"
+    ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.test"
 )
 
 # Fully qualified test class names
@@ -148,6 +150,7 @@ declare -A TEST_CLASSES=(
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.ScreenshotTest"
+    ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.ScreenshotTest"
 )
 
 # Ordered list for consistent output
@@ -158,7 +161,7 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
-    hello-fp-vector hello-ld-interleave
+    hello-fp-vector hello-ld-interleave hello-superpack-regress
 )
 
 # Check emulator
