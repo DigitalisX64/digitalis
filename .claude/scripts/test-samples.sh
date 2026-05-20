@@ -308,20 +308,30 @@ for mod in "${MODULE_ORDER[@]}"; do
     fi
 
     # Run instrumentation test
-    # Use timeout because am instrument -w can hang when test process doesn't exit
+    # Use timeout because am instrument -w can hang when test process doesn't exit.
+    # Clear logcat first so the timeout-fallback grep only matches this run's result, not a prior module's.
+    adb logcat -c 2>/dev/null || true
     output=$(timeout 30 adb shell am instrument -w -e class "${TEST_CLASSES[$mod]}" "${TEST_PACKAGES[$mod]}/androidx.test.runner.AndroidJUnitRunner" 2>&1 || true)
 
-    # Check for pass: "OK (1 test)" in output, or test finished in logcat (timeout case)
+    # Check for pass: "OK (1 test)" in output, or "run finished: 1 tests, 0 failed" in logcat (timeout case).
+    # The per-test "finished:" line is logged regardless of pass/fail — only the "run finished:" summary
+    # contains the actual failure count, so it's the only safe signal for the timeout fallback path.
     if echo "$output" | grep -q "OK (1 test)"; then
         echo "  PASS: $mod"
         pass=$((pass + 1))
-    elif adb logcat -d 2>/dev/null | grep -q "TestRunner.*finished.*${TEST_CLASSES[$mod]##*.}"; then
+    elif adb logcat -d 2>/dev/null | grep -q "TestRunner: run finished: 1 tests, 0 failed"; then
         echo "  PASS: $mod (completed, am instrument timed out)"
         pass=$((pass + 1))
     else
         echo "  FAIL: $mod"
         crash=$((crash + 1))
-        echo "$output" | sed 's/^/    /'
+        # Surface the actual assertion failure if logcat has it
+        fail_msg=$(adb logcat -d 2>/dev/null | grep -E "AssertionError|Screenshot mismatch|run finished:" | tail -3)
+        if [[ -n "$fail_msg" ]]; then
+            echo "$fail_msg" | sed 's/^/    /'
+        else
+            echo "$output" | sed 's/^/    /'
+        fi
     fi
 
     # Cleanup between modules

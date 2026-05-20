@@ -69,6 +69,49 @@ build_prompt() {
     local output_file="${HANDOFF_PREFIX}-${next}.md"
     local user_idea="${3:-}"
 
+    # PRIMARY-TASK precedence.
+    # If the latest handoff exists AND its STATUS is IN_PROGRESS, the cycle's
+    # PRIMARY task is to advance that handoff's "What Should Be Done Next"
+    # list. The hardcoded sample-suite GOAL below is downgraded to "background
+    # — don't regress this" when there's IN_PROGRESS handoff work to continue.
+    # Without this gate, every cycle past #1 reads the hardcoded GOAL as if
+    # it were the user's request, regardless of what the previous cycle was
+    # actually working on.
+    local handoff_status=""
+    if [[ -f "$input_file" ]]; then
+        handoff_status=$(grep -E '^## STATUS:' "$input_file" 2>/dev/null | tail -1 | head -c 80)
+    fi
+    if [[ "$handoff_status" == *IN_PROGRESS* ]]; then
+        cat <<HANDOFF_PRIMARY
+You are a subagent working on the Digitalis project — an ARM64-to-x86_64 binary translation system built on AOSP's Berberis framework.
+
+PRIMARY TASK (override sample-suite GOAL below):
+The previous cycle wrote ${HANDOFF_PREFIX}-${current}.md with STATUS: IN_PROGRESS.
+Read its "## What Should Be Done Next" section and execute those items in the
+priority order they're listed. Each item there is concrete and was chosen by
+a prior cycle that had full context. Do NOT re-scope to the sample-suite
+goal below; the sample suite is already green and is BACKGROUND ("don't
+regress this"), not the primary task.
+
+If you finish all "What Should Be Done Next" items, OR if you find that
+those items are no longer correct given new evidence, write a NEW handoff
+explaining what you found and either set STATUS: IN_PROGRESS with a fresh
+"What Should Be Done Next" list, or STATUS: COMPLETE if the user-level goal
+in the user_idea (if any) is met.
+
+HANDOFF_PRIMARY
+        if [[ -n "$user_idea" ]]; then
+            cat <<USER_GOAL
+USER GOAL (the question that started this dispatch chain — keep this
+in mind at every decision; if the in-progress next-steps no longer serve
+this goal, course-correct):
+${user_idea}
+
+USER_GOAL
+        fi
+        echo "BACKGROUND (do not regress, but do not re-investigate either):"
+    fi
+
     cat <<'PROMPT_HEADER'
 You are a subagent working on the Digitalis project — an ARM64-to-x86_64 binary translation system built on AOSP's Berberis framework.
 
@@ -461,8 +504,12 @@ main() {
 
         echo "[$(date '+%H:%M:%S')] handoff-${next}.md written ($(wc -l < "$output_file") lines)"
 
-        # Clear user_idea after first successful cycle — subsequent cycles read handoffs
-        user_idea=""
+        # Keep user_idea across cycles so build_prompt can keep emitting the
+        # "USER GOAL" section. Previously we cleared it after the first
+        # cycle, which let subsequent cycles fall back to the hardcoded
+        # sample-suite GOAL even when the user's actual question was about
+        # something else entirely. The PRIMARY-TASK precedence in
+        # build_prompt now keys off the handoff's STATUS line instead.
 
         # Check for completion
         if grep -q "STATUS: COMPLETE" "$output_file" 2>/dev/null; then

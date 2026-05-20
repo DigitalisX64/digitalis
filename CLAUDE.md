@@ -123,6 +123,30 @@ These are the most-modified files and the ones you'll touch most often:
 - **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
 - **`sample/hellodigitalis/`** — 26 ARM64-only sample app modules (22 ported from android/ndk-samples + 4 Digitalis proxy-lib smoke tests: hello-gles1, hello-aaudio, hello-binder-ndk, hello-nnapi). Use `/test-samples` to test on the emulator.
 
+## Modification Surface (binding)
+
+Only these top-level paths may be modified when working on Digitalis:
+
+- `frameworks/libs/binary_translation/` — Berberis translator, kernel_api,
+  guest_loader, native_bridge, lite_translator, interpreter, decoder,
+  runtime, tiny_loader, base, proxy libraries, etc.
+- `device/generic/goldfish/` — emulator product/config.
+- `sample/` — sample apps, gradle scripts, prebuilt-APK drop-in.
+- `digitalis/` — Digitalis project docs/scripts (this file lives there).
+
+Do **not** modify any other AOSP source directory — in particular:
+
+- `bionic/` — upstream Android libc/linker. NOT a Digitalis surface.
+  If a fix appears to require a bionic edit, route it through Berberis
+  instead: patch guest libraries post-load (see
+  `frameworks/libs/binary_translation/guest_loader/guest_loader.cc`'s
+  `PatchLinkerProgname` for an example), extend the proxy libraries,
+  add syscall emulation, or hook in the guest_loader.
+
+This rule applies to every cycle of the dispatch loop and every direct
+edit. If you find yourself reaching for `bionic/<path>`, stop and
+re-route through `frameworks/libs/binary_translation/`.
+
 ## Git Conventions
 
 - **No Co-Authored-By lines.** Do not add `Co-Authored-By` trailers to commit messages.
