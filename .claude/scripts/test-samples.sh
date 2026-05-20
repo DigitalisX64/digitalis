@@ -83,6 +83,7 @@ declare -A MODULES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk/com.example.hellobinderndk.MainActivity"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector/com.example.hellofpvector.MainActivity"
+    ["hello-sha1-crypto"]="com.example.hellodigitalis.hellosha1crypto/com.example.hellosha1crypto.MainActivity"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
 )
@@ -116,6 +117,7 @@ declare -A TEST_PACKAGES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.test"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.test"
+    ["hello-sha1-crypto"]="com.example.hellodigitalis.hellosha1crypto.test"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.test"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.test"
 )
@@ -149,6 +151,7 @@ declare -A TEST_CLASSES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.ScreenshotTest"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
+    ["hello-sha1-crypto"]="com.example.hellodigitalis.hellosha1crypto.ScreenshotTest"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.ScreenshotTest"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.ScreenshotTest"
 )
@@ -161,7 +164,7 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
-    hello-fp-vector hello-ld-interleave hello-superpack-regress
+    hello-fp-vector hello-sha1-crypto hello-ld-interleave hello-superpack-regress
 )
 
 # Check emulator
