@@ -54,6 +54,43 @@ grant_permissions() {
     fi
 }
 
+# region digitalis
+# Reset the foreground before each per-module screenshot test.
+# Prevents the stale-foreground capture flake (handoff-14): if any other
+# activity (a previously-tested sample, OR a prebuilt APK like
+# VkCapsViewer that lingers in the foreground) is still on top when the
+# next test's instrumented Intent fires, the screenshot can capture the
+# wrong UI. Two-stage reset:
+#   1. send HOME so the launcher takes focus (this kicks any prebuilt
+#      foreground out — sample force-stops alone can't touch packages
+#      not listed in MODULE_ORDER)
+#   2. force-stop every sample package except the one under test, so
+#      the recents stack is clean and stale activities can't re-enter
+#      a render loop in the background
+# Sample force-stops are chained into a single adb shell call to avoid
+# paying ~30 adb round-trips (~1 ms in-shell vs ~50 ms over adb).
+force_stop_other_samples() {
+    local current_pkg="$1"
+    adb shell input keyevent KEYCODE_HOME 2>/dev/null || true
+    local cmd=""
+    local other_comp other_pkg other_mod
+    for other_mod in "${MODULE_ORDER[@]}"; do
+        other_comp="${MODULES[$other_mod]}"
+        other_pkg="${other_comp%%/*}"
+        if [[ "$other_pkg" != "$current_pkg" ]]; then
+            if [[ -z "$cmd" ]]; then
+                cmd="am force-stop $other_pkg"
+            else
+                cmd="$cmd; am force-stop $other_pkg"
+            fi
+        fi
+    done
+    if [[ -n "$cmd" ]]; then
+        adb shell "$cmd" 2>/dev/null || true
+    fi
+}
+# endregion
+
 # Module -> component mapping (package/activity)
 declare -A MODULES=(
     ["hello-vulkan"]="com.example.hellodigitalis/android.app.NativeActivity"
@@ -84,7 +121,7 @@ declare -A MODULES=(
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector/com.example.hellofpvector.MainActivity"
     ["hello-neon"]="com.example.hellodigitalis.helloneon/com.example.helloneon.MainActivity"
-    ["hello-sha1-crypto"]="com.example.hellodigitalis.hellosha1crypto/com.example.hellosha1crypto.MainActivity"
+    ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha/com.example.hellosha.MainActivity"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
 )
@@ -119,7 +156,7 @@ declare -A TEST_PACKAGES=(
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.test"
     ["hello-neon"]="com.example.hellodigitalis.helloneon.test"
-    ["hello-sha1-crypto"]="com.example.hellodigitalis.hellosha1crypto.test"
+    ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.test"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.test"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.test"
 )
@@ -154,7 +191,7 @@ declare -A TEST_CLASSES=(
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
     ["hello-neon"]="com.example.hellodigitalis.helloneon.ScreenshotTest"
-    ["hello-sha1-crypto"]="com.example.hellodigitalis.hellosha1crypto.ScreenshotTest"
+    ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.ScreenshotTest"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.ScreenshotTest"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.ScreenshotTest"
 )
@@ -167,7 +204,7 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
-    hello-fp-vector hello-sha1-crypto hello-ld-interleave hello-superpack-regress
+    hello-fp-vector hello-sha-crypto hello-ld-interleave hello-superpack-regress
 )
 
 # Check emulator
@@ -313,6 +350,12 @@ for mod in "${MODULE_ORDER[@]}"; do
         continue
     fi
 
+    # region digitalis
+    # Force-stop all other sample packages so the previous module's UI can't
+    # leak into this module's `actual.png` (handoff-14 stale-foreground flake).
+    force_stop_other_samples "$pkg"
+    # endregion
+
     # Run instrumentation test
     # Use timeout because am instrument -w can hang when test process doesn't exit.
     # Clear logcat first so the timeout-fallback grep only matches this run's result, not a prior module's.
@@ -396,6 +439,12 @@ for mod in "${MODULE_ORDER[@]}"; do
         crash=$((crash + 1))
         continue
     fi
+
+    # region digitalis
+    # Force-stop all other sample packages so the previous module's UI can't
+    # leak into this module's reference capture (handoff-14 stale-foreground flake).
+    force_stop_other_samples "$pkg"
+    # endregion
 
     # Run instrumentation test with updateReferences=true
     # Use timeout because am instrument -w can hang when test process doesn't exit
