@@ -120,6 +120,17 @@ declare -A MODULES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk/com.example.hellobinderndk.MainActivity"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector/com.example.hellofpvector.MainActivity"
+    ["hello-widemul"]="com.example.hellodigitalis.hellowidemul/com.example.hellowidemul.MainActivity"
+    ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret/com.example.hellopacret.MainActivity"
+    ["hello-lse"]="com.example.hellodigitalis.hellolse/com.example.hellolse.MainActivity"
+    ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc/com.example.hellolrcpc.MainActivity"
+    ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt/com.example.hellojscvt.MainActivity"
+    ["hello-fp16"]="com.example.hellodigitalis.hellofp16/com.example.hellofp16.MainActivity"
+    ["hello-dotprod"]="com.example.hellodigitalis.hellodotprod/com.example.hellodotprod.MainActivity"
+    ["hello-complex"]="com.example.hellodigitalis.hellocomplex/com.example.hellocomplex.MainActivity"
+    ["hello-bti"]="com.example.hellodigitalis.hellobti/com.example.hellobti.MainActivity"
+    ["hello-bf16"]="com.example.hellodigitalis.hellobf16/com.example.hellobf16.MainActivity"
+    ["hello-barriers"]="com.example.hellodigitalis.hellobarriers/com.example.hellobarriers.MainActivity"
     ["hello-neon"]="com.example.hellodigitalis.helloneon/com.example.helloneon.MainActivity"
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha/com.example.hellosha.MainActivity"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
@@ -155,6 +166,17 @@ declare -A TEST_PACKAGES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.test"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.test"
+    ["hello-widemul"]="com.example.hellodigitalis.hellowidemul.test"
+    ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret.test"
+    ["hello-lse"]="com.example.hellodigitalis.hellolse.test"
+    ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc.test"
+    ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt.test"
+    ["hello-fp16"]="com.example.hellodigitalis.hellofp16.test"
+    ["hello-dotprod"]="com.example.hellodigitalis.hellodotprod.test"
+    ["hello-complex"]="com.example.hellodigitalis.hellocomplex.test"
+    ["hello-bti"]="com.example.hellodigitalis.hellobti.test"
+    ["hello-bf16"]="com.example.hellodigitalis.hellobf16.test"
+    ["hello-barriers"]="com.example.hellodigitalis.hellobarriers.test"
     ["hello-neon"]="com.example.hellodigitalis.helloneon.test"
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.test"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.test"
@@ -190,6 +212,17 @@ declare -A TEST_CLASSES=(
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.ScreenshotTest"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
     ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
+    ["hello-widemul"]="com.example.hellodigitalis.hellowidemul.ScreenshotTest"
+    ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret.ScreenshotTest"
+    ["hello-lse"]="com.example.hellodigitalis.hellolse.ScreenshotTest"
+    ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc.ScreenshotTest"
+    ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt.ScreenshotTest"
+    ["hello-fp16"]="com.example.hellodigitalis.hellofp16.ScreenshotTest"
+    ["hello-dotprod"]="com.example.hellodigitalis.hellodotprod.ScreenshotTest"
+    ["hello-complex"]="com.example.hellodigitalis.hellocomplex.ScreenshotTest"
+    ["hello-bti"]="com.example.hellodigitalis.hellobti.ScreenshotTest"
+    ["hello-bf16"]="com.example.hellodigitalis.hellobf16.ScreenshotTest"
+    ["hello-barriers"]="com.example.hellodigitalis.hellobarriers.ScreenshotTest"
     ["hello-neon"]="com.example.hellodigitalis.helloneon.ScreenshotTest"
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.ScreenshotTest"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.ScreenshotTest"
@@ -204,7 +237,9 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
-    hello-fp-vector hello-sha-crypto hello-ld-interleave hello-superpack-regress
+    hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
+    hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
+    hello-fp16 hello-jscvt hello-lrcpc hello-lse hello-pac-ret hello-widemul
 )
 
 # Check emulator
