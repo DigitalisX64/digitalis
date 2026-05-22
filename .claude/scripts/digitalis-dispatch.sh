@@ -86,18 +86,50 @@ build_prompt() {
 You are a subagent working on the Digitalis project — an ARM64-to-x86_64 binary translation system built on AOSP's Berberis framework.
 
 PRIMARY TASK (override sample-suite GOAL below):
-The previous cycle wrote ${HANDOFF_PREFIX}-${current}.md with STATUS: IN_PROGRESS.
-Read its "## What Should Be Done Next" section and execute those items in the
-priority order they're listed. Each item there is concrete and was chosen by
-a prior cycle that had full context. Do NOT re-scope to the sample-suite
-goal below; the sample suite is already green and is BACKGROUND ("don't
-regress this"), not the primary task.
 
-If you finish all "What Should Be Done Next" items, OR if you find that
-those items are no longer correct given new evidence, write a NEW handoff
-explaining what you found and either set STATUS: IN_PROGRESS with a fresh
-"What Should Be Done Next" list, or STATUS: COMPLETE if the user-level goal
-in the user_idea (if any) is met.
+Picking the next target — MANDATORY ORDER (do not skip steps):
+
+  STEP 1 — Read the "## CURRENT PRIORITY QUEUE" section near the top
+    of digitalis-full-support-plan.md. It is the authoritative source
+    for what to work on. Tier 1 items there are plan-listed and
+    ledger-moving.
+
+  STEP 2 — Read ${HANDOFF_PREFIX}-${current}.md. Look specifically
+    for: (a) a "USER DIRECTIVE" block in the "## What Should Be Done
+    Next" section (out-of-band guidance from the user — this overrides
+    everything), and (b) Tier 1.5 single-cycle correctness wins
+    flagged in that section.
+
+  STEP 3 — Pick a target by this rule, in order:
+    a. If a USER DIRECTIVE block names a specific next target, do that.
+    b. Otherwise, if Tier 1 in the plan's priority queue has ANY
+       open item, pick one. The handoff's "Recommendation for next
+       cycle:" line is ADVISORY ONLY when Tier 1 has open items —
+       prefer Tier 1 over the handoff's recommendation.
+    c. Only if Tier 1 is fully exhausted may you pick from Tier 1.5
+       (single-cycle correctness wins) or Tier 2 (carry-forward gap-
+       fills, the handoff's "Recommendation" line).
+
+  HARD RULE: The dispatch has drifted through 100+ cycles of single-
+  cycle SIMD encoding-gap fills while Tier 1 plan items remained
+  unchecked. The plan ledger has been stuck at 117/142 (82%) for many
+  cycles for this exact reason. Stop the drift. If you find yourself
+  about to start a Tier 2 item while Tier 1 is non-empty, STOP and
+  reread STEP 3 above.
+
+If you finish a Tier 1 item, OR if you find that the priority queue
+is no longer correct given new evidence, write a NEW handoff explaining
+what you found and either set STATUS: IN_PROGRESS with a fresh
+"What Should Be Done Next" list (preserving any USER DIRECTIVE
+block from the previous handoff verbatim), or STATUS: COMPLETE if the
+user-level goal in the user_idea (if any) is met.
+
+Your handoff's "What Should Be Done Next" section MUST:
+  - Preserve any USER DIRECTIVE block verbatim from the prior handoff.
+  - List Tier 1 items first (mirroring the plan's priority queue), so
+    the next cycle picks one of them. The "Recommendation for next
+    cycle:" line at the bottom MUST point at a Tier 1 item if any
+    are open.
 
 HANDOFF_PRIMARY
         if [[ -n "$user_idea" ]]; then
@@ -314,6 +346,29 @@ When ALL 22 sample modules pass BOTH tests:
 Change the last line to: `## STATUS: COMPLETE`
 
 Otherwise keep it as: `## STATUS: IN_PROGRESS`
+
+## Mandatory Per-Cycle Prebuilt-APK Verification
+
+At the end of every cycle, **after** `test-samples.sh` and **before**
+writing the handoff, run:
+
+```bash
+.claude/scripts/test-prebuilts.sh
+```
+
+This scans every `*.apk` under `sample/prebuilts/`, installs and
+launches each one on the booted emulator, and reports per-APK
+PASS/FAIL. Whichever APKs happen to be present in the directory get
+tested — the script discovers them at runtime; do NOT assume any
+specific app names.
+
+In the handoff, include a section titled exactly `## Prebuilt-APK
+Status` that **copy-pastes** the script's `=== Prebuilt-APK regression
+===` block (one line per APK, plus the `Results: N PASS, M FAIL`
+line). If the emulator wasn't running this cycle, the script will
+report so and exit 0 — record that in the section verbatim. This is
+non-negotiable; the user reads this section to track prebuilt-APK
+status across cycles.
 
 ## IMPORTANT
 

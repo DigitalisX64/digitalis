@@ -107,6 +107,8 @@ If `sample/prebuilts/` exists and contains one or more `*.apk` files, treat them
 - Run this in addition to (not instead of) `test-samples.sh`. Do not add per-APK helper scripts or per-APK CLAUDE.md sections — keep the workflow generic over whatever is dropped into `sample/prebuilts/`.
 - The APKs themselves are not committed in repos that are part of the manifest; the directory is intentionally a drop-in spot.
 
+**Mandatory per-cycle gate:** `.claude/scripts/test-prebuilts.sh` automates the install+launch+watch loop, scans every `*.apk` under `sample/prebuilts/`, and exits non-zero if any APK crashes. The dispatch loop runs it at the **end of every cycle**, after `test-samples.sh` and before writing the handoff. The cycle's handoff must include a `## Prebuilt-APK Status` section that copy-pastes the script's per-APK PASS/FAIL summary — whatever APKs are present in the directory, that's what gets tested and reported. This is non-negotiable — it's how the user tracks prebuilt-APK regressions across cycles. The script is generic and discovers APKs at runtime; do NOT add per-app branches and do NOT hard-code app names anywhere in the dispatch flow. If a specific APK needs special handling, fix the underlying translator bug inside `binary_translation/`, not the script.
+
 ## Key Files for Development
 
 These are the most-modified files and the ones you'll touch most often:

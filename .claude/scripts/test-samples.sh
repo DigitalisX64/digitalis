@@ -258,6 +258,29 @@ total=0
 if [[ "$MODE" == "screenshots" || "$MODE" == "update-references" ]]; then
     adb shell settings put global policy_control immersive.status=* 2>/dev/null
     adb shell settings put secure immersive_mode_confirmations confirmed 2>/dev/null
+
+    # region digitalis - auto-build missing androidTest APKs.
+    # Both screenshot modes require per-module androidTest APKs; without them
+    # the per-module loop just SKIPs the module ("no test APK"). Scan the
+    # filter-selected module set up-front, collect any missing androidTest
+    # APKs, and build them in one batched gradlew invocation. This lets a
+    # fresh checkout / clean build tree run --screenshots end-to-end without
+    # a manual gradle step.
+    missing_test_tasks=()
+    for mod in "${MODULE_ORDER[@]}"; do
+        if [[ -n "$FILTER" && "$mod" != "$FILTER" ]]; then continue; fi
+        test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
+        if [[ ! -f "$test_apk" ]]; then
+            missing_test_tasks+=(":${mod}:assembleAndroidTest")
+        fi
+    done
+    if [[ ${#missing_test_tasks[@]} -gt 0 ]]; then
+        echo "  Building ${#missing_test_tasks[@]} missing androidTest APK(s) via gradle..."
+        if ! (cd "${SAMPLE_DIR}" && ./gradlew "${missing_test_tasks[@]}" >/tmp/test-samples-gradle.log 2>&1); then
+            echo "  WARN: gradle androidTest build failed (see /tmp/test-samples-gradle.log); per-module SKIPs may still occur"
+        fi
+    fi
+    # endregion
 fi
 
 if [[ "$MODE" == "liveness" ]]; then
