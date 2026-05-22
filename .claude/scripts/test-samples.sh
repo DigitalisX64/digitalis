@@ -320,8 +320,9 @@ for mod in "${MODULE_ORDER[@]}"; do
     else
         echo "  CRASH: $mod"
         crash=$((crash + 1))
-        # Show crash signal
-        adb logcat -d 2>/dev/null | grep -E "Fatal signal|SIGSEGV|SIGABRT|SIGILL" | tail -1 | sed 's/^/    /'
+        # Show crash signal (|| true: grep returns 1 if no match, which under
+        # set -o pipefail would abort the script when logcat got pruned).
+        adb logcat -d 2>/dev/null | { grep -E "Fatal signal|SIGSEGV|SIGABRT|SIGILL" || true; } | tail -1 | sed 's/^/    /'
         # Show JIT breaks
         if [[ -n "$jit_breaks" ]]; then
             echo "$jit_breaks" | sed 's/^/    /'
