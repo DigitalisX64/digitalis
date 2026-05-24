@@ -123,6 +123,7 @@ declare -A MODULES=(
     ["hello-widemul"]="com.example.hellodigitalis.hellowidemul/com.example.hellowidemul.MainActivity"
     ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret/com.example.hellopacret.MainActivity"
     ["hello-lse"]="com.example.hellodigitalis.hellolse/com.example.hellolse.MainActivity"
+    ["hello-libc-libm"]="com.example.hellodigitalis.hellolibclibm/com.example.hellolibclibm.MainActivity"
     ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc/com.example.hellolrcpc.MainActivity"
     ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt/com.example.hellojscvt.MainActivity"
     ["hello-fp16"]="com.example.hellodigitalis.hellofp16/com.example.hellofp16.MainActivity"
@@ -169,6 +170,7 @@ declare -A TEST_PACKAGES=(
     ["hello-widemul"]="com.example.hellodigitalis.hellowidemul.test"
     ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret.test"
     ["hello-lse"]="com.example.hellodigitalis.hellolse.test"
+    ["hello-libc-libm"]="com.example.hellodigitalis.hellolibclibm.test"
     ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc.test"
     ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt.test"
     ["hello-fp16"]="com.example.hellodigitalis.hellofp16.test"
@@ -215,6 +217,7 @@ declare -A TEST_CLASSES=(
     ["hello-widemul"]="com.example.hellodigitalis.hellowidemul.ScreenshotTest"
     ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret.ScreenshotTest"
     ["hello-lse"]="com.example.hellodigitalis.hellolse.ScreenshotTest"
+    ["hello-libc-libm"]="com.example.hellodigitalis.hellolibclibm.ScreenshotTest"
     ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc.ScreenshotTest"
     ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt.ScreenshotTest"
     ["hello-fp16"]="com.example.hellodigitalis.hellofp16.ScreenshotTest"
@@ -239,7 +242,7 @@ MODULE_ORDER=(
     hello-gles1 hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
-    hello-fp16 hello-jscvt hello-lrcpc hello-lse hello-pac-ret hello-widemul
+    hello-fp16 hello-jscvt hello-libc-libm hello-lrcpc hello-lse hello-pac-ret hello-widemul
 )
 
 # Check emulator
