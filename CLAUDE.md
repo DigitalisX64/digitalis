@@ -153,6 +153,12 @@ re-route through `frameworks/libs/binary_translation/`.
 
 - **No Co-Authored-By lines.** Do not add `Co-Authored-By` trailers to commit messages.
 
+## File Header Conventions
+
+- **License: Apache 2.0** for all new source files (matches the rest of AOSP).
+- **Copyright holder: `utzcoz`** for newly created Digitalis source files (e.g., `Copyright (C) 2026 utzcoz`). Keep the existing AOSP copyright in any file that originated upstream.
+- **No `// region digitalis` / `// endregion` markers in newly created files.** Those markers exist to demarcate Digitalis additions inside existing upstream-derived files (interpreter.h, decoder.h, runtime files, etc.). A brand-new file in a Digitalis-owned directory is Digitalis-only by construction — adding region markers there is noise. This applies to all new files under `frameworks/libs/binary_translation/` (e.g. new trampoline source files, new Android.bp modules, new helper files) and follows the same logic already established for `sample/hellodigitalis/` (see [No region digitalis in samples](https://… memory)).
+
 ## Debugging Prebuilt APKs
 
 When a prebuilt third-party APK (Facebook, WhatsApp, etc.) fails on the emulator, **prefer tracing-based diagnostic** over static code audit. Static audit alone routinely takes many build/push cycles to converge; a single trace usually points straight at the offending guest PC.
