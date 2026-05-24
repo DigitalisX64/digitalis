@@ -3,9 +3,23 @@
 # report per-APK pass/fail. Generic: any *.apk dropped into
 # sample/prebuilts/ is exercised, no per-app hard-coding.
 #
-# Exit code: 0 if every APK survives the watch window without a fatal
-# signal / Undefined arm64 instruction / FATAL EXCEPTION / process
-# disappearance; non-zero otherwise.
+# Checks per APK:
+#   1. Install succeeds.
+#   2. Launch via monkey produces a LAUNCHER activity.
+#   3. Process is alive after WATCH_SECONDS (default 30 s).
+#   4. No Fatal signal / Undefined arm64 instruction / FATAL EXCEPTION
+#      in logcat during the watch window.
+#   5. Screenshot at the watch deadline shows meaningful application
+#      content (not a stuck splash, not a blank screen). Heuristic:
+#      coarse-grid pixel-variance content-cell count; threshold
+#      configurable via PREBUILTS_CONTENT_THRESHOLD (default 30%).
+#
+# Set STRICT_REPRODUCIBILITY=1 to repeat steps 2-5 three times back-to-back
+# and require all three launches to pass.  Useful for catching "sometimes
+# loads" non-determinism (e.g. the AddToMap signal-clobber wedge described
+# in handoff-269 has ~46% failure rate per launch).
+#
+# Exit code: 0 if every APK passes ALL five checks; non-zero otherwise.
 
 set -u
 set -o pipefail
@@ -13,7 +27,12 @@ set -o pipefail
 WORK_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 PREBUILTS_DIR="${WORK_DIR}/sample/prebuilts"
 AAPT2="${WORK_DIR}/out/host/linux-x86/bin/aapt2"
-WATCH_SECONDS="${WATCH_SECONDS:-18}"
+CONTENT_CHECK="${WORK_DIR}/digitalis/diagnostics/screenshot_content_check.py"
+WATCH_SECONDS="${WATCH_SECONDS:-30}"
+CONTENT_THRESHOLD="${PREBUILTS_CONTENT_THRESHOLD:-30}"
+STRICT="${STRICT_REPRODUCIBILITY:-0}"
+SCREENSHOTS_DIR="${PREBUILTS_SCREENSHOTS_DIR:-/tmp/prebuilt-screenshots}"
+mkdir -p "${SCREENSHOTS_DIR}"
 
 if [ ! -d "${PREBUILTS_DIR}" ]; then
     echo "[prebuilts] ${PREBUILTS_DIR} does not exist — no prebuilt APKs to test"
@@ -67,32 +86,74 @@ for apk in "${APKS[@]}"; do
     adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
     adb logcat -c >/dev/null 2>&1 || true
 
-    # Launch any LAUNCHER-categorized activity for the package via monkey.
-    # Avoids manifest parsing — handles APKs with multiple launchable
-    # activities (e.g. Facebook) and APKs with non-default launcher names.
-    launch_out="$(adb shell monkey --pct-syskeys 0 -p "${pkg}" -c android.intent.category.LAUNCHER 1 2>&1)"
-    if echo "${launch_out}" | grep -qE "Events injected: 0|No activities found"; then
+    # One round of: launch -> watch -> check alive + logcat + screenshot
+    # content. Returns 0 on PASS, 1 on FAIL; the FAIL reason is set in
+    # the global $round_fail_reason. If STRICT=1 we repeat this 3 times
+    # and require all three rounds to PASS.
+    rounds_to_run=$([ "${STRICT}" = "1" ] && echo 3 || echo 1)
+    round_pass=0
+    round_fail=0
+    round_fail_reason=""
+    for round_idx in $(seq 1 ${rounds_to_run}); do
+        adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
+        adb logcat -c >/dev/null 2>&1 || true
+        # Launch any LAUNCHER-categorized activity for the package via monkey.
+        # Avoids manifest parsing — handles APKs with multiple launchable
+        # activities (e.g. Facebook) and APKs with non-default launcher names.
+        launch_out="$(adb shell monkey --pct-syskeys 0 -p "${pkg}" -c android.intent.category.LAUNCHER 1 2>&1)"
+        if echo "${launch_out}" | grep -qE "Events injected: 0|No activities found"; then
+            round_fail_reason="no LAUNCHER activity"
+            round_fail=$((round_fail+1))
+            break  # SKIP applies to entire APK
+        fi
+
+        sleep "${WATCH_SECONDS}"
+
+        round_pid="$(adb shell pidof "${pkg}" 2>/dev/null | tr -d '\r')"
+        round_log="$(adb logcat -d 2>/dev/null | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b" | head -3 || true)"
+
+        if [ -n "${round_log}" ]; then
+            round_fail_reason="round ${round_idx}: ${round_log:0:120}"
+            round_fail=$((round_fail+1))
+            continue
+        fi
+        if [ -z "${round_pid}" ]; then
+            round_fail_reason="round ${round_idx}: process disappeared within ${WATCH_SECONDS}s"
+            round_fail=$((round_fail+1))
+            continue
+        fi
+
+        # Content check: capture screenshot, evaluate via heuristic.
+        shot="${SCREENSHOTS_DIR}/${pkg}.round${round_idx}.png"
+        adb exec-out screencap -p > "${shot}" 2>/dev/null
+        if [ ! -s "${shot}" ]; then
+            round_fail_reason="round ${round_idx}: screencap empty"
+            round_fail=$((round_fail+1))
+            continue
+        fi
+        if [ -x "${CONTENT_CHECK}" ] || [ -r "${CONTENT_CHECK}" ]; then
+            check_out="$(python3 "${CONTENT_CHECK}" --threshold "${CONTENT_THRESHOLD}" "${shot}" 2>&1 | tail -1)"
+            if ! echo "${check_out}" | grep -q "PASS"; then
+                round_fail_reason="round ${round_idx}: ${check_out%% *} content too low (${shot})"
+                round_fail=$((round_fail+1))
+                continue
+            fi
+        fi
+        round_pass=$((round_pass+1))
+    done
+    adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
+
+    if [ -n "${round_fail_reason}" ] && [ "${round_fail_reason%%:*}" = "no LAUNCHER activity" ]; then
         RESULTS+=( "SKIP  ${base}  ${pkg}  (no LAUNCHER activity)" )
         continue
     fi
-
-    sleep "${WATCH_SECONDS}"
-
-    pid="$(adb shell pidof "${pkg}" 2>/dev/null | tr -d '\r')"
-    log="$(adb logcat -d 2>/dev/null | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b" | head -3 || true)"
-
-    if [ -n "${log}" ]; then
-        RESULTS+=( "FAIL  ${base}  ${pkg}  ${log:0:160}" )
-        fail=$((fail+1))
-    elif [ -z "${pid}" ]; then
-        RESULTS+=( "FAIL  ${base}  ${pkg}  (process disappeared within ${WATCH_SECONDS}s)" )
-        fail=$((fail+1))
-    else
-        RESULTS+=( "PASS  ${base}  ${pkg}  (alive, pid=${pid})" )
+    if [ ${round_pass} -eq ${rounds_to_run} ]; then
+        RESULTS+=( "PASS  ${base}  ${pkg}  (alive+content x${rounds_to_run})" )
         pass=$((pass+1))
+    else
+        RESULTS+=( "FAIL  ${base}  ${pkg}  ${round_fail_reason}" )
+        fail=$((fail+1))
     fi
-
-    adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
 done
 
 echo
