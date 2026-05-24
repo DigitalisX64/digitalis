@@ -191,6 +191,26 @@ Relative trace filenames land in the app's private dir (`/data/user/0/<pkg>/`). 
 
 **Don't bisect via SIGILL substitution as the first move.** Replacing a handler with `Undefined()` and watching for SIGILL only proves whether that handler is hit; tracing both narrows the hit set and shows the operand values, which is far more useful per build/push cycle.
 
+### Speeding up root-cause diagnosis
+
+Multi-cycle prebuilt-APK investigations tend to cycle through wrong hypotheses before localizing the real hot path. Each wrong direction is usually rooted in one of the traps below; bake these checks into every diagnostic cycle.
+
+- **Trace first, simpleperf second.** Set `setprop berberis.tracing '<pkg>=digitalis-trace.log'` BEFORE any simpleperf work. simpleperf samples host PCs that map to JIT regions; **interpreter-hot paths (including `svc #0` syscalls) get misattributed to whichever JIT region's `movabs <guest_pc>` immediate was last seen**, looking like "hot in <random JIT region>" when the real CPU work is in `berberis_HandleInterpret`. Tracing's `berberis: interp #N pc=…` lines surface this directly.
+
+- **Re-verify linker base every cycle.** `/system/bin/arm64/linker64`'s load address changes every emulator boot. Always read `/proc/<pid>/maps | grep linker64` to anchor offset math. NEVER inherit a base address from a previous handoff — a 4-KB error (e.g. `0x...cbc000` vs `0x...cc0000`) silently maps function offsets to the *wrong* function (`AddToMap` vs `LogdSocket::GetSocket`) and propagates that wrong hypothesis across multiple subsequent cycles.
+
+- **debuggerd's `pc` is `ThreadState.insn_addr`, which is stale.** It reflects the *last region exit*, not live execution. For loops that never exit dispatch back through the path that updates `insn_addr` (e.g. a backward branch with `b loop_top`), the pc stays at whatever value it held N region exits ago. Three back-to-back debuggerd snapshots showing the same pc is NOT confirmation of a wedge at that pc — cross-check by sampling the actual TID with simpleperf AND looking at the JIT memfd:exec region the samples cluster in.
+
+- **Stale-inode trap on diagnostic builds.** `md5sum` on disk does NOT tell you what's loaded in already-running processes. After `adb push` of a diagnostic library: (a) force-stop every prebuilt-APK process AND (b) `adb shell stop && start` to restart zygote AND (c) check `/proc/<pid>/maps` for the `(deleted)` annotation on the library file. If any process still has the old inode mapped, your "diagnostic trace" will be capturing the wrong code path while reporting the right md5sum.
+
+- **Cheap-falsify before expensive-pin.** Before writing a full dispatch-enabled host test for a hypothesis (≥30 LOC + region encoding + execution harness + watchdog), verify the hypothesis at the live guest level first: single-step the interpreter at the suspect PC, or use a 5-line `berberis.tracing` snippet that logs the specific values the hypothesis depends on. Reserve the host-test pin for hypotheses you've already confirmed at guest level. Otherwise cycles burn ~30 minutes building a beautiful pinning test for a hypothesis that the cheaper check would have falsified in 5 minutes.
+
+- **Don't re-anchor on a disproved hypothesis.** If cycle N's host test PASSES under the suspected failure condition, that hypothesis is dead — do NOT re-anchor on it in cycle N+1 without genuinely new evidence. The natural urge to "double-check" wastes a cycle. Treat host-test-passes as a hard exclusion; move the search to a different code path.
+
+- **Mind the simpleperf↔interpreter blind spot.** simpleperf's call-stack output for time spent in the interpreter shows up as samples in `berberis_HandleInterpret` and the dispatch table function, which don't trivially decode to guest PCs. If `>30%` of samples are in those host functions and not in `memfd:exec`, the wedge is in the interpreter path; switch to the per-instruction `interp #N` trace immediately.
+
+- **Sanity-check the candidate code is still on the hot path.** A multi-cycle investigation that keeps narrowing to "the AddToMap loop" should periodically run a non-AddToMap quick-check: e.g., grep the live trace for the function names of OTHER candidate functions (CFIShadowWriter, mprotect, dlopen). If they appear with high `interp #N` density, the original localization was wrong even if the trace at the suspect site looks busy.
+
 ## Critical Conventions
 
 - **Decoder dispatch order matters.** Multiple instruction groups share encoding prefixes. Always check distinguishing bits (bit29 for LD/ST, bit24 for single/multi struct, bits[11:10] for three-diff/three-same). Missing a bit routes instructions to the wrong handler silently.
