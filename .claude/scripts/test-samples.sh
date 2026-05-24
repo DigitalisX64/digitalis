@@ -56,7 +56,7 @@ grant_permissions() {
 
 # region digitalis
 # Reset the foreground before each per-module screenshot test.
-# Prevents the stale-foreground capture flake (handoff-14): if any other
+# Prevents the stale-foreground capture flake: if any other
 # activity (a previously-tested sample, OR a prebuilt APK like
 # VkCapsViewer that lingers in the foreground) is still on top when the
 # next test's instrumented Intent fires, the screenshot can capture the
@@ -414,7 +414,7 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # region digitalis
     # Force-stop all other sample packages so the previous module's UI can't
-    # leak into this module's `actual.png` (handoff-14 stale-foreground flake).
+    # leak into this module's `actual.png` (stale-foreground flake).
     force_stop_other_samples "$pkg"
     # endregion
 
@@ -504,7 +504,7 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # region digitalis
     # Force-stop all other sample packages so the previous module's UI can't
-    # leak into this module's reference capture (handoff-14 stale-foreground flake).
+    # leak into this module's reference capture (stale-foreground flake).
     force_stop_other_samples "$pkg"
     # endregion
 
