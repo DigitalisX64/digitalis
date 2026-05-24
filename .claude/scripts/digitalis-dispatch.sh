@@ -19,7 +19,7 @@
 # Environment variables:
 #   DIGITALIS_MAX_RETRIES  - Retries per cycle on error (default: 3)
 #   DIGITALIS_RETRY_WAIT   - Seconds to wait between retries (default: 300)
-#   DIGITALIS_MAX_BUDGET   - Max USD per subagent run (default: 20)
+#   DIGITALIS_MAX_BUDGET   - Max USD per subagent run (default: 40)
 #   DIGITALIS_MAX_CYCLES   - Max total cycles before giving up (default: 50)
 #   DIGITALIS_MODEL        - Claude model to use (default: opus)
 
@@ -37,7 +37,7 @@ LOG_DIR="/tmp/digitalis-dispatch"
 
 MAX_RETRIES=${DIGITALIS_MAX_RETRIES:-3}
 RETRY_WAIT=${DIGITALIS_RETRY_WAIT:-300}
-MAX_BUDGET=${DIGITALIS_MAX_BUDGET:-20}
+MAX_BUDGET=${DIGITALIS_MAX_BUDGET:-40}
 MAX_CYCLES=${DIGITALIS_MAX_CYCLES:-200}
 MODEL=${DIGITALIS_MODEL:-opus}
 
