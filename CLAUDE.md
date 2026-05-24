@@ -211,6 +211,8 @@ Multi-cycle prebuilt-APK investigations tend to cycle through wrong hypotheses b
 
 - **Sanity-check the candidate code is still on the hot path.** A multi-cycle investigation that keeps narrowing to "the AddToMap loop" should periodically run a non-AddToMap quick-check: e.g., grep the live trace for the function names of OTHER candidate functions (CFIShadowWriter, mprotect, dlopen). If they appear with high `interp #N` density, the original localization was wrong even if the trace at the suspect site looks busy.
 
+- **Scatter-trace then narrow.** Don't add one `TRACE()` at a time and rebuild for every hypothesis. Sprinkle 5–10 `TRACE()` calls across every plausible candidate spot in a single build — every suspect function entry, every backward-branch target, every potential infinite-loop top, every syscall handler, every error-return path. Run one trace capture. The output tells you which spots actually fire and with what frequency / argument values — usually one or two of the scattered points reveal a 1000× anomaly that the others don't, and the narrowing happens in one round-trip instead of N. Cost is one extra build/push; payoff is replacing N cycles of "one-shot diagnostic, capture, revert, next" with one cycle of "broad scatter, narrow, fix." **Strip every temp `TRACE()` before commit** per the existing "no temp debug log in commits" rule — the broad scatter is for diagnosis only, not for shipping.
+
 ## Critical Conventions
 
 - **Decoder dispatch order matters.** Multiple instruction groups share encoding prefixes. Always check distinguishing bits (bit29 for LD/ST, bit24 for single/multi struct, bits[11:10] for three-diff/three-same). Missing a bit routes instructions to the wrong handler silently.
