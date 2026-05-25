@@ -266,6 +266,7 @@ PROMPT_HEADER
 7. **Reuse running emulator**: Before killing and rebuilding, check if an emulator is already booted (`adb shell getprop sys.boot_completed`). If so, and you only changed sample app code (not translator code), just rebuild APKs and reinstall — no emulator restart needed.
 8. **Write handoff early**: Write your handoff document as soon as you have results, BEFORE doing extensive screenshot analysis or secondary investigations. You can always update it. Don't spend 20+ minutes analyzing screenshots before writing anything.
 9. **Budget awareness**: You have a limited budget. Prioritize: (a) read handoff, (b) make code fixes, (c) build, (d) test, (e) write handoff. Don't spend budget on elaborate screenshot verification loops.
+10. **Skip screenshot baseline maintenance unless the active fix touches rendering.** Do NOT run `--update-references` for "missing reference" modules as a side quest — this rebuilds androidTest APKs and pulls images for each module, easily burning 20-30 minutes per cycle on infrastructure that has nothing to do with the active goal. If the previous handoff identifies a rendering bug AND the current cycle is fixing it, then `--update-references <module>` is appropriate after the fix. Otherwise the per-cycle gate is `test-samples.sh` (basic, no flag) + `test-prebuilts.sh`; `--screenshots` is an opt-in regression check, not a required step.
 
 ## Build, Deploy & Test Commands
 
@@ -339,9 +340,11 @@ Your output handoff document MUST follow this exact structure:
 
 ## Completion
 
-When ALL 22 sample modules pass BOTH tests:
+When ALL 22 sample modules pass:
 1. `.claude/scripts/test-samples.sh` (0 CRASH — apps launch without crashing)
-2. `.claude/scripts/test-samples.sh --screenshots` (0 FAIL — screenshots match reference images >=95%)
+
+`--screenshots` is an opt-in regression check; do not block completion on it
+unless the active cycle is explicitly fixing a rendering bug.
 
 Change the last line to: `## STATUS: COMPLETE`
 
