@@ -94,6 +94,7 @@ for apk in "${APKS[@]}"; do
     round_pass=0
     round_fail=0
     round_fail_reason=""
+    declare -a round_outcomes=()
     for round_idx in $(seq 1 ${rounds_to_run}); do
         adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
         adb logcat -c >/dev/null 2>&1 || true
@@ -104,6 +105,7 @@ for apk in "${APKS[@]}"; do
         if echo "${launch_out}" | grep -qE "Events injected: 0|No activities found"; then
             round_fail_reason="no LAUNCHER activity"
             round_fail=$((round_fail+1))
+            round_outcomes+=( "R${round_idx}=NoLauncher" )
             break  # SKIP applies to entire APK
         fi
 
@@ -115,11 +117,13 @@ for apk in "${APKS[@]}"; do
         if [ -n "${round_log}" ]; then
             round_fail_reason="round ${round_idx}: ${round_log:0:120}"
             round_fail=$((round_fail+1))
+            round_outcomes+=( "R${round_idx}=FATAL" )
             continue
         fi
         if [ -z "${round_pid}" ]; then
             round_fail_reason="round ${round_idx}: process disappeared within ${WATCH_SECONDS}s"
             round_fail=$((round_fail+1))
+            round_outcomes+=( "R${round_idx}=Dead" )
             continue
         fi
 
@@ -129,6 +133,7 @@ for apk in "${APKS[@]}"; do
         if [ ! -s "${shot}" ]; then
             round_fail_reason="round ${round_idx}: screencap empty"
             round_fail=$((round_fail+1))
+            round_outcomes+=( "R${round_idx}=NoShot" )
             continue
         fi
         if [ -x "${CONTENT_CHECK}" ] || [ -r "${CONTENT_CHECK}" ]; then
@@ -136,22 +141,29 @@ for apk in "${APKS[@]}"; do
             if ! echo "${check_out}" | grep -q "PASS"; then
                 round_fail_reason="round ${round_idx}: ${check_out%% *} content too low (${shot})"
                 round_fail=$((round_fail+1))
+                # Extract just the content_cells score for the per-round tag.
+                cells_score="$(echo "${check_out}" | grep -oE 'content_cells=[0-9]+/[0-9]+' | head -1)"
+                round_outcomes+=( "R${round_idx}=Fail(${cells_score:-low})" )
                 continue
             fi
         fi
         round_pass=$((round_pass+1))
+        round_outcomes+=( "R${round_idx}=Pass" )
     done
     adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
+
+    # Join per-round outcomes with commas: "R1=Fail(content_cells=7/60),R2=Fail(content_cells=7/60),..."
+    round_summary="$(IFS=','; echo "${round_outcomes[*]}")"
 
     if [ -n "${round_fail_reason}" ] && [ "${round_fail_reason%%:*}" = "no LAUNCHER activity" ]; then
         RESULTS+=( "SKIP  ${base}  ${pkg}  (no LAUNCHER activity)" )
         continue
     fi
     if [ ${round_pass} -eq ${rounds_to_run} ]; then
-        RESULTS+=( "PASS  ${base}  ${pkg}  (alive+content x${rounds_to_run})" )
+        RESULTS+=( "PASS  ${base}  ${pkg}  [${round_pass}/${rounds_to_run} pass]  ${round_summary}" )
         pass=$((pass+1))
     else
-        RESULTS+=( "FAIL  ${base}  ${pkg}  ${round_fail_reason}" )
+        RESULTS+=( "FAIL  ${base}  ${pkg}  [${round_pass}/${rounds_to_run} pass]  ${round_summary}  last_fail: ${round_fail_reason}" )
         fail=$((fail+1))
     fi
 done
