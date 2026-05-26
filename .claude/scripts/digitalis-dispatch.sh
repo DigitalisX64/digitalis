@@ -267,6 +267,7 @@ PROMPT_HEADER
 8. **Write handoff early**: Write your handoff document as soon as you have results, BEFORE doing extensive screenshot analysis or secondary investigations. You can always update it. Don't spend 20+ minutes analyzing screenshots before writing anything.
 9. **Budget awareness**: You have a limited budget. Prioritize: (a) read handoff, (b) make code fixes, (c) build, (d) test, (e) write handoff. Don't spend budget on elaborate screenshot verification loops.
 10. **Skip screenshot baseline maintenance unless the active fix touches rendering.** Do NOT run `--update-references` for "missing reference" modules as a side quest — this rebuilds androidTest APKs and pulls images for each module, easily burning 20-30 minutes per cycle on infrastructure that has nothing to do with the active goal. If the previous handoff identifies a rendering bug AND the current cycle is fixing it, then `--update-references <module>` is appropriate after the fix. Otherwise the per-cycle gate is `test-samples.sh` (basic, no flag) + `test-prebuilts.sh`; `--screenshots` is an opt-in regression check, not a required step.
+11. **Exploration mode for prebuilt-APK fixes.** While diagnosing and trying candidate fixes for the open prebuilt-APK regressions, do NOT run `test-samples.sh` between iterations and do NOT commit work-in-progress changes. Iterate fast: edit → build (`m libberberis_proxy_libc` / `m libberberis_arm64`) → push → relaunch the target prebuilt → read trace/logcat → revise. The per-iteration cost should be one build + one launch, not a 13-minute sample suite. Run `test-samples.sh` and `test-prebuilts.sh` only when you believe you have a candidate fix you'd be willing to commit, AND defer the commit itself to a later cycle once the user confirms the fix path. The handoff still documents what was tried and what was learned each cycle — only the commit step and the full-suite regression are deferred during this exploration window.
 
 ## Build, Deploy & Test Commands
 
@@ -436,6 +437,19 @@ run_subagent() {
 # Verify that hello-digitalis is actually running
 # ──────────────────────────────────────────────
 verify_completion() {
+    # Exploration mode for prebuilt-APK fixes — skip the full sample
+    # suite + screenshot regression between cycles. The diagnostic
+    # iteration loop (build / push / relaunch / read trace) does not
+    # benefit from a 13-minute sample sweep on each pass. The subagent
+    # is responsible for its own targeted verification before
+    # declaring STATUS: COMPLETE, and final-fix verification will run
+    # the suite explicitly once the user confirms the fix path.
+    if [[ "${DIGITALIS_EXPLORATION_MODE:-1}" == "1" ]]; then
+        echo "[$(date '+%H:%M:%S')] Exploration mode (DIGITALIS_EXPLORATION_MODE=1) — skipping per-cycle sample suite."
+        echo "[$(date '+%H:%M:%S')] Set DIGITALIS_EXPLORATION_MODE=0 to re-enable the full per-cycle gate."
+        return 0
+    fi
+
     echo "[$(date '+%H:%M:%S')] Verifying all samples pass..."
 
     # Check if emulator is accessible
