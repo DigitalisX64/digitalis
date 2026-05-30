@@ -86,7 +86,7 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 ### Vector narrowing / lengthening / reciprocal-estimate
 | Instructions | Why interpreter-only |
 |---|---|
-| `XTN`, `SQXTN`, `UQXTN`, `SQXTUN`, `FCVTN`, `FCVTL`, `FCVTXN` (vector), `SHLL` | No vector case-arm in `AdvSimdTwoRegMisc`. *(Scalar `SQXTN/UQXTN/SQXTUN/FCVTXN` **are** JIT in `AdvSimdScalarTwoRegMisc`.)* |
+| `SQXTN`, `UQXTN`, `SQXTUN`, `FCVTN`, `FCVTL`, `FCVTXN` (vector), `SHLL` | No vector case-arm in `AdvSimdTwoRegMisc`. *(`XTN`/`XTN2` **are** now JIT-lowered via mask-then-pack; scalar `SQXTN/UQXTN/SQXTUN/FCVTXN` are JIT in `AdvSimdScalarTwoRegMisc`.)* |
 | `RBIT` (vector), `URECPE`, `URSQRTE`, `SUQADD`, `USQADD` | No vector case-arm. |
 
 ### Three-different (widening) — the non-JIT subset
