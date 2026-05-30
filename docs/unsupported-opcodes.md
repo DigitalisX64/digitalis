@@ -87,14 +87,13 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 | Instructions | Why interpreter-only |
 |---|---|
 | `FCVTN`, `FCVTL`, `FCVTXN` (vector), `SHLL`; `SQXTN/UQXTN/SQXTUN` **.2D→.2S only** | `XTN/XTN2` and `SQXTN/UQXTN/SQXTUN` for `.8B`/`.4H` are now JIT-lowered (mask/min-then-pack); the `.2D→.2S` (64→32) saturating forms have no x86 narrowing pack and stay interpreter-only, as do `FCVTN/FCVTL/FCVTXN/SHLL`. |
-| `RBIT` (vector), `URECPE`, `URSQRTE`, `SUQADD`, `USQADD` | No vector case-arm. |
+| `URECPE`, `URSQRTE` | Now decoded + interpreter-executed (bit-exact ARM integer estimate recurrences); the JIT bails via the default. `RBIT` (vector) and `SUQADD`/`USQADD` are JIT-lowered (`SUQADD`/`USQADD` for `.8B/.16B/.4H/.8H`; the `.2S/.4S/.1D/.2D` forms stay interpreter-only). |
 
 ### Three-different (widening) — the non-JIT subset
 | Instructions | Why interpreter-only |
 |---|---|
-| `SQDMULL/SQDMLAL/SQDMLSL` (vector three-diff form) | No three-diff case-arm. *(The **by-element** forms **are** JIT in `AdvSimdVecXIndexedElement`.)* |
+| `SQDMULL/SQDMLAL/SQDMLSL` **.2S→.2D (size=10) only** | The `.4H→.4S` (size=01) three-diff forms are now JIT-lowered (PMOVSXWD+PMULLD doubling, PCMPEQD-blend saturation, synthesised 32-bit saturating accumulate for the MLAL/MLSL forms); the `.2S→.2D` form has no x86 narrowing/64-bit pack and stays interpreter-only. |
 | `ADDHN`, `SUBHN`, `RADDHN`, `RSUBHN` **.2S<-.2D only** | The `.8B<-.8H` and `.4H<-.4S` forms are now JIT-lowered (add/sub-wide → shift-high → pack); the `.2S<-.2D` form has no x86 narrowing pack and stays interpreter-only. |
-| `PMULL`/`PMULL2` with `.8H` (size=00) | Only the `.1Q` (size=11) form is JIT-lowered via `PCLMULQDQ`. |
 
 ### Vector immediate
 | Instructions | Why interpreter-only |
@@ -102,9 +101,11 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 | (`ORR #imm`/`BIC #imm` read-modify-write forms only) | `SimdModifiedImm` now JIT-lowers the full `MOVI`/`MVNI` family (the immediate is computed at translation time and emitted as a constant load, matching the interpreter's expand-and-replace). Note: the interpreter and JIT both treat `ORR/BIC #imm` as replace, not read-modify-write — a separate pre-existing gap. |
 
 ### Structure load/store (de-interleaving)
-| Instructions | Why interpreter-only |
-|---|---|
-| `LD2/LD3/LD4`, `ST2/ST3/ST4`, multi-register single-structure (`num_regs > 1`) | Only contiguous `LD1/ST1` and single-element `LD1R`/`LD1`/`ST1` (`num_regs == 1`) are JIT'd. |
+
+The multiple-structure interleaved `LD2/LD3/LD4` and `ST2/ST3/ST4` are now
+JIT-lowered (element-wise PINSR-from-memory on load / PEXTR-to-memory on store,
+exact for every `num_regs`/element-size/`Q` combination), alongside the
+contiguous `LD1/ST1` forms. Nothing in this load/store class is interpreter-only.
 
 ### CRC32 and crypto
 | Instructions | Why interpreter-only |
@@ -134,10 +135,12 @@ The interpreter is ~10–100× slower per instruction than JIT-translated code, 
 
 | Promotion target | Typical app affected |
 |---|---|
-| Vector narrowing `XTN`/`SQXTN`/`FCVTN` | Pixel format conversion, audio downsampling, quantized ML |
-| De-interleaving `LD2`/`LD3`/`LD4` | Interleaved RGBA / planar-audio / vertex streams |
-| Vector `MOVI`/`MVNI` immediate forms | Constant-vector setup in shader/DSP prologues |
+| `FCVTN`/`FCVTL`/`FCVTXN`/`SHLL` and the `.2D`/`.2S` narrowing saturating forms | Pixel format conversion, audio downsampling, quantized ML |
 | `CRC32*` | zlib/zstd framing, filesystem checksums |
+
+(Vector narrowing `XTN`/`SQXTN`, de-interleaving `LD2`/`LD3`/`LD4`/`ST2`/`ST3`/`ST4`,
+`SQDMULL`/`SQDMLAL`/`SQDMLSL` `.4S`, `PMULL`/`PMULL2 .8H`, `SUQADD`/`USQADD`, and the
+`MOVI`/`MVNI` immediate family are now JIT-lowered.)
 
 ---
 
@@ -148,7 +151,7 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 | Group | Apps likely to hit it | Severity |
 |---|---|---|
 | **`BRK` exception ops** | Sanitizer builds (ASAN/UBSAN/HWASAN), debug builds | **Medium** — affects developer/debug flows; still a hard `Undefined()`. |
-| **Vector narrowing / de-interleave (perf)** | Image/audio codecs, quantized ML, interleaved I/O | **Medium** — correct but interpreter-slow on hot kernels. |
+| **Vector FP narrowing `FCVTN`/`FCVTXN` (perf)** | Image/audio codecs, quantized ML | **Low–Medium** — correct but interpreter-slow on hot kernels; the integer narrowing and de-interleave paths are now JIT-lowered. |
 | **CRC32 (perf)** | Compression/IO-heavy apps | **Low–Medium** — correct, interpreter-speed. |
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
 | **I8MM matmul** | Newer ML inference kernels | **Low–Medium** — `SDOT/UDOT` covered; only v8.6 matmul forms fault. |
