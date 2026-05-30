@@ -20,7 +20,7 @@ The following were listed as *unsupported* or *interpreter-only* in older revisi
 
 | Area | Now | Path |
 |---|---|---|
-| **Half-precision (FP16) scalar** — `FADD/FSUB/FMUL/FDIV/FMAX/FMIN/FNMUL H`, `FABS/FNEG/FSQRT/FRINT* H`, `FCVT` to/from H, FP16 compare | Decoded + executed | The historic `if (ftype >= 2) Undefined()` gate survives in exactly **one** place (FP16 `FCCMP`/`FCCMPE`); everything else decodes. JIT via host F16C round-trip. |
+| **Half-precision (FP16) scalar** — `FADD/FSUB/FMUL/FDIV/FMAX/FMIN/FNMUL H`, `FABS/FNEG/FSQRT/FRINT* H`, `FCVT` to/from H, FP16 compare, FP16 `FCCMP`/`FCCMPE` | Decoded + executed | The historic `if (ftype >= 2) Undefined()` gate is fully closed — all FP16 scalar forms decode. JIT via host F16C round-trip. |
 | **FP16 vector** — three-same, two-reg-misc, scalar three-same, indexed `FMLA/FMLS/FMUL` | Decoded + JIT (F16C) | `DecodeAdvSimdFp16ThreeSame`, `…Fp16TwoRegMisc`, `…ScalarFp16ThreeSame` |
 | **Scalar FP conversions** — `FCVTZS/FCVTZU/SCVTF/UCVTF`, `FCVTNS/MS/PS/AS…`, fixed-point conversions | JIT | `FpIntConversion`, `FpFixedPointConversion` |
 | **`FCSEL`**, **`FMADD/FMSUB/FNMADD/FNMSUB`**, **`FABS/FNEG/FSQRT`**, **`FRINT*`** scalar | JIT | `FpCondSelect`, `FpDataProc3` (host-FMA), `FpDataProc1` |
@@ -55,7 +55,6 @@ The decoder reaches these instructions but explicitly calls `Undefined()` becaus
 |---|---|---|---|
 | **Exception-generating (non-SVC)** | `BRK #imm`, `HLT #imm`, `HVC`, `SMC`, `DCPS1/2/3` | ARMv8.0 | Only `SVC` is decoded in the exception-generation class; everything else → `Undefined()` (`decoder.h` ~2321). Sanitizer / debug builds that emit `BRK` will fault. |
 | **Add/subtract immediate with tag (MTE)** | `ADDG`, `SUBG` | ARMv8.5-MTE | `decoder.h` ~2032 — tagged add/sub-immediate not implemented. |
-| **Half-precision FP conditional compare** | `FCCMP Hn, Hm, #nzcv, cond`, `FCCMPE` | ARMv8.2-FP16 | `decoder.h` ~4332 — the **only** surviving `if (ftype >= 2) Undefined()` gate. (FP16 `FCMP`/`FCMPE` *are* decoded.) |
 | **Bounded FP rounding** | `FRINT32X`, `FRINT32Z`, `FRINT64X`, `FRINT64Z` (vector + scalar) | ARMv8.5 | `decoder.h` ~5514 — vector two-reg-misc bounded-rounding opcodes rejected. |
 | **FP16 vector pairwise** | `FMAXNMP`, `FADDP`, `FMAXP`, `FMINNMP`, `FMINP` (FP16 form) | ARMv8.2-FP16 | `decoder.h` ~4652 — FP16 pairwise three-same rejected (non-pairwise FP16 three-same *is* implemented). |
 | **MTE tag-block ops** | `LDGM`, `STGM`, `STZGM` | ARMv8.5-MTE | Not in the load/store-tag dispatch (`DecodeLoadStoreMemTag`). The tag *load/store* ops `STG/LDG/STZG/ST2G/STZ2G` and DP `SUBP/SUBPS/IRG/GMI` **are** decoded. |
