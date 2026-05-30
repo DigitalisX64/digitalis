@@ -56,7 +56,7 @@ def _git_stage(filename):
 
 
 def _fetch_one(sess, app, local_path, args):
-    vpage = sess.version_page_url(app.slug, app.version)
+    vpage = sess.find_version_page(app.slug, app.version)
     variants = apkmirror.parse_variants(sess._get(vpage).text)
     chosen = apkmirror.select_variant(variants)
     if chosen is None:

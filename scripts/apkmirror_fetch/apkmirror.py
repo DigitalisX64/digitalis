@@ -86,6 +86,38 @@ class Session:
         vslug = version.replace(".", "-")
         return "%s/apk/%s/%s-%s-release/" % (BASE, slug, app, vslug)
 
+    def find_version_page(self, slug, version, max_pages=5):
+        """Locate the version-release page for a pinned version.
+
+        apkmirror's release-page slug uses the app's *display title* (e.g.
+        firefox-fast-private-browser-151-0-2-release), which often differs from the
+        URL slug. Try the direct construction first (works when title == slug, e.g.
+        whatsapp); otherwise scrape the app page (and a few paginated pages) for the
+        release link whose trailing version matches.
+        """
+        vdash = version.replace(".", "-")
+        direct = self.version_page_url(slug, version)
+        try:
+            self._get(direct)
+            return direct
+        except Exception:
+            pass
+        suffix = "-%s-release" % vdash
+        rel_re = re.compile(r'href="(/apk/%s/[a-z0-9][a-z0-9.\-]*-release)/?"'
+                            % re.escape(slug))
+        for page in range(1, max_pages + 1):
+            url = "%s/apk/%s/" % (BASE, slug)
+            if page > 1:
+                url += "?page=%d" % page
+            try:
+                html = self._get(url).text
+            except Exception:
+                break
+            for rel in rel_re.findall(html):
+                if rel.endswith(suffix):
+                    return BASE + rel + "/"
+        raise ValueError("version %s not found for %s" % (version, slug))
+
     def resolve_download(self, variant_url):
         html = self._get(variant_url).text
         m = re.search(r'href="(/apk/[^"]+/download/[^"]*)"', html)
@@ -93,10 +125,13 @@ class Session:
             raise ValueError("no download link on variant page %s" % variant_url)
         dl_page = BASE + m.group(1)
         html2 = self._get(dl_page, referer=variant_url).text
-        m2 = re.search(r'href="(https://download\.apkmirror\.com/[^"]+)"', html2)
+        # The actual file link is a download.php?id=...&key=... anchor (rel=nofollow);
+        # download.php 302-redirects to the real CDN file, which requests follows.
+        m2 = re.search(r'href="(/wp-content/[^"]*download\.php\?[^"]+)"', html2)
         if not m2:
             raise ValueError("no final download link on %s" % dl_page)
-        return m2.group(1), dl_page
+        final = BASE + m2.group(1).replace("&#038;", "&").replace("&amp;", "&")
+        return final, dl_page
 
     def download(self, file_url, referer, dest_path):
         with self.s.get(file_url, headers={"Referer": referer}, stream=True,
