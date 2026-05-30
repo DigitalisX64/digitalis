@@ -69,7 +69,7 @@ The decoder has no case for these — the instruction bits hit a high-level catc
 | Extension | ARM rev | Representative instructions | Where it lands |
 |---|---|---|---|
 | **Int8 matrix multiply (I8MM)** | ARMv8.6 | `SMMLA`, `UMMLA`, `USMMLA`, `SUDOT`, `USDOT` | catch-all `Undefined()` (`DecodeSimdFp` ~3590). *Note: `SDOT`/`UDOT` (v8.4 DotProd) **are** implemented — only the v8.6 matmul/mixed-sign forms are absent.* |
-| **SHA3 / SM3 / SM4** | ARMv8.2 | `EOR3`, `BCAX`, `RAX1`, `XAR`, `SM3*`, `SM4*` | ~3590 |
+| **SM3 / SM4** | ARMv8.2 | `SM3SS1`, `SM3TT1A/B`, `SM3TT2A/B`, `SM3PARTW1/2`, `SM4E`, `SM4EKEY` | ~3590. *SHA3 (`EOR3`/`BCAX`/`RAX1`/`XAR`) is now decoded + interpreter-executed.* |
 | **SVE** (Scalable Vector Extension) | ARMv8.2 / v9 | All Z-register ops: predicated arithmetic, gather/scatter, FFR, reductions, permute (`SPLICE/COMPACT/REV/UZP/ZIP/TRN`), `PTRUE`, `WHILELT`, … | top-level `Undefined()` (`DecodeInstruction` default ~2009, `op0 ∈ {0001,0010,0011}`) |
 | **SVE2** | ARMv9 | Multiply, bitwise, bit-permute, FP, crypto-helper SVE2 instructions | ~2009 |
 | **SME** (Scalable Matrix Extension) | ARMv9.2 | `ZA` tile access, `MOVA`, `ADDHA/ADDVA`, `SMOPA/UMOPA/…`, SME load/store, streaming-mode entry/exit | ~2009 |
