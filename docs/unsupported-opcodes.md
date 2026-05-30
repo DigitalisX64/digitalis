@@ -99,7 +99,7 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 ### Vector immediate
 | Instructions | Why interpreter-only |
 |---|---|
-| `MOVI`/`MVNI`/`ORR #imm`/`BIC #imm`/`FMOV #imm` (vector forms) | `SimdModifiedImm` JIT-lowers **only** `MOVI Vd.2D, #0` (→ `pxor`); all other modified-immediate forms bail. |
+| (`ORR #imm`/`BIC #imm` read-modify-write forms only) | `SimdModifiedImm` now JIT-lowers the full `MOVI`/`MVNI` family (the immediate is computed at translation time and emitted as a constant load, matching the interpreter's expand-and-replace). Note: the interpreter and JIT both treat `ORR/BIC #imm` as replace, not read-modify-write — a separate pre-existing gap. |
 
 ### Structure load/store (de-interleaving)
 | Instructions | Why interpreter-only |
@@ -115,7 +115,7 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 ### Scalar bitfield & system
 | Family | Instructions | Notes |
 |---|---|---|
-| Byte-reverse 16 | `REV16 Xd, Xn` (scalar) | No JIT arm in `DataProc1Src` (scalar `REV/REV32/CLZ/RBIT` *are* JIT). |
+| Byte-reverse 32 | `REV32 Xd, Xn` (scalar, opcode2=000010) | No JIT arm in `DataProc1Src` (scalar `REV/REV16/CLZ/RBIT` *are* JIT). |
 | System registers (MRS/MSR) | Everything except `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0` | The JIT handles those five; all other reads/writes bail to the interpreter (mostly modelled as constants / no-ops). |
 | MTE data-processing & load/store | `IRG/GMI/SUBP/STG/LDG/…` | Decoded, but the JIT bails (`MteDataProc`/`MteLoadStore`); interpreter executes. |
 
