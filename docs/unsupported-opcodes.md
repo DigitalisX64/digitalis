@@ -56,7 +56,6 @@ The decoder reaches these instructions but explicitly calls `Undefined()` becaus
 | **Exception-generating (non-SVC)** | `BRK #imm`, `HLT #imm`, `HVC`, `SMC`, `DCPS1/2/3` | ARMv8.0 | Only `SVC` is decoded in the exception-generation class; everything else → `Undefined()` (`decoder.h` ~2321). Sanitizer / debug builds that emit `BRK` will fault. |
 | **Add/subtract immediate with tag (MTE)** | `ADDG`, `SUBG` | ARMv8.5-MTE | `decoder.h` ~2032 — tagged add/sub-immediate not implemented. |
 | **Bounded FP rounding** | `FRINT32X`, `FRINT32Z`, `FRINT64X`, `FRINT64Z` (vector + scalar) | ARMv8.5 | `decoder.h` ~5514 — vector two-reg-misc bounded-rounding opcodes rejected. |
-| **FP16 vector pairwise** | `FMAXNMP`, `FADDP`, `FMAXP`, `FMINNMP`, `FMINP` (FP16 form) | ARMv8.2-FP16 | `decoder.h` ~4652 — FP16 pairwise three-same rejected (non-pairwise FP16 three-same *is* implemented). |
 | **MTE tag-block ops** | `LDGM`, `STGM`, `STZGM` | ARMv8.5-MTE | Not in the load/store-tag dispatch (`DecodeLoadStoreMemTag`). The tag *load/store* ops `STG/LDG/STZG/ST2G/STZ2G` and DP `SUBP/SUBPS/IRG/GMI` **are** decoded. |
 
 **Note on BTI:** `BTI c/j/jc` is encoded as a `HINT` and routes to `Nop()`. It doesn't fault — it just has no effect. Apps relying on BTI for control-flow integrity won't get protection on Digitalis, but they will run.
