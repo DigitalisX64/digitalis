@@ -74,7 +74,7 @@ The decoder has no case for these — the instruction bits hit a high-level catc
 
 **Deliberately deferred:** SVE/SVE2/SME/FP8 are a from-scratch undertaking (new Z/P register state, a separate decode tree, gather/scatter) and **no Android device exposes them to user code**, so they remain documented gaps rather than committed work — per the project plan's beyond-manual tier.
 
-**Now implemented (no longer in this list):** `SM3` (SS1/TT1A/1B/TT2A/2B/PARTW1/2) and `SM4` (SM4E/SM4EKEY), validated against the GB/T 32905/32907 `SM3("abc")` digest and SM4 ciphertext; I8MM `USDOT`/`SUDOT` (mixed-sign dot) and `SMMLA`/`UMMLA`/`USMMLA` (8-bit matrix multiply-accumulate); and `RNDR`/`RNDRRS` (real host entropy). `SDOT`/`UDOT` and SHA3 were already implemented.
+**Now implemented (no longer in this list):** `SM3` (SS1/TT1A/1B/TT2A/2B/PARTW1/2) and `SM4` (SM4E/SM4EKEY), validated against the GB/T 32905/32907 `SM3("abc")` digest and SM4 ciphertext; I8MM `USDOT`/`SUDOT` (mixed-sign dot, vector **and** by-element) and `SMMLA`/`UMMLA`/`USMMLA` (8-bit matrix multiply-accumulate); `RNDR`/`RNDRRS` (real host entropy); and the Castagnoli `CRC32C*` ops (JIT-lowered via the host SSE4.2 `CRC32` instruction). `SDOT`/`UDOT` and SHA3 were already implemented.
 
 ---
 
@@ -85,13 +85,13 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 ### Vector narrowing / lengthening / reciprocal-estimate
 | Instructions | Why interpreter-only |
 |---|---|
-| `FCVTN`, `FCVTL`, `FCVTXN` (vector), `SHLL`; `SQXTN/UQXTN/SQXTUN` **.2D→.2S only** | `XTN/XTN2` and `SQXTN/UQXTN/SQXTUN` for `.8B`/`.4H` are now JIT-lowered (mask/min-then-pack); the `.2D→.2S` (64→32) saturating forms have no x86 narrowing pack and stay interpreter-only, as do `FCVTN/FCVTL/FCVTXN/SHLL`. |
+| `FCVTN`, `FCVTL` (vector); `SQXTN/UQXTN/SQXTUN` **.2D→.2S only** | `XTN/XTN2`, `SQXTN/UQXTN/SQXTUN` (`.8B`/`.4H`), `SHLL/SHLL2` (PMOVZX+PSLL) and vector `FCVTXN/FCVTXN2` (per-lane MXCSR-RTZ round-to-odd) are now JIT-lowered; the `.2D→.2S` (64→32) saturating extracts and `FCVTN/FCVTL` narrowing/widening stay interpreter-only. |
 | `URECPE`, `URSQRTE` | Now decoded + interpreter-executed (bit-exact ARM integer estimate recurrences); the JIT bails via the default. `RBIT` (vector) and `SUQADD`/`USQADD` are JIT-lowered (`SUQADD`/`USQADD` for `.8B/.16B/.4H/.8H`; the `.2S/.4S/.1D/.2D` forms stay interpreter-only). |
 
 ### Three-different (widening) — the non-JIT subset
 | Instructions | Why interpreter-only |
 |---|---|
-| `SQDMULL/SQDMLAL/SQDMLSL` **.2S→.2D (size=10) only** | The `.4H→.4S` (size=01) three-diff forms are now JIT-lowered (PMOVSXWD+PMULLD doubling, PCMPEQD-blend saturation, synthesised 32-bit saturating accumulate for the MLAL/MLSL forms); the `.2S→.2D` form has no x86 narrowing/64-bit pack and stays interpreter-only. |
+| `SQDMULL/SQDMLAL/SQDMLSL` — all JIT-lowered | The `.4H→.4S` (PMOVSXWD+PMULLD) and `.2S→.2D` (PMOVSXDQ+PMULDQ, PCMPGTQ-based 64-bit saturating accumulate) forms are both JIT-lowered now. |
 | `ADDHN`, `SUBHN`, `RADDHN`, `RSUBHN` **.2S<-.2D only** | The `.8B<-.8H` and `.4H<-.4S` forms are now JIT-lowered (add/sub-wide → shift-high → pack); the `.2S<-.2D` form has no x86 narrowing pack and stays interpreter-only. |
 
 ### Vector immediate
@@ -109,7 +109,7 @@ contiguous `LD1/ST1` forms. Nothing in this load/store class is interpreter-only
 ### CRC32 and crypto
 | Instructions | Why interpreter-only |
 |---|---|
-| `CRC32B/H/W/X`, `CRC32CB/CH/CW/CX` | No `DataProc2Src` JIT arm; software polynomial in the interpreter (Digitalis-specific addition). |
+| `CRC32B/H/W/X` (IEEE only) | The Castagnoli `CRC32CB/CH/CW/CX` are now JIT-lowered via the host SSE4.2 `CRC32` instruction (same polynomial); the IEEE `CRC32*` ops use a different polynomial that the host instruction does not compute, so they stay on the software-polynomial interpreter path. |
 | `AESE/AESD/AESMC/AESIMC`, `SHA1*`, `SHA256*`, `SHA512*` | JIT bails with `Undefined()` in the crypto handlers; interpreter executes. |
 
 ### Scalar bitfield & system
@@ -134,8 +134,8 @@ The interpreter is ~10–100× slower per instruction than JIT-translated code, 
 
 | Promotion target | Typical app affected |
 |---|---|
-| `FCVTN`/`FCVTL`/`FCVTXN`/`SHLL` and the `.2D`/`.2S` narrowing saturating forms | Pixel format conversion, audio downsampling, quantized ML |
-| `CRC32*` | zlib/zstd framing, filesystem checksums |
+| `FCVTN`/`FCVTL` and the `.2D→.2S` narrowing saturating extracts | Pixel format conversion, audio downsampling, quantized ML |
+| IEEE `CRC32*` (the Castagnoli `CRC32C*` are JIT'd) | zlib/zstd framing, filesystem checksums |
 
 (Vector narrowing `XTN`/`SQXTN`, de-interleaving `LD2`/`LD3`/`LD4`/`ST2`/`ST3`/`ST4`,
 `SQDMULL`/`SQDMLAL`/`SQDMLSL` `.4S`, `PMULL`/`PMULL2 .8H`, `SUQADD`/`USQADD`, and the
@@ -149,8 +149,8 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 
 | Group | Apps likely to hit it | Severity |
 |---|---|---|
-| **Vector FP narrowing `FCVTN`/`FCVTXN` (perf)** | Image/audio codecs, quantized ML | **Low–Medium** — correct but interpreter-slow on hot kernels; the integer narrowing and de-interleave paths are now JIT-lowered. |
-| **CRC32 (perf)** | Compression/IO-heavy apps | **Low–Medium** — correct, interpreter-speed. |
+| **Vector FP narrowing `FCVTN` (perf)** | Image/audio codecs, quantized ML | **Low** — correct but interpreter-slow on hot kernels; integer narrowing, de-interleave, `SHLL`, `FCVTXN` and the `.2D` widening multiplies are now JIT-lowered. |
+| **IEEE CRC32 (perf)** | Compression/IO-heavy apps | **Low** — `CRC32C*` are JIT'd via host SSE4.2; only the IEEE `CRC32*` polynomial remains interpreter-speed. |
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
 | **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
 
