@@ -63,23 +63,46 @@ def select_variant(variants):
 # ----- live session (manually exercised) -----
 
 class Session:
-    def __init__(self, throttle=2.0):
+    # apkmirror rate-limits / Cloudflare-403s bulk access; back off and retry.
+    _RETRY_STATUS = (403, 429, 503)
+
+    def __init__(self, throttle=2.0, max_retries=6, backoff_base=5.0):
         import requests
+        self._requests = requests
         self.s = requests.Session()
         self.s.headers["User-Agent"] = UA
         self.throttle = throttle
+        self.max_retries = max_retries
+        self.backoff_base = backoff_base
         self._last = 0.0
 
     def _get(self, url, referer=None, **kw):
         if referer:
             self.s.headers["Referer"] = referer
-        wait = self.throttle - (time.monotonic() - self._last)
-        if wait > 0:
-            time.sleep(wait)
-        r = self.s.get(url, timeout=60, **kw)
-        self._last = time.monotonic()
-        r.raise_for_status()
-        return r
+        last_exc = None
+        for attempt in range(self.max_retries):
+            wait = self.throttle - (time.monotonic() - self._last)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                r = self.s.get(url, timeout=60, **kw)
+                self._last = time.monotonic()
+            except self._requests.RequestException as e:
+                last_exc = e
+                time.sleep(self.backoff_base * (2 ** attempt))
+                continue
+            if r.status_code in self._RETRY_STATUS and attempt < self.max_retries - 1:
+                # honor Retry-After if present, else exponential back-off
+                ra = r.headers.get("Retry-After")
+                delay = (float(ra) if ra and ra.isdigit()
+                         else self.backoff_base * (2 ** attempt))
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            return r
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("exhausted retries for %s" % url)
 
     def version_page_url(self, slug, version):
         app = slug.split("/")[-1]
