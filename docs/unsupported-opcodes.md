@@ -53,12 +53,11 @@ The decoder reaches these instructions but explicitly calls `Undefined()` becaus
 
 | Family | Instructions | ARM rev | Evidence |
 |---|---|---|---|
-| **Exception-generating (non-SVC)** | `BRK #imm`, `HLT #imm`, `HVC`, `SMC`, `DCPS1/2/3` | ARMv8.0 | Only `SVC` is decoded in the exception-generation class; everything else → `Undefined()` (`decoder.h` ~2321). Sanitizer / debug builds that emit `BRK` will fault. |
-| **Add/subtract immediate with tag (MTE)** | `ADDG`, `SUBG` | ARMv8.5-MTE | `decoder.h` ~2032 — tagged add/sub-immediate not implemented. |
-| **Bounded FP rounding** | `FRINT32X`, `FRINT32Z`, `FRINT64X`, `FRINT64Z` (vector + scalar) | ARMv8.5 | `decoder.h` ~5514 — vector two-reg-misc bounded-rounding opcodes rejected. |
-| **MTE tag-block ops** | `LDGM`, `STGM`, `STZGM` | ARMv8.5-MTE | Not in the load/store-tag dispatch (`DecodeLoadStoreMemTag`). The tag *load/store* ops `STG/LDG/STZG/ST2G/STZ2G` and DP `SUBP/SUBPS/IRG/GMI` **are** decoded. |
+| **Exception-generating (non-BRK/SVC)** | `HLT #imm`, `HVC`, `SMC`, `DCPS1/2/3` | ARMv8.0 | `SVC` and now `BRK` are decoded; the rest stay fatal-with-diagnostic. `BRK #imm` delivers a synchronous SIGTRAP to the guest (sanitizer/debug breakpoints work). |
 
 **Note on BTI:** `BTI c/j/jc` is encoded as a `HINT` and routes to `Nop()`. It doesn't fault — it just has no effect. Apps relying on BTI for control-flow integrity won't get protection on Digitalis, but they will run.
+
+**Now implemented (no longer rejected):** `BRK` (synchronous guest SIGTRAP); MTE `ADDG`/`SUBG` and the tag-block `LDGM`/`STGM`/`STZGM` (no-MTE-backing semantics; this also unshadowed the previously-misrouted `STG/LDG/STZG/ST2G/STZ2G` family); bounded FP rounding `FRINT32X/Z`/`FRINT64X/Z` (scalar + vector, with saturation); and `RNDR`/`RNDRRS` (real host entropy + success flags).
 
 ---
 
@@ -68,14 +67,14 @@ The decoder has no case for these — the instruction bits hit a high-level catc
 
 | Extension | ARM rev | Representative instructions | Where it lands |
 |---|---|---|---|
-| **Int8 matrix multiply (I8MM)** | ARMv8.6 | `SMMLA`, `UMMLA`, `USMMLA`, `SUDOT`, `USDOT` | catch-all `Undefined()` (`DecodeSimdFp` ~3590). *Note: `SDOT`/`UDOT` (v8.4 DotProd) **are** implemented — only the v8.6 matmul/mixed-sign forms are absent.* |
-| **SM3 / SM4** | ARMv8.2 | `SM3SS1`, `SM3TT1A/B`, `SM3TT2A/B`, `SM3PARTW1/2`, `SM4E`, `SM4EKEY` | ~3590. *SHA3 (`EOR3`/`BCAX`/`RAX1`/`XAR`) is now decoded + interpreter-executed.* |
 | **SVE** (Scalable Vector Extension) | ARMv8.2 / v9 | All Z-register ops: predicated arithmetic, gather/scatter, FFR, reductions, permute (`SPLICE/COMPACT/REV/UZP/ZIP/TRN`), `PTRUE`, `WHILELT`, … | top-level `Undefined()` (`DecodeInstruction` default ~2009, `op0 ∈ {0001,0010,0011}`) |
 | **SVE2** | ARMv9 | Multiply, bitwise, bit-permute, FP, crypto-helper SVE2 instructions | ~2009 |
 | **SME** (Scalable Matrix Extension) | ARMv9.2 | `ZA` tile access, `MOVA`, `ADDHA/ADDVA`, `SMOPA/UMOPA/…`, SME load/store, streaming-mode entry/exit | ~2009 |
 | **FP8 / FAMINMAX / LUT** | ARMv9.x | FP8 convert/dot, `FAMAX/FAMIN`, `LUTI2/LUTI4` | ~3590 |
 
-**RNG note:** `MRS Xd, RNDR` / `MRS Xd, RNDRRS` are *decoded* (they reach the `Mrs` consumer like any other system-register read); correctness depends on the `Mrs` handler, which does not currently return real entropy.
+**Deliberately deferred:** SVE/SVE2/SME/FP8 are a from-scratch undertaking (new Z/P register state, a separate decode tree, gather/scatter) and **no Android device exposes them to user code**, so they remain documented gaps rather than committed work — per the project plan's beyond-manual tier.
+
+**Now implemented (no longer in this list):** `SM3` (SS1/TT1A/1B/TT2A/2B/PARTW1/2) and `SM4` (SM4E/SM4EKEY), validated against the GB/T 32905/32907 `SM3("abc")` digest and SM4 ciphertext; I8MM `USDOT`/`SUDOT` (mixed-sign dot) and `SMMLA`/`UMMLA`/`USMMLA` (8-bit matrix multiply-accumulate); and `RNDR`/`RNDRRS` (real host entropy). `SDOT`/`UDOT` and SHA3 were already implemented.
 
 ---
 
@@ -150,16 +149,12 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 
 | Group | Apps likely to hit it | Severity |
 |---|---|---|
-| **`BRK` exception ops** | Sanitizer builds (ASAN/UBSAN/HWASAN), debug builds | **Medium** — affects developer/debug flows; still a hard `Undefined()`. |
 | **Vector FP narrowing `FCVTN`/`FCVTXN` (perf)** | Image/audio codecs, quantized ML | **Low–Medium** — correct but interpreter-slow on hot kernels; the integer narrowing and de-interleave paths are now JIT-lowered. |
 | **CRC32 (perf)** | Compression/IO-heavy apps | **Low–Medium** — correct, interpreter-speed. |
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
-| **I8MM matmul** | Newer ML inference kernels | **Low–Medium** — `SDOT/UDOT` covered; only v8.6 matmul forms fault. |
-| **MTE tag-block / `ADDG/SUBG`** | Opt-in memory-tagging hardening | **Low** — rarely emitted by NDK toolchains today. |
-| **SHA3 / SM3 / SM4** | Region-specific crypto | **Low**. |
-| **SVE / SVE2 / SME** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None**. |
+| **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
 
-FP16, PAC, FCMA, JSCVT, BFloat16, DotProd, LSE, LRCPC and BTI — all previously called out as risks here — are now decoded and executed, so they no longer gate app bring-up.
+FP16, PAC, FCMA, JSCVT, BFloat16, DotProd, LSE, LRCPC, BTI, **`BRK` (sanitizer/debug breakpoints), MTE `ADDG/SUBG` + tag-block, FRINTTS, RNDR/RNDRRS, I8MM (USDOT/SMMLA/UMMLA/USMMLA), and SM3/SM4 crypto** — all previously called out as risks/gaps here — are now decoded and executed, so they no longer gate app bring-up. The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure).
 
 ---
 
