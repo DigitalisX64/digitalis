@@ -1,2 +1,11 @@
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# Python-generated files (apkmirror_fetch tooling)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# apksign debug-key cache used by fetch-prebuilt-apks.py
+.cache/
