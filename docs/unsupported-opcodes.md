@@ -93,7 +93,7 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 | Instructions | Why interpreter-only |
 |---|---|
 | `SQDMULL/SQDMLAL/SQDMLSL` (vector three-diff form) | No three-diff case-arm. *(The **by-element** forms **are** JIT in `AdvSimdVecXIndexedElement`.)* |
-| `ADDHN`, `SUBHN`, `RADDHN`, `RSUBHN` | Narrowing add/sub — no JIT path. |
+| `ADDHN`, `SUBHN`, `RADDHN`, `RSUBHN` **.2S<-.2D only** | The `.8B<-.8H` and `.4H<-.4S` forms are now JIT-lowered (add/sub-wide → shift-high → pack); the `.2S<-.2D` form has no x86 narrowing pack and stays interpreter-only. |
 | `PMULL`/`PMULL2` with `.8H` (size=00) | Only the `.1Q` (size=11) form is JIT-lowered via `PCLMULQDQ`. |
 
 ### Vector immediate
