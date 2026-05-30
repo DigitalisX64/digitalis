@@ -2466,9 +2466,10 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 |-------|-------------------|------|-------|
 | `REV Xd, Xn` | `bswapq` | JIT | Byte-reverse 64-bit |
 | `REV32 Wd, Wn` | `bswapl` | JIT | Byte-reverse 32-bit |
-| `REV16 Xd, Xn` | — | Interpreter | Reverse 16-bit halfwords |
+| `REV16 Xd, Xn` | — | Interpreter | Reverse 16-bit halfwords (scalar form bails) |
 | `CLZ Xd, Xn` | test + `bsrq` + `xor 63` | JIT | Count leading zeros |
-| `RBIT Xd, Xn` | — | Interpreter | Reverse bits |
+| `CLS Xd, Xn` | seq | JIT | Count leading sign bits |
+| `RBIT Xd, Xn` | bit-reversal sequence | JIT | Reverse bits |
 
 ### Floating Point
 
@@ -2483,18 +2484,21 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `FDIV Dd, Dn, Dm` | `divsd` | JIT | |
 | `FCMP Dn, Dm` | `ucomisd` + NZCV mapping | JIT | Unordered compare (NaN-aware) |
 | `FCMP Dn, #0.0` | `xorpd` (zero) + `ucomisd` | JIT | Compare with zero |
-| `FMOV Dd/Sd, #imm` | load immediate to SIMD reg | JIT | Single and double precision; half-precision falls back to interpreter |
-| `FCVT Sd, Dd` | — | Interpreter | Double → single conversion |
-| `FCVTZS Xd, Dn` | — | Interpreter | Float → signed int |
-| `FCVTZU Xd, Dn` | — | Interpreter | Float → unsigned int |
-| `SCVTF Dd, Xn` | — | Interpreter | Signed int → float |
-| `UCVTF Dd, Xn` | — | Interpreter | Unsigned int → float |
-| `FMADD Dd, Dn, Dm, Da` | — | Interpreter | Fused multiply-add |
-| `FABS Dd, Dn` | — | Interpreter | Absolute value |
-| `FNEG Dd, Dn` | — | Interpreter | Negate |
-| `FSQRT Dd, Dn` | — | Interpreter | Square root |
-| `FCSEL Dd, Dn, Dm, cond` | — | Interpreter | FP conditional select |
-| `FRINTX/FRINTI/FRINTZ/...` | — | Interpreter | FP rounding |
+| `FMOV Dd/Sd, #imm` | load immediate to SIMD reg | JIT | Single, double, and half-precision (FP16 via host F16C) |
+| `FCVT Sd, Dd` | — | Interpreter | Conversion *between* FP precisions (single↔double↔half) — JIT bails |
+| `FCVTZS Xd, Dn` | `cvttsd2si` (+ saturation fix-up) | JIT | Float → signed int |
+| `FCVTZU Xd, Dn` | conversion sequence | JIT | Float → unsigned int |
+| `SCVTF Dd, Xn` | `cvtsi2sd` | JIT | Signed int → float |
+| `UCVTF Dd, Xn` | conversion sequence | JIT | Unsigned int → float |
+| `FCVTNS/FCVTMS/FCVTPS/FCVTAS/...` | round-mode + convert | JIT | Float → int, all rounding modes |
+| `FJCVTZS Wd, Dn` | convert + flag set | JIT | JavaScript FP→int (ARMv8.3 JSCVT) |
+| `FMADD Dd, Dn, Dm, Da` | `vfmadd*sd` | JIT | Fused multiply-add (requires host FMA; else interpreter) |
+| `FABS Dd, Dn` | `andpd` mask | JIT | Absolute value |
+| `FNEG Dd, Dn` | `xorpd` mask | JIT | Negate |
+| `FSQRT Dd, Dn` | `sqrtsd` | JIT | Square root |
+| `FCSEL Dd, Dn, Dm, cond` | flag test + `movsd` | JIT | FP conditional select |
+| `FRINTN/M/P/Z/A/X/I` | `roundsd` (imm mode) | JIT | FP rounding, all modes |
+| `FCADD/FCMLA` | complex-mul sequence | JIT | FP complex MAC (ARMv8.3 FCMA) |
 
 ### System
 
@@ -2505,11 +2509,13 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `MRS Xd, NZCV` | load + shift from ThreadState flags | JIT | Read condition flags |
 | `MRS Xd, CTR_EL0` | `movq dst, 0x8444c004` | JIT | Cache type (constant) |
 | `MRS Xd, DCZID_EL0` | `movq dst, 0x10` | JIT | Data cache zero ID (constant) |
+| `MRS Xd, MIDR_EL1` | `movq dst, <constant>` | JIT | Main ID register (constant) |
 | `MSR NZCV, Xn` | remap bits + store to ThreadState | JIT | Write condition flags |
 | `MSR TPIDR_EL0, Xn` | `movq [ThreadState.tls], src` | JIT | Write TLS pointer |
 | `MRS/MSR` (other regs) | — | Interpreter | |
 | `DMB / DSB / ISB` | *no x86 emitted* | JIT (no-op) | Decoder routes to `Nop()`; x86 TSO already provides the orderings the guest needs |
-| `BRK #imm` | — | *Unsupported* | Decoder rejects with `Undefined()` (only `SVC` is decoded in the exception group; see `decoder.h:1272`). Sanitizer / debug builds that emit `BRK` will fault on Digitalis. See [`unsupported-opcodes.md`](unsupported-opcodes.md#1-rejections-inside-the-supported-encoding-space). |
+| `BRK #imm` / `HLT` / `DCPS1-3` | — | *Unsupported* | Decoder rejects with `Undefined()` (only `SVC` is decoded in the exception-generation group). Sanitizer / debug builds that emit `BRK` will fault on Digitalis. See [`unsupported-opcodes.md`](unsupported-opcodes.md#1-rejections-inside-the-supported-encoding-space). |
+| `MRS Xd, RNDR/RNDRRS` | sysreg read path | JIT/Interp | Decoded as a system-register read; does not return real entropy |
 
 ### SIMD / NEON
 
@@ -2524,26 +2530,44 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `STR Dd/Sd/Hd/Bd` | store via temp | JIT | Smaller SIMD stores |
 | `LDP Qd1, Qd2, [Xn]` | two `movdqu` | JIT | 128-bit pair load only |
 | `STP Qd1, Qd2, [Xn]` | two `movdqu` | JIT | 128-bit pair store only |
-| `ADD Vd.4S, Vn.4S, Vm.4S` | — | Interpreter | Vector element-wise add |
-| `SUB/MUL/AND/ORR/EOR` (vector) | — | Interpreter | Vector element-wise ops |
-| `CMGT/CMEQ/CMLE` (vector) | — | Interpreter | Vector compare |
-| `SMAX/SMIN/UMAX/UMIN` (vector) | — | Interpreter | Vector min/max |
-| `DUP Vd.4S, Vn.S[i]` | — | Interpreter | Duplicate element |
-| `INS Vd.S[i], Xn` | — | Interpreter | Insert element |
-| `UMOV Xd, Vn.S[i]` | — | Interpreter | Extract unsigned |
-| `EXT Vd.16B, Vn, Vm, #idx` | — | Interpreter | Extract/concatenate |
-| `TRN1/TRN2` (vector) | — | Interpreter | Transpose |
-| `ZIP1/ZIP2` (vector) | — | Interpreter | Interleave |
-| `UZP1/UZP2` (vector) | — | Interpreter | De-interleave |
-| `LD1/LD2/LD3/LD4` | — | Interpreter | Multi-structure load |
-| `ST1/ST2/ST3/ST4` | — | Interpreter | Multi-structure store |
-| `UADDL/SADDL/UMULL/SMULL` | — | Interpreter | Widening arithmetic |
-| `SHL/SSHR/USHR` (vector) | — | Interpreter | Vector shift by immediate |
-| `ABS/NEG/CNT/NOT/REV` (vector) | — | Interpreter | Vector single-source |
-| `ADDV/SADDLV/UMAXV` (vector) | — | Interpreter | Across-lanes reduction |
-| `FMLA/FMLS` (vector) | — | Interpreter | Vector FP multiply-accumulate |
-| `CRC32B/H/W/X` | — | Interpreter | CRC32 (Digitalis-specific addition) |
-| `CRC32CB/CH/CW/CX` | — | Interpreter | CRC32C variants |
+| `ADD/SUB/MUL/MLA/MLS` (vector) | `padd*`/`psub*`/`pmull*`+seq | JIT | Element-wise integer arithmetic |
+| `AND/ORR/EOR/BIC/ORN/NOT/BSL` (vector) | `pand`/`por`/`pxor`/`pandn`+seq | JIT | Element-wise logical |
+| `CMEQ/CMGT/CMGE/CMHI/CMHS/CMTST` (vector) | `pcmp*`+seq | JIT | Vector compare |
+| `SMAX/SMIN/UMAX/UMIN` + pairwise | `pmaxs*`/`pmins*`+seq | JIT | Vector min/max |
+| `SHADD/UHADD/SRHADD/URHADD/SHSUB/UHSUB` | seq | JIT | Halving / rounding add-sub |
+| `SABD/UABD/SABA/UABA`, `PMUL` | seq | JIT | Abs-diff (accumulate), polynomial mul |
+| `SQADD/UQADD/SQSUB/UQSUB` | `padds*`/`psubs*` | JIT | Saturating arithmetic |
+| `SQDMULH/SQRDMULH/SQRDMLAH/SQRDMLSH` | seq | JIT | Saturating doubling mul-high (+RDM) |
+| `SSHL/USHL/SRSHL/URSHL/SQSHL/UQSHL/SQRSHL/UQRSHL` | seq | JIT | Vector shift by register (+rounding/saturating) |
+| `SSHR/USHR/SSRA/USRA/SHL/SLI/SRI/SQSHRN/...` | `psr*`/`psl*`+seq | JIT | Vector shift by immediate (+narrowing) |
+| `SMULL/UMULL/SMLAL/UMLAL/SMLSL/UMLSL` | `pmull*`+widen | JIT | Widening multiply (+by-element) |
+| `SADDL/UADDL/SSUBL/USUBL/SADDW/.../SABDL/SABAL` | widen+seq | JIT | Widening add/sub/abs-diff |
+| `ABS/NEG/CNT/CLS/CLZ/REV16/REV32/REV64` (vector) | seq | JIT | Single-source |
+| `ADDP/ADDV/SADDLV/UADDLV/SMAXV/SMINV/UMAXV/UMINV` | seq | JIT | Pairwise / across-lanes reduction |
+| `SADDLP/UADDLP/SADALP/UADALP` | seq | JIT | Pairwise widening (accumulate) |
+| `FADD/FSUB/FMUL/FDIV/FMLA/FMLS/FMULX` (vector) | `*ps`/`*pd`+FMA | JIT | Vector FP arithmetic / MAC |
+| `FMAX/FMIN/FMAXNM/FMINNM` (vector) | `maxp*`/`minp*`+seq | JIT | Vector FP min/max |
+| `FCMEQ/FCMGE/FCMGT/FACGE/FACGT/FABD` (vector) | `cmpp*`+seq | JIT | Vector FP compare / abs-diff |
+| `FRECPS/FRSQRTS/FRECPE/FRSQRTE` (vector) | seq | JIT | FP reciprocal / rsqrt step & estimate |
+| `FCVTZS/FCVTZU/SCVTF/UCVTF` (vector), `FRINT*` (vector) | `cvt*`/`roundp*` | JIT | Vector FP↔int convert / round |
+| `SQABS/SQNEG`, `FCVTXN` (scalar) | seq | JIT | Saturating abs/neg; round-to-odd narrow |
+| `DUP Vd, Vn.S[i]` / `DUP Vd, Wn` | `pshuf*`/broadcast | JIT | Duplicate element / general reg |
+| `INS Vd.S[i], Xn` / `INS Vd.S[i], Vn.S[j]` | `pinsr*`/`pextr*` | JIT | Insert element |
+| `UMOV/SMOV Xd, Vn.S[i]` | `pextr*` (+sign-ext) | JIT | Extract element |
+| `EXT Vd.16B, Vn, Vm, #idx` | `palignr`/shift | JIT | Extract / concatenate |
+| `TRN1/TRN2`, `ZIP1/ZIP2`, `UZP1/UZP2` | `punpck*`/`shuf` | JIT | Transpose / interleave / de-interleave |
+| `TBL/TBX` | `pshufb`+seq | JIT | Table lookup |
+| `FCADD/FCMLA` (vector + indexed) | complex-mul seq | JIT | FP complex MAC (ARMv8.3 FCMA) |
+| `SDOT/UDOT`, `BFDOT/BFMMLA/BFMLALB/BFMLALT` | seq | JIT | Dot-product (v8.4) / BFloat16 (v8.6) |
+| `MOVI Vd.2D, #0` | `pxor xmm, xmm` | JIT | Zero-vector special case |
+| `MOVI/MVNI/ORR/BIC/FMOV` (other vector imm) | — | Interpreter | Modified-immediate forms (only `2D #0` is JIT) |
+| `XTN/SQXTN/UQXTN/SQXTUN/FCVTN/FCVTL/SHLL` | — | Interpreter | Vector narrowing / lengthening |
+| `RBIT` (vector), `URECPE/URSQRTE/SUQADD/USQADD` | — | Interpreter | No vector JIT path |
+| `SQDMULL/SQDMLAL/SQDMLSL` (vector), `ADDHN/SUBHN/RADDHN/RSUBHN` | — | Interpreter | Three-diff (by-element SQDMULL **is** JIT) |
+| `LD1/ST1` (contiguous, 1 reg) | `movdqu`+seq | JIT | Single-structure load/store |
+| `LD2/LD3/LD4`, `ST2/ST3/ST4` | — | Interpreter | De-interleaving multi-structure |
+| `CRC32B/H/W/X`, `CRC32CB/CH/CW/CX` | — | Interpreter | CRC32 / CRC32C (Digitalis-specific addition) |
+| `AESE/AESD/AESMC/AESIMC`, `SHA1*/SHA256*/SHA512*` | — | Interpreter | Crypto (decoded; interpreter-executed) |
 
 ### Summary
 
@@ -2553,7 +2577,7 @@ pie title Instruction Translation Coverage
     "Interpreter (fallback)" : 2
 ```
 
-The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores, atomics, basic FP, and SIMD load/store** — the instructions that make up ~98% of executed code in typical apps. The interpreter handles **syscalls, memory barriers, FP conversions, fused multiply-add, and the full NEON SIMD compute instruction set** (element-wise ops, permute, widening, reductions, etc.).
+The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores, atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter handles **syscalls, most system-register access, CRC32 and crypto (AES/SHA), vector narrowing/lengthening (`XTN/FCVTN/FCVTL`), de-interleaving structure loads/stores (`LD2-4`/`ST2-4`), most vector modified-immediate forms, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA). See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
 
 ---
 
@@ -2736,8 +2760,8 @@ See [section 4](#4-the-big-picture) for the prose walkthrough; the diagram above
 
 | Engine | Coverage | Handles |
 |---|---|---|
-| Lite Translator (JIT) | ~98% of executed instructions | integer, branch, load/store, system, basic SIMD |
-| Interpreter | fallback | syscalls, complex SIMD (pairwise, widening, permute, across-lanes), CRC32, scalar FP conversions |
+| Lite Translator (JIT) | ~98% of executed instructions | integer, branch, load/store, system, scalar FP (incl. conversions, FMA, FCSEL, FP16), and most NEON SIMD (arithmetic, logical, compare, shifts, widening MAC, reductions, permute, vector FP, FCMA/DotProd/BF16) |
+| Interpreter | fallback | syscalls, most system-register access, CRC32, crypto (AES/SHA), vector narrowing/lengthening, de-interleaving `LD2-4`/`ST2-4`, most vector modified-immediate forms |
 
 A `kInterpreted` marker is installed at any guest PC the JIT can't handle, so subsequent dispatcher entries route directly to the interpreter instead of re-attempting compilation. See [section 7](#7-two-execution-paths-jit-and-interpreter) and [section 11](#11-translation-cache-and-dispatch-loop).
 
