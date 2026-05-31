@@ -46,7 +46,7 @@ Digitalis solves this by translating ARM64 machine code to x86_64 machine code a
 
 Digitalis is built on top of [Berberis](https://android.googlesource.com/platform/frameworks/libs/binary_translation/), Google's open-source binary translator in the Android Open Source Project (AOSP). Berberis was originally designed for RISC-V-to-x86_64 translation and is already integrated with Android's NativeBridge system — the framework that Android uses to run apps built for a different CPU architecture. Digitalis adds the entire ARM64 backend: an ARM64 instruction decoder, a JIT compiler that generates x86_64 machine code, an interpreter for instructions the JIT can't handle, syscall translation, and proxy libraries that bridge ARM64 API calls to host libraries.
 
-The project includes 26 ARM64-only sample app modules under `sample/hellodigitalis/` — 22 ported from Google's [android/ndk-samples](https://github.com/android/ndk-samples) plus 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, and NNAPI. All 26 run successfully on an x86_64 emulator through Digitalis translation.
+The project includes 43 ARM64-only sample app modules under `sample/hellodigitalis/` — 22 ported from Google's [android/ndk-samples](https://github.com/android/ndk-samples), 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`), and 17 ARM-extension probe modules (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, CRC32/CRC32C, SHA/AES crypto, and more) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, and NNAPI. All 43 run successfully on an x86_64 emulator through Digitalis translation.
 
 ---
 
@@ -614,6 +614,8 @@ The decoder handles these ARM64 instruction categories:
 - **Control flow**: B, BL, B.cond, RET, CBZ, CBNZ, TBZ, TBNZ
 - **SIMD/FP**: vector arithmetic, permute, across-lanes, widening, narrowing
 - **CRC32**: CRC32B, CRC32H, CRC32W, CRC32X and their "C" variants (Digitalis-specific addition)
+- **Crypto extensions**: AES, SHA1/SHA256/SHA512, and the SM3/SM4 (Chinese national-standard) instruction groups
+- **Newer-extension decode**: I8MM dot/matmul (`USDOT/SUDOT/USMMLA`), FP↔int round-to-precision (`FRINT32X/64X/32Z/64Z`), MTE tag ops (`ADDG/SUBG/LDG/STG/…`), and the RNG system registers (`RNDR/RNDRRS`), plus `BRK`
 
 ---
 
@@ -1119,11 +1121,11 @@ Tracing modes supported by `BERBERIS_TRACING`:
 
 Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x86_64 translation. Digitalis adds the entire ARM64-to-x86_64 backend. Here's what's Digitalis-specific versus upstream infrastructure:
 
-**Decoder.** The complete ARM64 instruction decoder: bit-field parsing for all instruction groups (data processing, branches, loads/stores, SIMD/FP), including CRC32 instructions not present in the original Berberis decoder.
+**Decoder.** The complete ARM64 instruction decoder: bit-field parsing for all instruction groups (data processing, branches, loads/stores, SIMD/FP), including instructions not present in the original Berberis decoder — CRC32/CRC32C, the SM3/SM4 crypto groups, I8MM dot/matrix-multiply (`USDOT/SUDOT/USMMLA`), `FRINT32X/64X/32Z/64Z`, MTE tag ops, the RNG system registers (`RNDR/RNDRRS`), and `BRK`.
 
-**JIT (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region.
+**JIT (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region. Host-feature-gated native paths fall back to the interpreter when the host CPU lacks the needed extension — e.g. `CRC32C*` uses the SSE4.2 `crc32` instruction and bails when SSE4.2 is absent.
 
-**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~2.5x speedup), and CRC32 instruction support.
+**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~2.5x speedup), and the fallback path for instructions without a JIT translation — IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the I8MM mixed-sign dot/matmul ops, and vector narrowing / de-interleaving structure loads.
 
 **Syscall Emulation.** ARM64-to-x86_64 syscall number mapping, the futex BSS workaround for Bionic's pthread_mutex implementation, and BSS partial-page zeroing in `sys_mman_emulation.cc`.
 
@@ -1131,7 +1133,7 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Product Configuration.** `sdk_phone64_x86_64_digitalis.mk` — the emulator product definition that enables ARM64 translation, sets the NativeBridge system property, and includes all proxy libraries.
 
-**Sample Apps.** 26 ARM64-only sample app modules — 22 ported from [android/ndk-samples](https://github.com/android/ndk-samples) plus 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, and NNAPI. The original `hello-vulkan` module was written specifically for the Digitalis project.
+**Sample Apps.** 43 ARM64-only sample app modules — 22 ported from [android/ndk-samples](https://github.com/android/ndk-samples), 4 Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`), and 17 ARM-extension probe modules — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, and NNAPI, plus targeted instruction-set probes (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, CRC32/CRC32C, SHA/AES crypto). The original `hello-vulkan` module was written specifically for the Digitalis project.
 
 **Distribution Artifact Allowlist.** `berberis_config.mk` defines `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` — the explicit list of files allowed in the Digitalis system image (used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST` in `enable_arm64_to_x86_64.mk`). Mirroring the upstream RISC-V coverage, it enumerates 73 paths in total: the 21 `libberberis_proxy_*.so` stubs, 42 guest ARM64 system libs under `system/lib64/arm64/` (libc, libm, libvulkan, libdl, libicu, libsqlite, libssl, libcrypto, libcompiler_rt, libnative_bridge_vdso, …), `libberberis_arm64.so`, `libberberis_exec_region.so`, the ARM64 `app_process64` and `linker64`, the two binfmt_misc magic files (`arm64_exe`, `arm64_dyn`), the two ARM64 program-runner binaries (`berberis_program_runner_arm64`, `berberis_program_runner_binfmt_misc_arm64`), `system/etc/init/berberis.rc`, and `system/etc/ld.config.arm64.txt`. The complete list is what makes a Digitalis build pass the AOSP artifact-allowlist check (closes [DigitalisX64/digitalis#1](https://github.com/DigitalisX64/digitalis/issues/1)).
 
@@ -2550,7 +2552,7 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `FCMEQ/FCMGE/FCMGT/FACGE/FACGT/FABD` (vector) | `cmpp*`+seq | JIT | Vector FP compare / abs-diff |
 | `FRECPS/FRSQRTS/FRECPE/FRSQRTE` (vector) | seq | JIT | FP reciprocal / rsqrt step & estimate |
 | `FCVTZS/FCVTZU/SCVTF/UCVTF` (vector), `FRINT*` (vector) | `cvt*`/`roundp*` | JIT | Vector FP↔int convert / round |
-| `SQABS/SQNEG`, `FCVTXN` (scalar) | seq | JIT | Saturating abs/neg; round-to-odd narrow |
+| `SQABS/SQNEG`, `FCVTXN` (scalar + vector) | seq | JIT | Saturating abs/neg; round-to-odd narrow (per-lane MXCSR RTZ + LSB-OR) |
 | `DUP Vd, Vn.S[i]` / `DUP Vd, Wn` | `pshuf*`/broadcast | JIT | Duplicate element / general reg |
 | `INS Vd.S[i], Xn` / `INS Vd.S[i], Vn.S[j]` | `pinsr*`/`pextr*` | JIT | Insert element |
 | `UMOV/SMOV Xd, Vn.S[i]` | `pextr*` (+sign-ext) | JIT | Extract element |
@@ -2559,15 +2561,19 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `TBL/TBX` | `pshufb`+seq | JIT | Table lookup |
 | `FCADD/FCMLA` (vector + indexed) | complex-mul seq | JIT | FP complex MAC (ARMv8.3 FCMA) |
 | `SDOT/UDOT`, `BFDOT/BFMMLA/BFMLALB/BFMLALT` | seq | JIT | Dot-product (v8.4) / BFloat16 (v8.6) |
-| `MOVI Vd.2D, #0` | `pxor xmm, xmm` | JIT | Zero-vector special case |
-| `MOVI/MVNI/ORR/BIC/FMOV` (other vector imm) | — | Interpreter | Modified-immediate forms (only `2D #0` is JIT) |
-| `XTN/SQXTN/UQXTN/SQXTUN/FCVTN/FCVTL/SHLL` | — | Interpreter | Vector narrowing / lengthening |
-| `RBIT` (vector), `URECPE/URSQRTE/SUQADD/USQADD` | — | Interpreter | No vector JIT path |
-| `SQDMULL/SQDMLAL/SQDMLSL` (vector), `ADDHN/SUBHN/RADDHN/RSUBHN` | — | Interpreter | Three-diff (by-element SQDMULL **is** JIT) |
-| `LD1/ST1` (contiguous, 1 reg) | `movdqu`+seq | JIT | Single-structure load/store |
-| `LD2/LD3/LD4`, `ST2/ST3/ST4` | — | Interpreter | De-interleaving multi-structure |
-| `CRC32B/H/W/X`, `CRC32CB/CH/CW/CX` | — | Interpreter | CRC32 / CRC32C (Digitalis-specific addition) |
-| `AESE/AESD/AESMC/AESIMC`, `SHA1*/SHA256*/SHA512*` | — | Interpreter | Crypto (decoded; interpreter-executed) |
+| `MOVI/MVNI/FMOV` (vector modified-immediate) | const-load / `pxor` | JIT | Full family — immediate expanded at translation time (`MOVI Vd.2D,#0` → `pxor`) |
+| `XTN/SQXTN/UQXTN/SQXTUN` (`.8B`/`.4H`) | `packs*`/`packus*`+seq | JIT | Integer vector narrowing (saturating / non-saturating) |
+| `SHLL/SHLL2` | `pmovzx*`+`psll*` | JIT | Shift-left-long (zero-extend then shift by element size) |
+| `SQDMULL/SQDMLAL/SQDMLSL` (all forms) | `pmull*`/`pmuldq`+sat seq | JIT | Doubling widening multiply — `.4H→.4S`, `.2S→.2D`, and by-element; 64-bit saturating accumulate via `pcmpgtq` sign masks |
+| `RBIT` (vector), `SUQADD/USQADD` (`.8B`–`.8H`) | seq | JIT | Bit-reverse; signed↔unsigned saturating accumulate (narrow element forms) |
+| `LD1-4` / `ST1-4` (contiguous + de-interleaving) | `movdqu`/`punpck*`+seq | JIT | Single- and multi-structure load/store |
+| `FCVTN/FCVTL`, `.2D→.2S` saturating extracts | — | Interpreter | FP narrow/widen and 64→32 saturating narrowing |
+| `URECPE/URSQRTE`, `SUQADD/USQADD` (`.2S`/`.4S`/`.1D`/`.2D`) | — | Interpreter | Integer reciprocal estimate; wide saturating accumulate |
+| `ADDHN/SUBHN/RADDHN/RSUBHN` | — | Interpreter | Narrowing add/sub returning the high half |
+| `USDOT/SUDOT` (vector + by-element), `USMMLA/SMMLA/UMMLA` | — | Interpreter | I8MM mixed-sign dot-product / matrix-multiply (v8.6) |
+| `CRC32CB/CH/CW/CX` | `crc32` (SSE4.2) | JIT | Castagnoli poly == host `crc32`; bails to interpreter if SSE4.2 absent |
+| `CRC32B/H/W/X` | — | Interpreter | IEEE 802.3 poly (0x04C11DB7) — no direct host instruction |
+| `AESE/AESD/AESMC/AESIMC`, `SHA1*/SHA256*/SHA512*`, `SM3*/SM4*`, `PMULL/PMULL2` | — | Interpreter | Crypto (decoded; interpreter-executed; `PMULL .8H` is JIT) |
 
 ### Summary
 
@@ -2577,7 +2583,7 @@ pie title Instruction Translation Coverage
     "Interpreter (fallback)" : 2
 ```
 
-The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores, atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter handles **syscalls, most system-register access, CRC32 and crypto (AES/SHA), vector narrowing/lengthening (`XTN/FCVTN/FCVTL`), de-interleaving structure loads/stores (`LD2-4`/`ST2-4`), most vector modified-immediate forms, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA). See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
+The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter handles **syscalls, most system-register access, IEEE CRC32 and crypto (AES/SHA/SM3/SM4), FP narrowing/widening (`FCVTN/FCVTL`) and 64→32 saturating extracts, the I8MM mixed-sign dot/matmul family (`USDOT/SUDOT/USMMLA`), integer reciprocal estimates (`URECPE/URSQRTE`), narrowing add/sub (`ADDHN`–`RSUBHN`), and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2). Recent JIT promotions moved `SHLL/SHLL2`, vector `FCVTXN`, the full `SQDMULL/SQDMLAL/SQDMLSL` family, the `MOVI/MVNI` family, de-interleaving structure loads, and the `CRC32C*` group onto the native path. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
 
 ---
 
