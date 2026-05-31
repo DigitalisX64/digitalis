@@ -5,10 +5,22 @@
 # Usage:
 #   .claude/scripts/test-samples.sh                           # Liveness tests (existing)
 #   .claude/scripts/test-samples.sh hello-vulkan               # Single module liveness
-#   .claude/scripts/test-samples.sh --screenshots              # Screenshot tests all
-#   .claude/scripts/test-samples.sh --screenshots hello-vulkan # Screenshot tests single
+#   .claude/scripts/test-samples.sh --screenshots             # Screenshot tests (rendering)
+#   .claude/scripts/test-samples.sh --screenshots hello-vulkan # Single rendering module
+#   .claude/scripts/test-samples.sh --status                  # Status tests (non-rendering)
+#   .claude/scripts/test-samples.sh --status hello-neon        # Single status module
 #   .claude/scripts/test-samples.sh --update-references              # Update refs all
 #   .claude/scripts/test-samples.sh --update-references hello-vulkan # Update refs single
+#
+# Two separate instrumentation modes, by sample kind:
+#   --screenshots → rendering modules only (ScreenshotTest): pixel-compare the
+#                   captured screen against a committed reference image.
+#   --status      → non-rendering modules only (StatusTest): launch the app and
+#                   assert it ran with no crash or self-reported failure marker
+#                   in logcat (compute / status / callback samples have no
+#                   meaningful visual output to compare).
+# Each module is selected by exactly one of the two modes (per its TEST_CLASSES
+# entry). --update-references applies only to the rendering modules.
 #
 # Requires: emulator booted, adb root, adb remount done.
 
@@ -28,12 +40,26 @@ FILTER=""
 if [[ "${1:-}" == "--screenshots" ]]; then
     MODE="screenshots"
     FILTER="${2:-}"
+elif [[ "${1:-}" == "--status" ]]; then
+    MODE="status"
+    FILTER="${2:-}"
 elif [[ "${1:-}" == "--update-references" ]]; then
     MODE="update-references"
     FILTER="${2:-}"
 else
     FILTER="${1:-}"
 fi
+
+# The instrumentation modes target different test classes:
+#   --screenshots → rendering modules only      (com…ScreenshotTest, pixel compare)
+#   --status      → non-rendering modules only  (com…StatusTest, run-clean check)
+# A module is selected by a mode only if its TEST_CLASSES entry matches the
+# corresponding suffix; this is enforced in the instrumentation loop below.
+case "$MODE" in
+    screenshots) TEST_SUFFIX=".ScreenshotTest" ;;
+    status)      TEST_SUFFIX=".StatusTest" ;;
+    *)           TEST_SUFFIX="" ;;
+esac
 
 WAIT_SECS=5
 
@@ -188,48 +214,48 @@ declare -A TEST_PACKAGES=(
 # Fully qualified test class names
 declare -A TEST_CLASSES=(
     ["hello-vulkan"]="com.example.hellodigitalis.ScreenshotTest"
-    ["hello-jni"]="com.example.hellodigitalis.hellojni.ScreenshotTest"
-    ["hello-jniCallback"]="com.example.hellodigitalis.hellojnicallback.ScreenshotTest"
-    ["exceptions"]="com.example.hellodigitalis.exceptions.ScreenshotTest"
-    ["bitmap-plasma"]="com.example.hellodigitalis.plasma.ScreenshotTest"
+    ["hello-jni"]="com.example.hellodigitalis.hellojni.StatusTest"
+    ["hello-jniCallback"]="com.example.hellodigitalis.hellojnicallback.StatusTest"
+    ["exceptions"]="com.example.hellodigitalis.exceptions.StatusTest"
+    ["bitmap-plasma"]="com.example.hellodigitalis.plasma.StatusTest"
     ["hello-gl2"]="com.example.hellodigitalis.gl2jni.ScreenshotTest"
     ["gles3jni"]="com.example.hellodigitalis.gles3jni.ScreenshotTest"
     ["native-activity"]="com.example.hellodigitalis.nativeactivity.ScreenshotTest"
-    ["native-audio"]="com.example.hellodigitalis.nativeaudio.ScreenshotTest"
-    ["native-codec"]="com.example.hellodigitalis.nativecodec.ScreenshotTest"
-    ["native-midi"]="com.example.hellodigitalis.nativemidi.ScreenshotTest"
-    ["sensor-graph"]="com.example.hellodigitalis.sensorgraph.ScreenshotTest"
-    ["camera-basic"]="com.example.hellodigitalis.camerabasic.ScreenshotTest"
-    ["camera-texture-view"]="com.example.hellodigitalis.cameratextureview.ScreenshotTest"
+    ["native-audio"]="com.example.hellodigitalis.nativeaudio.StatusTest"
+    ["native-codec"]="com.example.hellodigitalis.nativecodec.StatusTest"
+    ["native-midi"]="com.example.hellodigitalis.nativemidi.StatusTest"
+    ["sensor-graph"]="com.example.hellodigitalis.sensorgraph.StatusTest"
+    ["camera-basic"]="com.example.hellodigitalis.camerabasic.StatusTest"
+    ["camera-texture-view"]="com.example.hellodigitalis.cameratextureview.StatusTest"
     ["teapots-classic"]="com.example.hellodigitalis.teapotsclassic.ScreenshotTest"
     ["teapots-more"]="com.example.hellodigitalis.teapotsmore.ScreenshotTest"
     ["teapots-textured"]="com.example.hellodigitalis.teapotstextured.ScreenshotTest"
     ["endless-tunnel"]="com.example.hellodigitalis.endlesstunnel.ScreenshotTest"
-    ["sanitizers"]="com.example.hellodigitalis.sanitizers.ScreenshotTest"
-    ["unit-test"]="com.example.hellodigitalis.unittest.ScreenshotTest"
-    ["vectorization"]="com.android.ndk.samples.vectorization.ScreenshotTest"
-    ["orderfile"]="com.example.hellodigitalis.orderfile.ScreenshotTest"
+    ["sanitizers"]="com.example.hellodigitalis.sanitizers.StatusTest"
+    ["unit-test"]="com.example.hellodigitalis.unittest.StatusTest"
+    ["vectorization"]="com.android.ndk.samples.vectorization.StatusTest"
+    ["orderfile"]="com.example.hellodigitalis.orderfile.StatusTest"
     ["hello-gles1"]="com.example.hellodigitalis.hellogles1.ScreenshotTest"
-    ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.ScreenshotTest"
-    ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.ScreenshotTest"
-    ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.ScreenshotTest"
-    ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.ScreenshotTest"
-    ["hello-widemul"]="com.example.hellodigitalis.hellowidemul.ScreenshotTest"
-    ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret.ScreenshotTest"
-    ["hello-lse"]="com.example.hellodigitalis.hellolse.ScreenshotTest"
-    ["hello-libc-libm"]="com.example.hellodigitalis.hellolibclibm.ScreenshotTest"
-    ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc.ScreenshotTest"
-    ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt.ScreenshotTest"
-    ["hello-fp16"]="com.example.hellodigitalis.hellofp16.ScreenshotTest"
-    ["hello-dotprod"]="com.example.hellodigitalis.hellodotprod.ScreenshotTest"
-    ["hello-complex"]="com.example.hellodigitalis.hellocomplex.ScreenshotTest"
-    ["hello-bti"]="com.example.hellodigitalis.hellobti.ScreenshotTest"
-    ["hello-bf16"]="com.example.hellodigitalis.hellobf16.ScreenshotTest"
-    ["hello-barriers"]="com.example.hellodigitalis.hellobarriers.ScreenshotTest"
-    ["hello-neon"]="com.example.hellodigitalis.helloneon.ScreenshotTest"
-    ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.ScreenshotTest"
-    ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.ScreenshotTest"
-    ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.ScreenshotTest"
+    ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
+    ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.StatusTest"
+    ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.StatusTest"
+    ["hello-fp-vector"]="com.example.hellodigitalis.hellofpvector.StatusTest"
+    ["hello-widemul"]="com.example.hellodigitalis.hellowidemul.StatusTest"
+    ["hello-pac-ret"]="com.example.hellodigitalis.hellopacret.StatusTest"
+    ["hello-lse"]="com.example.hellodigitalis.hellolse.StatusTest"
+    ["hello-libc-libm"]="com.example.hellodigitalis.hellolibclibm.StatusTest"
+    ["hello-lrcpc"]="com.example.hellodigitalis.hellolrcpc.StatusTest"
+    ["hello-jscvt"]="com.example.hellodigitalis.hellojscvt.StatusTest"
+    ["hello-fp16"]="com.example.hellodigitalis.hellofp16.StatusTest"
+    ["hello-dotprod"]="com.example.hellodigitalis.hellodotprod.StatusTest"
+    ["hello-complex"]="com.example.hellodigitalis.hellocomplex.StatusTest"
+    ["hello-bti"]="com.example.hellodigitalis.hellobti.StatusTest"
+    ["hello-bf16"]="com.example.hellodigitalis.hellobf16.StatusTest"
+    ["hello-barriers"]="com.example.hellodigitalis.hellobarriers.StatusTest"
+    ["hello-neon"]="com.example.hellodigitalis.helloneon.StatusTest"
+    ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.StatusTest"
+    ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.StatusTest"
+    ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.StatusTest"
 )
 
 # Ordered list for consistent output
@@ -258,20 +284,22 @@ total=0
 # For screenshot/update-references modes:
 # - Hide status bar to avoid clock/battery changes
 # - Suppress "Viewing full screen" confirmation dialog (steals focus from NativeActivity apps)
-if [[ "$MODE" == "screenshots" || "$MODE" == "update-references" ]]; then
+if [[ "$MODE" == "screenshots" || "$MODE" == "status" || "$MODE" == "update-references" ]]; then
     adb shell settings put global policy_control immersive.status=* 2>/dev/null
     adb shell settings put secure immersive_mode_confirmations confirmed 2>/dev/null
 
     # region digitalis - auto-build missing androidTest APKs.
-    # Both screenshot modes require per-module androidTest APKs; without them
-    # the per-module loop just SKIPs the module ("no test APK"). Scan the
-    # filter-selected module set up-front, collect any missing androidTest
-    # APKs, and build them in one batched gradlew invocation. This lets a
-    # fresh checkout / clean build tree run --screenshots end-to-end without
-    # a manual gradle step.
+    # The instrumentation modes require per-module androidTest APKs; without
+    # them the per-module loop just SKIPs the module ("no test APK"). Scan the
+    # mode-relevant, filter-selected module set up-front, collect any missing
+    # androidTest APKs, and build them in one batched gradlew invocation. This
+    # lets a fresh checkout / clean build tree run end-to-end without a manual
+    # gradle step.
     missing_test_tasks=()
     for mod in "${MODULE_ORDER[@]}"; do
         if [[ -n "$FILTER" && "$mod" != "$FILTER" ]]; then continue; fi
+        # Only consider modules whose test class matches the current mode.
+        if [[ -n "$TEST_SUFFIX" && "${TEST_CLASSES[$mod]}" != *"$TEST_SUFFIX" ]]; then continue; fi
         test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
         if [[ ! -f "$test_apk" ]]; then
             missing_test_tasks+=(":${mod}:assembleAndroidTest")
@@ -365,15 +393,22 @@ echo "════════════════════════�
 echo "  Results: $pass PASS / $crash CRASH / $total total"
 echo "═══════════════════════════════════════════════"
 
-elif [[ "$MODE" == "screenshots" ]]; then
+elif [[ "$MODE" == "screenshots" || "$MODE" == "status" ]]; then
 
+if [[ "$MODE" == "screenshots" ]]; then MODE_LABEL="Screenshots (rendering modules)"; else MODE_LABEL="Status (non-rendering modules)"; fi
 echo "═══════════════════════════════════════════════"
-echo "  Digitalis Sample Module Test (Screenshots)"
+echo "  Digitalis Sample Module Test (${MODE_LABEL})"
 echo "═══════════════════════════════════════════════"
 echo ""
 
 for mod in "${MODULE_ORDER[@]}"; do
     if [[ -n "$FILTER" && "$mod" != "$FILTER" ]]; then
+        continue
+    fi
+
+    # Only run modules whose test class matches this mode (ScreenshotTest for
+    # --screenshots, StatusTest for --status). Don't count skipped modules.
+    if [[ "${TEST_CLASSES[$mod]}" != *"$TEST_SUFFIX" ]]; then
         continue
     fi
 
@@ -467,6 +502,13 @@ for mod in "${MODULE_ORDER[@]}"; do
         continue
     fi
 
+    # Status-test modules (non-rendering: compute/status/callback) have no
+    # screenshot reference image, so there's nothing to update for them.
+    if [[ "${TEST_CLASSES[$mod]}" == *.StatusTest ]]; then
+        echo "  SKIP: $mod (status test — no screenshot reference)"
+        continue
+    fi
+
     total=$((total + 1))
 
     # Install app APK
@@ -540,6 +582,6 @@ echo "Reference images updated. Review and commit with git add."
 fi
 
 # Restore status bar if we hid it
-if [[ "$MODE" == "screenshots" || "$MODE" == "update-references" ]]; then
+if [[ "$MODE" == "screenshots" || "$MODE" == "status" || "$MODE" == "update-references" ]]; then
     adb shell settings put global policy_control null 2>/dev/null
 fi
