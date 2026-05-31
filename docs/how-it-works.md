@@ -888,6 +888,51 @@ sequenceDiagram
     Proxy-->>Guest: Result in X0
 ```
 
+### Covering Proxy Symbol Gaps In-Surface
+
+The per-library trampoline tables are **auto-generated** from each library's API
+description. When the generator can't confidently marshal a symbol — usually
+because its signature analysis didn't resolve a type — it marks that symbol
+`DoBadTrampoline`. Calling such a symbol through the bridge doesn't silently
+misbehave; it aborts loudly with `LOG_ALWAYS_FATAL("Bad '<sym>' call")`. That is
+a safety valve, not a dead end: it guarantees a missing marshaller is caught
+immediately rather than corrupting memory.
+
+Digitalis fills these gaps **entirely within `binary_translation/`** — the
+generated tables under `native_bridge_support/` are never edited. A small,
+ARM64-guarded tweak in `proxy_loader/proxy_library_builder.cc` lets a
+Digitalis-registered trampoline override a primary-table `DoBadTrampoline`
+entry, and per-library trampolines register themselves at load time via
+`ProxyLibraryBuilder::RegisterExtraTrampolines("libXXX.so", …)` from
+`android_api/digitalis_extra_proxy/digitalis_extra_libXXX_trampolines.cc`. That
+static library is folded into `libberberis_arm64.so`, so the override is
+guest-arch-only and leaves the upstream RISC-V build byte-identical.
+
+Whether a given symbol can be covered comes down to its signature:
+
+- **Plain pointer/int signatures** forward directly — `GetTrampolineFunc<…>()`
+  passes pointers as `void*`, which is correct under LP64 whenever the
+  pointed-to struct has an identical layout on both architectures.
+- **`JNIEnv*` / `JavaVM*` arguments** must be *translated*, not passed through:
+  the guest's `JNIEnv` holds guest-callable function pointers, so handing it to a
+  host function would make the host call into guest code. `ToHostJNIEnv` /
+  `ToHostJavaVM` convert them; the host function itself is reached through the
+  symbol the proxy already `dlsym`'d, so no new link dependency is added.
+- **Fixed-signature callbacks** (a guest function the host will later invoke) are
+  wrapped with `WrapGuestFunction`, which builds a host-callable thunk that
+  re-enters the translator through `RunGuestCall`. Because that path attaches a
+  guest thread (with thread-local storage) to whatever host thread the callback
+  arrives on — a binder thread, a looper thread — asynchronous callbacks are
+  safe.
+
+Some symbols genuinely can't be expressed as a correct trampoline and are left
+to abort cleanly rather than be covered with guesswork: variadic functions, a
+function that *returns* a function pointer of unknown signature, structs packed
+with many callbacks that can't be verified, and a library's internal C++
+(`_ZN7android…`) symbols that NDK apps never call. The current inventory —
+what's covered and what's deferred, with the reason for each — lives in
+[`proxy-coverage-gaps.md`](./proxy-coverage-gaps.md).
+
 ---
 
 ## 10. Syscall Emulation
