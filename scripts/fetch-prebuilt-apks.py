@@ -6,6 +6,7 @@
 # into sample/prebuilts/ for Digitalis translator regression testing. This is
 # low-rate, explicit-list developer tooling; it paces requests politely.
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -109,10 +110,25 @@ def _fetch_one(sess, app, local_path, args):
         os.remove(local_path)
         status = status + " (replaced %s)" % os.path.basename(local_path)
 
-    row = summary.Row(app.package, status)
+    row = summary.Row(app.package, status, file=rel_path, dl_version=app.version)
     _annotate_gms(row, dest)
     _git_stage(rel_path)
     return row
+
+
+def _writeback_files(rows):
+    """Record each successful download's filename + version back into the config."""
+    info = {r.package: (r.file, r.dl_version) for r in rows if r.file}
+    if not info:
+        return
+    with open(CONFIG, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    for e in raw:
+        if e["package"] in info:
+            e["file"], e["version"] = info[e["package"]]
+    with open(CONFIG, "w", encoding="utf-8") as f:
+        json.dump(raw, f, indent=2)
+        f.write("\n")
 
 
 def main(argv=None):
@@ -147,7 +163,9 @@ def main(argv=None):
                                     % (app.version, app.subdir, state)))
             continue
         if local_ver == app.version and not args.force:
-            row = summary.Row(app.package, "SKIPPED (current)")
+            rel = os.path.join(app.subdir, os.path.basename(local_path))
+            row = summary.Row(app.package, "SKIPPED (current)",
+                              file=rel, dl_version=local_ver)
             _annotate_gms(row, local_path)
             rows.append(row)
             continue
@@ -162,6 +180,8 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001
             rows.append(summary.Row(app.package, "FAILED (%s)" % e))
 
+    if not args.list and not args.dry_run:
+        _writeback_files(rows)
     print(summary.render(rows))
     return 1 if summary.any_failed(rows) else 0
 

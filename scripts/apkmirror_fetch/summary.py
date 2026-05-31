@@ -8,6 +8,8 @@ class Row:
     status: str
     gms: bool = False
     gms_reason: str = ""
+    file: str = ""          # downloaded APK filename (relative to prebuilts root)
+    dl_version: str = ""    # version actually downloaded
 
 
 def any_failed(rows):

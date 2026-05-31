@@ -15,6 +15,7 @@ class AppEntry:
     version: str
     note: Optional[str] = None
     category: str = "app"   # "app" -> top-apps/, "game" -> top-games/
+    file: Optional[str] = None   # the downloaded APK filename, if known
 
     @property
     def subdir(self):
@@ -39,7 +40,7 @@ def load(path: str, only: Optional[List[str]] = None) -> List[AppEntry]:
         seen.add(item["package"])
         apps.append(AppEntry(package=item["package"], slug=item["slug"],
                              version=item["version"], note=item.get("note"),
-                             category=category))
+                             category=category, file=item.get("file")))
     if only:
         wanted = set(only)
         apps = [a for a in apps if a.package in wanted]

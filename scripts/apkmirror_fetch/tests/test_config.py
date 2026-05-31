@@ -26,6 +26,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(apps[0].category, "app")
         self.assertEqual(apps[0].subdir, "top-apps")
 
+    def test_file_field_parsed(self):
+        path = self._write([
+            {"package": "com.whatsapp", "slug": "a/b", "version": "1",
+             "file": "top-apps/com.whatsapp_1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"}])
+        apps = config.load(path)
+        self.assertEqual(apps[0].file,
+                         "top-apps/com.whatsapp_1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk")
+
     def test_category_game_routes_to_top_games(self):
         path = self._write([
             {"package": "com.king.candycrushsaga", "slug": "king/candy-crush-saga",

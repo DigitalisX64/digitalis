@@ -1,352 +1,210 @@
 [
   {
-    "package": "com.whatsapp",
-    "slug": "whatsapp-inc/whatsapp",
-    "version": "2.26.19.4",
-    "note": "messaging (verified from existing prebuilt)",
-    "category": "app"
-  },
-  {
-    "package": "com.facebook.katana",
-    "slug": "facebook-2/facebook",
-    "version": "561.0.0.42.67",
-    "note": "social (verified from existing prebuilt)",
-    "category": "app"
-  },
-  {
-    "package": "com.facebook.orca",
-    "slug": "facebook-2/messenger",
-    "version": "560.0.0.0.0",
-    "note": "messaging",
-    "category": "app"
-  },
-  {
-    "package": "com.instagram.android",
-    "slug": "instagram/instagram-instagram",
-    "version": "390.0.0.0.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "org.telegram.messenger",
-    "slug": "telegram-fz-llc/telegram",
-    "version": "11.13.0",
-    "note": "messaging",
-    "category": "app"
-  },
-  {
-    "package": "org.thoughtcrime.securesms",
-    "slug": "signal-foundation/signal-private-messenger",
-    "version": "7.50.0",
-    "note": "messaging",
-    "category": "app"
-  },
-  {
-    "package": "com.snapchat.android",
-    "slug": "snap-inc/snapchat",
-    "version": "13.60.0.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.zhiliaoapp.musically",
-    "slug": "tiktok-pte-ltd/tik-tok",
-    "version": "40.0.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.twitter.android",
-    "slug": "x-corp/x",
-    "version": "11.20.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.discord",
-    "slug": "discord-inc/discord-discord",
-    "version": "270.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.pinterest",
-    "slug": "pinterest/pinterest",
-    "version": "13.10.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.reddit.frontpage",
-    "slug": "redditinc/reddit",
-    "version": "2025.20.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.linkedin.android",
-    "slug": "linkedin/linkedin",
-    "version": "4.2.0",
-    "note": "social",
-    "category": "app"
-  },
-  {
-    "package": "com.spotify.music",
-    "slug": "spotify-ab/spotify",
-    "version": "9.0.40.0",
-    "note": "audio",
-    "category": "app"
-  },
-  {
-    "package": "com.netflix.mediaclient",
-    "slug": "netflix-inc/netflix",
-    "version": "8.140.0",
-    "note": "video",
-    "category": "app"
-  },
-  {
-    "package": "tv.twitch.android.app",
-    "slug": "twitch-interactive-inc/twitch",
-    "version": "21.5.0",
-    "note": "video",
-    "category": "app"
-  },
-  {
-    "package": "com.soundcloud.android",
-    "slug": "soundcloud/soundcloud",
-    "version": "2025.05.0",
-    "note": "audio",
-    "category": "app"
-  },
-  {
-    "package": "org.videolan.vlc",
-    "slug": "videolabs/vlc-for-android",
-    "version": "3.6.5",
-    "note": "media (NEON heavy)",
-    "category": "app"
-  },
-  {
-    "package": "com.shazam.android",
-    "slug": "apple/shazam",
-    "version": "15.10.0",
-    "note": "audio",
-    "category": "app"
-  },
-  {
-    "package": "com.android.chrome",
-    "slug": "google-inc/chrome",
-    "version": "137.0.0.0",
-    "note": "browser",
-    "category": "app"
-  },
-  {
-    "package": "org.mozilla.firefox",
-    "slug": "mozilla/firefox",
-    "version": "139.0",
-    "note": "browser",
-    "category": "app"
-  },
-  {
-    "package": "com.brave.browser",
-    "slug": "brave-software/brave-browser",
-    "version": "1.78.0",
-    "note": "browser",
-    "category": "app"
-  },
-  {
-    "package": "com.opera.browser",
-    "slug": "opera/opera-browser-with-ai",
-    "version": "90.0.0.0",
-    "note": "browser",
-    "category": "app"
-  },
-  {
-    "package": "com.microsoft.emmx",
-    "slug": "microsoft-corporation/edge",
-    "version": "137.0.0.0",
-    "note": "browser",
-    "category": "app"
-  },
-  {
-    "package": "com.microsoft.office.word",
-    "slug": "microsoft-corporation/word",
-    "version": "16.0.18000.0",
+    "package": "cn.wps.moffice_eng",
+    "slug": "wps-software-pte-ltd/wps-office-pdf",
+    "version": "26.4.3",
+    "category": "app",
     "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.microsoft.office.excel",
-    "slug": "microsoft-corporation/excel",
-    "version": "16.0.18000.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.microsoft.office.outlook",
-    "slug": "microsoft-corporation/microsoft-outlook",
-    "version": "4.2500.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.microsoft.teams",
-    "slug": "microsoft-corporation/teams",
-    "version": "1416.0.0.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.microsoft.skydrive",
-    "slug": "microsoft-corporation/onedrive",
-    "version": "6.90.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.dropbox.android",
-    "slug": "dropbox/dropbox",
-    "version": "420.2.2",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.adobe.reader",
-    "slug": "adobe/adobe-acrobat-reader-pdf-viewer-editor-creator",
-    "version": "25.5.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "us.zoom.videomeetings",
-    "slug": "zoom-video-communications-inc/zoom",
-    "version": "6.5.0",
-    "note": "video",
-    "category": "app"
+    "file": "top-apps/cn.wps.moffice_eng_26.4.3_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
     "package": "com.Slack",
     "slug": "slack-technologies-inc/slack",
-    "version": "25.05.0",
+    "version": "26.05.40.0",
+    "category": "app",
     "note": "productivity",
-    "category": "app"
+    "file": "top-apps/com.Slack_26.05.40.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
-    "package": "cn.wps.moffice_eng",
-    "slug": "kingsoft-office-software-corporation-limited/wps-office",
-    "version": "19.5.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.intsig.camscanner",
-    "slug": "intsig-information-co-ltd/camscanner-phone-pdf-creator",
-    "version": "6.80.0",
-    "note": "productivity",
-    "category": "app"
-  },
-  {
-    "package": "com.canva.editor",
-    "slug": "canva/canva",
-    "version": "2.300.0",
-    "note": "design",
-    "category": "app"
-  },
-  {
-    "package": "com.duolingo",
-    "slug": "duolingo/duolingo-duolingo",
-    "version": "6.10.0",
-    "note": "education",
-    "category": "app"
-  },
-  {
-    "package": "com.azure.authenticator",
-    "slug": "microsoft-corporation/microsoft-authenticator",
-    "version": "6.2509.0",
-    "note": "security",
-    "category": "app"
+    "package": "com.alibaba.aliexpresshd",
+    "slug": "alibaba-mobile/aliexpress-shopping-app",
+    "version": "8.162.8",
+    "category": "app",
+    "note": "shopping",
+    "file": "top-apps/com.alibaba.aliexpresshd_8.162.8_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
     "package": "com.amazon.mShop.android.shopping",
     "slug": "amazon-mobile-llc/amazon-shopping",
-    "version": "28.20.0.0",
+    "version": "32.10.1.100",
+    "category": "app",
     "note": "shopping",
-    "category": "app"
+    "file": "top-apps/com.amazon.mShop.android.shopping_32.10.1.100_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.azure.authenticator",
+    "slug": "microsoft-corporation/microsoft-authenticator",
+    "version": "6.2605.3042",
+    "category": "app",
+    "note": "security",
+    "file": "top-apps/com.azure.authenticator_6.2605.3042_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.brave.browser",
+    "slug": "brave-software/brave-browser",
+    "version": "1.91.164",
+    "category": "app",
+    "note": "browser",
+    "file": "top-apps/com.brave.browser_1.91.164_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.duolingo",
+    "slug": "duolingo/duolingo-duolingo",
+    "version": "6.82.2",
+    "category": "app",
+    "note": "education",
+    "file": "top-apps/com.duolingo_6.82.2_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
     "package": "com.ebay.mobile",
     "slug": "ebay-mobile/ebay",
-    "version": "6.180.0",
+    "version": "6.257.1.1",
+    "category": "app",
     "note": "shopping",
-    "category": "app"
+    "file": "top-apps/com.ebay.mobile_6.257.1.1_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.alibaba.aliexpresshd",
-    "slug": "alibaba-mobile/aliexpress",
-    "version": "8.120.0",
-    "note": "shopping",
-    "category": "app"
+    "package": "com.intsig.camscanner",
+    "slug": "intsig-pte/camscanner-phone-pdf-creator",
+    "version": "7.17.5.2605140000",
+    "category": "app",
+    "note": "productivity",
+    "file": "top-apps/com.intsig.camscanner_7.17.5.2605140000_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.paypal.android.p2pmobile",
-    "slug": "paypal-mobile/paypal",
-    "version": "8.60.0",
-    "note": "finance",
-    "category": "app"
+    "package": "com.linkedin.android",
+    "slug": "linkedin/linkedin-linkedin",
+    "version": "6.1.1",
+    "category": "app",
+    "note": "social",
+    "file": "top-apps/com.linkedin.android_6.1.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.squareup.cash",
-    "slug": "square-inc/cash-app",
-    "version": "5.50.0",
-    "note": "finance",
-    "category": "app"
+    "package": "com.microsoft.office.outlook",
+    "slug": "microsoft-corporation/outlook",
+    "version": "5.2620.1",
+    "category": "app",
+    "note": "productivity",
+    "file": "top-apps/com.microsoft.office.outlook_5.2620.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.ubercab",
-    "slug": "uber-technologies-inc/uber",
-    "version": "4.560.0",
-    "note": "travel",
-    "category": "app"
+    "package": "com.microsoft.skydrive",
+    "slug": "microsoft-corporation/onedrive",
+    "version": "7.55",
+    "category": "app",
+    "note": "productivity",
+    "file": "top-apps/com.microsoft.skydrive_7.55_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.airbnb.android",
-    "slug": "airbnb/airbnb",
-    "version": "25.20.0",
-    "note": "travel",
-    "category": "app"
+    "package": "com.microsoft.teams",
+    "slug": "microsoft-corporation/microsoft-teams",
+    "version": "1416.1.0.0.2026092403",
+    "category": "app",
+    "note": "productivity",
+    "file": "top-apps/com.microsoft.teams_1416.1.0.0.2026092403_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.kiloo.subwaysurf",
-    "slug": "sybo-games-aps/subway-surfers",
-    "version": "3.40.0",
-    "note": "game (bundle/OBB likely; smoke target)",
-    "category": "game"
+    "package": "com.netflix.mediaclient",
+    "slug": "netflix-inc/netflix",
+    "version": "200147",
+    "category": "app",
+    "note": "video",
+    "file": "top-apps/com.netflix.mediaclient_200147_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.king.candycrushsaga",
-    "slug": "king/candy-crush-saga",
-    "version": "1.290.0.0",
-    "note": "game (bundle/OBB likely; smoke target)",
-    "category": "game"
+    "package": "com.reddit.frontpage",
+    "slug": "redditinc/reddit",
+    "version": "2026.22.0",
+    "category": "app",
+    "note": "social",
+    "file": "top-apps/com.reddit.frontpage_2026.22.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.shazam.android",
+    "slug": "apple-inc/shazam",
+    "version": "16.43.0",
+    "category": "app",
+    "note": "audio",
+    "file": "top-apps/com.shazam.android_16.43.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.twitter.android",
+    "slug": "x-corp/twitter",
+    "version": "677",
+    "category": "app",
+    "note": "social",
+    "file": "top-apps/com.twitter.android_677_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.zhiliaoapp.musically",
+    "slug": "tiktok-pte-ltd/tik-tok-including-musical-ly",
+    "version": "45.4.3",
+    "category": "app",
+    "note": "social",
+    "file": "top-apps/com.zhiliaoapp.musically_45.4.3_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "org.mozilla.firefox",
+    "slug": "mozilla/firefox-beta",
+    "version": "151.0.2",
+    "category": "app",
+    "note": "browser",
+    "file": "top-apps/org.mozilla.firefox_151.0.2_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "org.telegram.messenger",
+    "slug": "telegram-fz-llc/telegram",
+    "version": "12.7.3",
+    "category": "app",
+    "note": "messaging",
+    "file": "top-apps/org.telegram.messenger_12.7.3_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "org.thoughtcrime.securesms",
+    "slug": "signal-foundation/signal-private-messenger",
+    "version": "8.13.0",
+    "category": "app",
+    "note": "messaging",
+    "file": "top-apps/org.thoughtcrime.securesms_8.13.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "org.videolan.vlc",
+    "slug": "videolabs/vlc",
+    "version": "5",
+    "category": "app",
+    "note": "media (NEON heavy)",
+    "file": "top-apps/org.videolan.vlc_5_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "tv.twitch.android.app",
+    "slug": "twitch-interactive-inc/twitch",
+    "version": "29.6.2",
+    "category": "app",
+    "note": "video",
+    "file": "top-apps/tv.twitch.android.app_29.6.2_minAPI29(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
     "package": "com.innersloth.spacemafia",
     "slug": "innersloth-llc/among-us",
-    "version": "2025.5.0",
+    "version": "2026.4.7",
+    "category": "game",
     "note": "game (bundle/OBB likely; smoke target)",
-    "category": "game"
+    "file": "top-games/com.innersloth.spacemafia_2026.4.7_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.roblox.client",
-    "slug": "roblox-corporation/roblox",
-    "version": "2.660.0",
+    "package": "com.kiloo.subwaysurf",
+    "slug": "sybo-games/subwaysurfers",
+    "version": "3.63.1",
+    "category": "game",
     "note": "game (bundle/OBB likely; smoke target)",
-    "category": "game"
+    "file": "top-games/com.kiloo.subwaysurf_3.63.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
     "package": "com.supercell.clashofclans",
     "slug": "supercell/clash-of-clans",
-    "version": "16.500.0",
+    "version": "18.367.1",
+    "category": "game",
     "note": "game (bundle/OBB likely; smoke target)",
-    "category": "game"
+    "file": "top-games/com.supercell.clashofclans_18.367.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   }
 ]
