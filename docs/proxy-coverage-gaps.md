@@ -39,6 +39,30 @@ variadic callbacks, fn-ptr returns of unknown signature, struct-of-many-callback
 that can't be verified, or C++-by-value returns — enumerated below and deferred
 until a real app is observed needing it, never covered with guessed marshalling.
 
+## Definitive accounting (all 64 arm64 `DoBadTrampoline` entries)
+
+Across the libraries above (excluding `libandroid_runtime`), enumerating every
+`DoBadTrampoline` entry in the arm64 tables gives **64** symbols:
+
+- **14 covered** — every NDK-stable public-C-API symbol for which a *correct*
+  trampoline can be expressed (libnativehelper ×12, libbinder_ndk ×2).
+- **44 not NDK-stable** (out of scope by the "NDK-stable" qualifier): 27 are
+  mangled C++ implementation symbols (`_ZN7android…`) or a library's own
+  `JNI_OnLoad` loader entry; 17 are libnativehelper-internal
+  (`JniConstants_*`, `JniInvocation*`, `EnsureInitialized`) called host-side by
+  libnativehelper itself and never reached from guest app code.
+- **6 NDK-stable / GL-extension but un-marshalable** — no correct trampoline can
+  be expressed without guessed or unverifiable marshalling: `jniThrowExceptionFmt`
+  (varargs), `glGetVkProcAddrNV` ×2 (fn-ptr return of unknown signature),
+  `ANativeWindow_setPerformInterceptor` (`va_list` callback; also private),
+  `ACameraCaptureSessionShared_startStreaming` /
+  `ACameraCaptureSessionShared_logicalCamera_startStreaming` (struct of ~7
+  callbacks, a trunk/system API unverifiable on the emulator).
+
+So every NDK-stable symbol that *can* forward to the host does; the remainder
+is either not NDK-stable or cannot be forwarded by a trampoline without shipping
+guessed marshalling, which is explicitly disallowed.
+
 ## 1. Internal C++ symbols — NOT NDK-stable, out of scope (do not cover)
 
 Mangled `_ZN7android...` symbols are libraries' own implementation classes, never
