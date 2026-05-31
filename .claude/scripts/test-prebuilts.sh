@@ -3,6 +3,13 @@
 # report per-APK pass/fail. Generic: any *.apk dropped into
 # sample/prebuilts/ is exercised, no per-app hard-coding.
 #
+# Scope is the prebuilts root ONLY (top-level *.apk). The subdirectories
+# sample/prebuilts/top-apps/ and sample/prebuilts/top-games/ are the
+# fetch-prebuilt-apks.py staging area and are INTENTIONALLY excluded from this
+# gate, so that tool's APKs can be verified separately without affecting the
+# normal prebuilt regression. Keep discovery non-recursive (do not switch to a
+# recursive `find` that would pull those subdirs back in).
+#
 # Checks per APK:
 #   1. Install succeeds.
 #   2. Launch via monkey produces a LAUNCHER activity.
@@ -40,6 +47,8 @@ if [ ! -d "${PREBUILTS_DIR}" ]; then
 fi
 
 shopt -s nullglob
+# Non-recursive on purpose: top-apps/ and top-games/ (fetch-prebuilt-apks.py
+# staging) are excluded from this gate.
 APKS=( "${PREBUILTS_DIR}"/*.apk )
 shopt -u nullglob
 

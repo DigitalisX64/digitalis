@@ -14,6 +14,11 @@ class AppEntry:
     slug: str
     version: str
     note: Optional[str] = None
+    category: str = "app"   # "app" -> top-apps/, "game" -> top-games/
+
+    @property
+    def subdir(self):
+        return "top-games" if self.category == "game" else "top-apps"
 
 
 def load(path: str, only: Optional[List[str]] = None) -> List[AppEntry]:
@@ -28,9 +33,13 @@ def load(path: str, only: Optional[List[str]] = None) -> List[AppEntry]:
                 raise ConfigError("entry %d missing required string '%s'" % (i, key))
         if item["package"] in seen:
             raise ConfigError("duplicate package '%s'" % item["package"])
+        category = item.get("category", "app")
+        if category not in ("app", "game"):
+            raise ConfigError("entry %d: category must be 'app' or 'game'" % i)
         seen.add(item["package"])
         apps.append(AppEntry(package=item["package"], slug=item["slug"],
-                             version=item["version"], note=item.get("note")))
+                             version=item["version"], note=item.get("note"),
+                             category=category))
     if only:
         wanted = set(only)
         apps = [a for a in apps if a.package in wanted]

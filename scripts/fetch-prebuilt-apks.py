@@ -27,15 +27,18 @@ CONFIG = os.path.join(ROOT, "digitalis", "apkmirror-apps.json")
 CACHE = os.path.join(ROOT, "digitalis", ".cache")
 
 
-def _local_version(package):
-    if not os.path.isdir(PREBUILTS):
+def _local_version(app):
+    # Look only in the app's category subdir (top-apps/ or top-games/) so these
+    # downloads stay separate from any manually-dropped APKs in the prebuilts root.
+    subdir = os.path.join(PREBUILTS, app.subdir)
+    if not os.path.isdir(subdir):
         return None, None
-    for fn in os.listdir(PREBUILTS):
+    for fn in os.listdir(subdir):
         if not fn.endswith(".apk"):
             continue
         pkg, ver = naming.parse_filename(fn)
-        if pkg == package:
-            return ver, os.path.join(PREBUILTS, fn)
+        if pkg == app.package:
+            return ver, os.path.join(subdir, fn)
     return None, None
 
 
@@ -47,9 +50,9 @@ def _annotate_gms(row, apk_path):
         pass
 
 
-def _git_stage(filename):
+def _git_stage(rel_path):
     try:
-        subprocess.run(["git", "add", filename], cwd=PREBUILTS,
+        subprocess.run(["git", "add", rel_path], cwd=PREBUILTS,
                        check=False, capture_output=True)
     except Exception:
         pass
@@ -66,20 +69,22 @@ def _fetch_one(sess, app, local_path, args):
 
     file_url, referer = sess.resolve_download(chosen.url)
     os.makedirs(CACHE, exist_ok=True)
-    os.makedirs(PREBUILTS, exist_ok=True)
+    dest_dir = os.path.join(PREBUILTS, app.subdir)
+    os.makedirs(dest_dir, exist_ok=True)
     fname = naming.build_filename(app.package, app.version,
                                   chosen.min_api or 21, chosen.dpi)
-    dest = os.path.join(PREBUILTS, fname)
+    dest = os.path.join(dest_dir, fname)
+    rel_path = os.path.join(app.subdir, fname)
 
     if chosen.kind == "BUNDLE":
         tmp = os.path.join(CACHE, app.package + ".apkm")
         sess.download(file_url, referer, tmp)
         mode = bundle.merge_apkm(tmp, dest, CACHE, mode=args.merge)
         os.remove(tmp)
-        status = "MERGED (%s)" % mode
+        status = "MERGED (%s) -> %s" % (mode, app.subdir)
     else:
         sess.download(file_url, referer, dest)
-        status = "DOWNLOADED %s" % app.version
+        status = "DOWNLOADED %s -> %s" % (app.version, app.subdir)
 
     if local_path and os.path.abspath(local_path) != os.path.abspath(dest):
         os.remove(local_path)
@@ -87,7 +92,7 @@ def _fetch_one(sess, app, local_path, args):
 
     row = summary.Row(app.package, status)
     _annotate_gms(row, dest)
-    _git_stage(fname)
+    _git_stage(rel_path)
     return row
 
 
@@ -113,13 +118,14 @@ def main(argv=None):
     sess = None
 
     for app in apps:
-        local_ver, local_path = _local_version(app.package)
+        local_ver, local_path = _local_version(app)
         if args.list:
             state = ("current" if local_ver == app.version
                      else "missing" if local_ver is None
                      else "outdated(%s)" % local_ver)
             rows.append(summary.Row(app.package,
-                                    "PINNED %s [%s]" % (app.version, state)))
+                                    "PINNED %s [%s/%s]"
+                                    % (app.version, app.subdir, state)))
             continue
         if local_ver == app.version and not args.force:
             row = summary.Row(app.package, "SKIPPED (current)")
