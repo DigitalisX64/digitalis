@@ -9,3 +9,9 @@ __pycache__/
 
 # apksign debug-key cache used by fetch-prebuilt-apks.py
 .cache/
+
+# Headless-browser fallback artifacts (selenium / chromedriver / geckodriver)
+*.log
+.browser-profile/
+.venv/
+venv/
