@@ -184,6 +184,14 @@
     "file": "top-apps/tv.twitch.android.app_29.6.2_minAPI29(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
+    "package": "com.fingersoft.hcr2",
+    "slug": "fingersoft/hill-climb-racing-2",
+    "version": "2.1.73.1",
+    "category": "game",
+    "note": "game",
+    "file": "top-games/com.fingersoft.hcr2_2.1.73.1_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
     "package": "com.fingersoft.hillclimb",
     "slug": "fingersoft/hill-climb-racing",
     "version": "1.68.1",
@@ -238,5 +246,13 @@
     "category": "game",
     "note": "game (bundle/OBB likely; smoke target)",
     "file": "top-games/com.supercell.clashofclans_18.367.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.yodo1.crossyroad",
+    "slug": "hipster-whale/crossy-road",
+    "version": "7.11.1",
+    "category": "game",
+    "note": "game",
+    "file": "top-games/com.yodo1.crossyroad_7.11.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   }
 ]
