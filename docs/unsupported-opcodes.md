@@ -2,7 +2,7 @@
 
 Three kinds of gap exist in the Digitalis ARM64 backend:
 
-1. **Not decoded — rejected inside the supported encoding space.** The decoder reaches the instruction but calls `Undefined()` because no handler has been written. Fatal decode error at runtime. Section 1 below.
+1. **Exception-generating instructions.** How `SVC`/`BRK`/`HLT`/`HVC`/`SMC`/`DCPS` are decoded and turned into guest signals. None abort the translator. Section 1 below.
 2. **Not decoded — entire extension absent.** The decoder has no dispatch for the extension at all; instructions fall through to a high-level catch-all `Undefined()`. Section 2 below.
 3. **Decoded and correct, but interpreter-only.** The instruction runs correctly, but the JIT (`lite_translator/arm64_to_x86_64/`) has no fast path for it. Every guest region containing one ends at that instruction, the interpreter executes it, and the dispatcher resumes JIT for the next region. Functionally correct, ~10–100× slower per instance. Section 3 below.
 
@@ -12,13 +12,9 @@ All line references are into `frameworks/libs/binary_translation/decoder/include
 
 ---
 
-## 1. Rejections inside the supported encoding space
+## 1. Exception-generating instructions
 
-The decoder reaches these instructions but explicitly calls `Undefined()` because no handler has been written. They produce a fatal decode error at runtime. (Reserved/invalid encodings that *correctly* decode to `Undefined()` are not listed here.)
-
-| Family | Instructions | ARM rev | Evidence |
-|---|---|---|---|
-| **Exception-generating (non-BRK/SVC)** | `HLT #imm`, `HVC`, `SMC`, `DCPS1/2/3` | ARMv8.0 | Reach the decoder but stay fatal-with-diagnostic; no handler written. |
+There are currently **no exception-generating instructions that abort the translator.** `SVC`, `BRK`, and `HLT` are decoded and deliver the correct synchronous guest signal (`SVC` → syscall, `BRK`/`HLT` → guest `SIGTRAP`). `HVC`, `SMC`, and `DCPS1/2/3` are UNDEFINED at EL0 and route through `Undefined()`, which delivers `SIGILL` to the guest — the architecturally-correct result for user-space — without aborting the translator. (Reserved/invalid encodings that *correctly* decode to `Undefined()`/`SIGILL` are expected behaviour, not gaps.)
 
 **Note on BTI:** `BTI c/j/jc` is encoded as a `HINT` and routes to `Nop()`. It doesn't fault — it just has no effect. Apps relying on BTI for control-flow integrity won't get protection on Digitalis, but they will run.
 
@@ -43,41 +39,25 @@ The decoder has no case for these — the instruction bits hit a high-level catc
 
 These run correctly but force the dispatcher out of the JIT. The lite translator either has no case-arm or explicitly bails (`success_ = false`); the interpreter (`interpreter/arm64/interpreter.h`) implements them. All line refs in this section are into `lite_translator/arm64_to_x86_64/lite_translator.h`.
 
-### Vector narrowing / lengthening / reciprocal-estimate
+### Vector saturating accumulate
 | Instructions | Why interpreter-only |
 |---|---|
-| `FCVTN`, `FCVTL` (vector) | FP narrowing/widening has no direct SSE lowering. |
-| `SQXTN/UQXTN/SQXTUN` **.2D→.2S only** | The 64→32 saturating extracts have no x86 narrowing pack. |
-| `URECPE`, `URSQRTE` | Bit-exact ARM integer estimate recurrences; the JIT bails via the default. |
-| `SUQADD/USQADD` **.2S/.4S/.1D/.2D only** | The 32-/64-bit-element signed↔unsigned saturating-accumulate forms have no JIT path. |
+| `SUQADD/USQADD` **.1D/.2D only** | The 64-bit-element mixed-sign saturating accumulate needs 65-bit saturation logic. The `.8B/.16B/.4H/.8H` and `.2S/.4S` forms are JIT-lowered. |
 
-### Three-different (widening) — the non-JIT subset
-| Instructions | Why interpreter-only |
-|---|---|
-| `ADDHN`, `SUBHN`, `RADDHN`, `RSUBHN` **.2S<-.2D only** | The `.2S<-.2D` form has no x86 narrowing pack. |
-
-### Vector immediate
-| Instructions | Why interpreter-only |
-|---|---|
-| `ORR #imm` / `BIC #imm` (read-modify-write forms) | Both the interpreter and JIT treat `ORR/BIC #imm` as replace, not read-modify-write — a pre-existing semantic gap. |
-
-### Dot-product / matrix-multiply (I8MM)
-| Instructions | Why interpreter-only |
-|---|---|
-| `USDOT/SUDOT` (vector + by-element), `SMMLA/UMMLA/USMMLA` | I8MM mixed-sign dot / 8-bit matrix multiply-accumulate; decoded and executed, but no JIT case-arm. |
+### Dot-product / matrix-multiply (I8MM) — none interpreter-only
+`USDOT/SUDOT` (vector + by-element) and `SMMLA/UMMLA/USMMLA` are all JIT-lowered (per-operand widening + `PMADDWD`, with `PHADDD` folds for the matrix forms).
 
 ### CRC32 and crypto
 | Instructions | Why interpreter-only |
 |---|---|
-| `CRC32B/H/W/X` (IEEE only) | The IEEE 802.3 polynomial (0x04C11DB7) differs from the host SSE4.2 `crc32` (Castagnoli) instruction, so it stays on the software-polynomial interpreter path. |
-| `AESE/AESD/AESMC/AESIMC`, `SHA1*`, `SHA256*`, `SHA512*`, `SM3*`, `SM4*`, `PMULL/PMULL2` (except `.8H`) | JIT bails with `Undefined()` in the crypto handlers; interpreter executes. |
+| `CRC32B/H/W/X` (IEEE only) | The IEEE 802.3 polynomial (0x04C11DB7) differs from the host SSE4.2 `crc32` (Castagnoli) instruction. A `PCLMULQDQ` reflected-Barrett lowering is possible but needs per-size folding constants (the reduction exponent is `x^{8·nbytes}`, differing for B/H/W/X); deferred as high-effort/low-value since the interpreter is correct and zlib on Android uses its own software tables rather than the ARM CRC32 intrinsic. The Castagnoli `CRC32C*` group **is** JIT-lowered (host `crc32`). |
+| `AESE/AESD/AESMC/AESIMC`, `SHA1*`, `SHA256*`, `SHA512*`, `SM3*`, `SM4*` | JIT bails in the crypto handlers; interpreter executes. The ARM and x86 AES/SHA instruction sets decompose rounds differently (non-isomorphic), so a correct AES-NI/SHA-NI mapping is high-effort; deferred as low-value (Android crypto routes through host BoringSSL/Conscrypt, rarely executing these guest instructions). `PMULL/PMULL2` (`.1Q` via `PCLMULQDQ`, `.8H` via per-bit widening) **is** JIT-lowered. |
 
-### Scalar bitfield & system
+### Scalar system
 | Family | Instructions | Notes |
 |---|---|---|
-| Byte-reverse 32 | `REV32 Xd, Xn` (scalar, opcode2=000010) | No JIT arm in `DataProc1Src` (scalar `REV/REV16/CLZ/RBIT` *are* JIT). |
-| System registers (MRS/MSR) | Everything except `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0` | The JIT handles those five; all other reads/writes bail to the interpreter (mostly modelled as constants / no-ops). |
-| MTE data-processing & load/store | `IRG/GMI/SUBP/STG/LDG/…` | Decoded, but the JIT bails (`MteDataProc`/`MteLoadStore`); interpreter executes. |
+| System registers (MRS/MSR) | Everything except `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0` | The JIT handles those five; all other reads/writes bail to the interpreter (mostly modelled as constants / no-ops). Low-value to promote — rarely on a hot path. |
+| MTE data-processing & load/store | `IRG/GMI/SUBP/STG/LDG/…` | Decoded, but the JIT bails (`MteDataProc`/`MteLoadStore`); interpreter executes with no-MTE-backing semantics. Rarely hot. |
 
 ### Host-feature-gated fast paths
 Where the host x86_64 CPU lacks a feature, the corresponding JIT path bails to the interpreter (still correct, just slower):
@@ -91,12 +71,15 @@ Where the host x86_64 CPU lacks a feature, the corresponding JIT path bails to t
 
 ### Why this matters
 
-The interpreter is ~10–100× slower per instruction than JIT-translated code, and each interpreter-only instruction forces a region exit plus a dispatcher round-trip. For a tight inner loop, a single interpreter-only opcode can dominate runtime. The remaining high-value promotions are:
+The interpreter is ~10–100× slower per instruction than JIT-translated code, and each interpreter-only instruction forces a region exit plus a dispatcher round-trip. For a tight inner loop, a single interpreter-only opcode can dominate runtime. The remaining interpreter-only compute paths are all low-value (rare or routed elsewhere):
 
-| Promotion target | Typical app affected |
+| Promotion target | Status |
 |---|---|
-| `FCVTN`/`FCVTL` and the `.2D→.2S` narrowing saturating extracts | Pixel format conversion, audio downsampling, quantized ML |
-| IEEE `CRC32*` | zlib/zstd framing, filesystem checksums |
+| IEEE `CRC32*` | Deferred — `PCLMULQDQ` per-size reflected-Barrett; zlib on Android uses software tables, not the intrinsic |
+| `AES*` / `SHA1*` / `SHA256*` | Deferred — non-isomorphic AES-NI/SHA-NI mapping; crypto routes through host BoringSSL |
+| `SUQADD/USQADD .1D/.2D` | Deferred — 64-bit-element 65-bit saturation; vanishingly rare |
+
+Recently promoted to the JIT (no longer interpreter-only): vector `FCVTN`/`FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE`/`URSQRTE`, the I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family, `.2S<-.2D` `ADDHN/SUBHN/RADDHN/RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and `PMULL`. The `ORR/BIC #imm` vector forms were also corrected to read-modify-write (they previously replaced `Vd`).
 
 ---
 
@@ -106,9 +89,9 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 
 | Group | Apps likely to hit it | Severity |
 |---|---|---|
-| **Vector FP narrowing `FCVTN` (perf)** | Image/audio codecs, quantized ML | **Low** — correct but interpreter-slow on hot kernels. |
-| **IEEE CRC32 (perf)** | Compression/IO-heavy apps | **Low** — only the IEEE `CRC32*` polynomial is interpreter-speed. |
+| **IEEE CRC32 (perf)** | Compression/IO-heavy apps | **Low** — only the IEEE `CRC32*` polynomial is interpreter-speed; `CRC32C*` is JIT'd, and zlib uses its own software tables. |
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
+| **`SUQADD/USQADD .1D/.2D`, MTE, non-modelled MRS/MSR (perf)** | Vanishingly rare | **None–Low** — correct, interpreter-speed; not on real hot paths. |
 | **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
 
 The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure).
@@ -117,7 +100,7 @@ The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (
 
 ## 5. Where to add support
 
-For instructions in [Section 1](#1-rejections-inside-the-supported-encoding-space) (already in the decoder's reach):
+For a decoded-but-`Undefined()` instruction that should instead execute (already in the decoder's reach):
 
 | Layer | File | What to add |
 |---|---|---|

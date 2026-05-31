@@ -1334,7 +1334,7 @@ Some ARM64 operations have direct x86_64 equivalents — the JIT emits a single 
 - **Bit manipulation**: ARM64's `REV` (byte reverse) maps to x86_64's `BSWAP` — a single instruction for endianness conversion
 - **Count leading zeros**: ARM64's `CLZ` maps to x86_64's `BSR` (bit scan reverse) + `XOR 63` — two instructions to find the highest set bit and compute the leading zero count
 
-Not all ARM64 instructions have hardware equivalents on x86_64. For example, ARM64's `CRC32B/H/W/X` instructions are handled entirely by the interpreter using software table-based computation, even though x86_64 has a hardware `CRC32` instruction (SSE4.2) — the intrinsics mapping hasn't been implemented yet.
+Not all ARM64 instructions have hardware equivalents on x86_64. For example, the IEEE `CRC32B/H/W/X` instructions are handled entirely by the interpreter using software table-based computation: x86_64's hardware `CRC32` (SSE4.2) uses the Castagnoli polynomial, which matches ARM's `CRC32C*` (those *are* JIT-lowered) but not the IEEE polynomial of the plain `CRC32*` group. Similarly, the AES/SHA crypto instructions decode their rounds differently from x86 AES-NI/SHA-NI, so they remain interpreter-executed.
 
 The **`intrinsics/`** directory (`arm64_to_all/`, `riscv64_to_all/`) provides architecture-specific intrinsic function implementations. For the ARM64 backend, this directory is currently minimal — most direct mappings live in the JIT itself.
 
@@ -2562,18 +2562,21 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `FCADD/FCMLA` (vector + indexed) | complex-mul seq | JIT | FP complex MAC (ARMv8.3 FCMA) |
 | `SDOT/UDOT`, `BFDOT/BFMMLA/BFMLALB/BFMLALT` | seq | JIT | Dot-product (v8.4) / BFloat16 (v8.6) |
 | `MOVI/MVNI/FMOV` (vector modified-immediate) | const-load / `pxor` | JIT | Full family — immediate expanded at translation time (`MOVI Vd.2D,#0` → `pxor`) |
-| `XTN/SQXTN/UQXTN/SQXTUN` (`.8B`/`.4H`) | `packs*`/`packus*`+seq | JIT | Integer vector narrowing (saturating / non-saturating) |
+| `XTN/SQXTN/UQXTN/SQXTUN` (all widths) | `packs*`/`packus*` / clamp+`pshufd` | JIT | Integer vector narrowing; `.2D→.2S` 64→32 via per-lane clamp (SSE4.2) |
+| `FCVTN/FCVTL` (FP16↔FP32↔FP64) | `cvt*` / F16C | JIT | FP narrow/widen; FP16 via `VCVTPH2PS`/`VCVTPS2PH` (F16C gate) |
+| `URECPE/URSQRTE` | table lookup | JIT | Unsigned integer reciprocal / rsqrt estimate (per-lane table) |
+| `USDOT/SUDOT` (vec + idx), `SMMLA/UMMLA/USMMLA` | `pmaddwd`+`phaddd` | JIT | I8MM mixed-sign dot-product / matrix-multiply (v8.6) |
+| `ADDHN/SUBHN/RADDHN/RSUBHN` (all widths) | add/sub + shift-high + pack/`pshufd` | JIT | Narrowing add/sub returning the high half |
+| `REV32 Xd` (scalar) | `bswapq`+`rorq` | JIT | Byte-reverse each 32-bit word |
 | `SHLL/SHLL2` | `pmovzx*`+`psll*` | JIT | Shift-left-long (zero-extend then shift by element size) |
 | `SQDMULL/SQDMLAL/SQDMLSL` (all forms) | `pmull*`/`pmuldq`+sat seq | JIT | Doubling widening multiply — `.4H→.4S`, `.2S→.2D`, and by-element; 64-bit saturating accumulate via `pcmpgtq` sign masks |
-| `RBIT` (vector), `SUQADD/USQADD` (`.8B`–`.8H`) | seq | JIT | Bit-reverse; signed↔unsigned saturating accumulate (narrow element forms) |
+| `RBIT` (vector), `SUQADD/USQADD` (`.8B`–`.4S`) | seq | JIT | Bit-reverse; signed↔unsigned saturating accumulate (8/16/32-bit lanes) |
 | `LD1-4` / `ST1-4` (contiguous + de-interleaving) | `movdqu`/`punpck*`+seq | JIT | Single- and multi-structure load/store |
-| `FCVTN/FCVTL`, `.2D→.2S` saturating extracts | — | Interpreter | FP narrow/widen and 64→32 saturating narrowing |
-| `URECPE/URSQRTE`, `SUQADD/USQADD` (`.2S`/`.4S`/`.1D`/`.2D`) | — | Interpreter | Integer reciprocal estimate; wide saturating accumulate |
-| `ADDHN/SUBHN/RADDHN/RSUBHN` | — | Interpreter | Narrowing add/sub returning the high half |
-| `USDOT/SUDOT` (vector + by-element), `USMMLA/SMMLA/UMMLA` | — | Interpreter | I8MM mixed-sign dot-product / matrix-multiply (v8.6) |
+| `SUQADD/USQADD` (`.1D`/`.2D`) | — | Interpreter | 64-bit-element saturating accumulate (65-bit saturation; rare) |
 | `CRC32CB/CH/CW/CX` | `crc32` (SSE4.2) | JIT | Castagnoli poly == host `crc32`; bails to interpreter if SSE4.2 absent |
 | `CRC32B/H/W/X` | — | Interpreter | IEEE 802.3 poly (0x04C11DB7) — no direct host instruction |
-| `AESE/AESD/AESMC/AESIMC`, `SHA1*/SHA256*/SHA512*`, `SM3*/SM4*`, `PMULL/PMULL2` | — | Interpreter | Crypto (decoded; interpreter-executed; `PMULL .8H` is JIT) |
+| `AESE/AESD/AESMC/AESIMC`, `SHA1*/SHA256*/SHA512*`, `SM3*/SM4*` | — | Interpreter | Crypto (decoded; interpreter-executed; non-isomorphic to x86 AES-NI/SHA-NI) |
+| `PMULL/PMULL2` (`.1Q`/`.8H`) | `pclmulqdq` / widen+seq | JIT | Polynomial multiply long (`.1Q` via `PCLMULQDQ`) |
 
 ### Summary
 
@@ -2583,7 +2586,7 @@ pie title Instruction Translation Coverage
     "Interpreter (fallback)" : 2
 ```
 
-The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter handles **syscalls, most system-register access, IEEE CRC32 and crypto (AES/SHA/SM3/SM4), FP narrowing/widening (`FCVTN/FCVTL`) and 64→32 saturating extracts, the I8MM mixed-sign dot/matmul family (`USDOT/SUDOT/USMMLA`), integer reciprocal estimates (`URECPE/URSQRTE`), narrowing add/sub (`ADDHN`–`RSUBHN`), and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2). Recent JIT promotions moved `SHLL/SHLL2`, vector `FCVTXN`, the full `SQDMULL/SQDMLAL/SQDMLSL` family, the `MOVI/MVNI` family, de-interleaving structure loads, and the `CRC32C*` group onto the native path. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
+The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter now handles only a small tail: **syscalls, most system-register access, IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2). Recent JIT promotions moved vector `FCVTN/FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE/URSQRTE`, the full I8MM dot/matmul family (`USDOT/SUDOT/SMMLA/UMMLA/USMMLA`), `.2S<-.2D` `ADDHN`–`RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, and scalar `REV32` onto the native path; the `ORR/BIC #imm` vector forms were corrected to read-modify-write. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
 
 ---
 
