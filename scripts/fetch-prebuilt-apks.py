@@ -19,7 +19,16 @@ if _missing:
     print(deps.install_hint(REQUIRED))
     sys.exit(2)
 
-from apkmirror_fetch import config, naming, apkmirror, bundle, gms, summary  # noqa: E402
+import zipfile  # noqa: E402
+from apkmirror_fetch import config, naming, apkmirror, bundle, gms, summary, axml  # noqa: E402
+
+
+def _apk_package(apk_path):
+    try:
+        with zipfile.ZipFile(apk_path) as z:
+            return axml.parse(z.read("AndroidManifest.xml")).root.attr("package")
+    except Exception:
+        return None
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 PREBUILTS = os.path.join(ROOT, "sample", "prebuilts")
@@ -85,6 +94,16 @@ def _fetch_one(sess, app, local_path, args):
     else:
         sess.download(file_url, referer, dest)
         status = "DOWNLOADED %s -> %s" % (app.version, app.subdir)
+
+    # Safety net: the resolved slug must actually deliver the configured package.
+    # A wrong slug (e.g. resolving to the Play Store) otherwise silently produces a
+    # mislabeled APK. Reject and delete any package mismatch.
+    actual_pkg = _apk_package(dest)
+    if actual_pkg and actual_pkg != app.package:
+        os.remove(dest)
+        return summary.Row(app.package,
+                           "FAILED (package mismatch: got %s from slug %s)"
+                           % (actual_pkg, app.slug))
 
     if local_path and os.path.abspath(local_path) != os.path.abspath(dest):
         os.remove(local_path)
