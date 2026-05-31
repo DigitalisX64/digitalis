@@ -126,7 +126,9 @@ class Session:
         except Exception:
             pass
         suffix = "-%s-release" % vdash
-        rel_re = re.compile(r'href="(/apk/%s/[a-z0-9][a-z0-9.\-]*-release)/?"'
+        # version slugs may contain underscores (build codes), e.g. Genshin's
+        # genshin-impact-5-0-0_26041933_26161852-release.
+        rel_re = re.compile(r'href="(/apk/%s/[a-z0-9][a-z0-9._\-]*-release)/?"'
                             % re.escape(slug))
         for page in range(1, max_pages + 1):
             url = "%s/apk/%s/" % (BASE, slug)

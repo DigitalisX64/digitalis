@@ -23,5 +23,20 @@ class TestNaming(unittest.TestCase):
         self.assertEqual(pkg, "com.facebook.katana")
         self.assertEqual(ver, "561.0.0.42.67")
 
+    def test_parse_underscore_build_code_version(self):
+        # Genshin-style version with underscore build codes.
+        n = ("com.miHoYo.GenshinImpact_6.6.0_44318314_44476906_minAPI21"
+             "(arm64-v8a)(nodpi)_apkmirror.com.apk")
+        pkg, ver = naming.parse_filename(n)
+        self.assertEqual(pkg, "com.miHoYo.GenshinImpact")
+        self.assertEqual(ver, "6.6.0_44318314_44476906")
+
+    def test_parse_underscore_in_package(self):
+        # Package id itself contains an underscore (cn.wps.moffice_eng).
+        n = "cn.wps.moffice_eng_26.4.3_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+        pkg, ver = naming.parse_filename(n)
+        self.assertEqual(pkg, "cn.wps.moffice_eng")
+        self.assertEqual(ver, "26.4.3")
+
     def test_parse_non_matching_returns_none(self):
         self.assertEqual(naming.parse_filename("random.apk"), (None, None))

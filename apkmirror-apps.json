@@ -224,6 +224,14 @@
     "file": "top-games/com.kiloo.subwaysurf_3.63.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
+    "package": "com.miHoYo.GenshinImpact",
+    "slug": "cognosphere-pte-ltd/genshin-impact",
+    "version": "6.6.0_44318314_44476906",
+    "category": "game",
+    "note": "game",
+    "file": "top-games/com.miHoYo.GenshinImpact_6.6.0_44318314_44476906_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
     "package": "com.supercell.clashofclans",
     "slug": "supercell/clash-of-clans",
     "version": "18.367.1",
