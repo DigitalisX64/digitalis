@@ -184,12 +184,28 @@
     "file": "top-apps/tv.twitch.android.app_29.6.2_minAPI29(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
+    "package": "com.fingersoft.hillclimb",
+    "slug": "fingersoft/hill-climb-racing",
+    "version": "1.68.1",
+    "category": "game",
+    "note": "game",
+    "file": "top-games/com.fingersoft.hillclimb_1.68.1_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
     "package": "com.imangi.templerun2",
     "slug": "imangi-studios/temple-run-2",
     "version": "2.1.109.1",
     "category": "game",
     "note": "game",
     "file": "top-games/com.imangi.templerun2_2.1.109.1_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
+    "package": "com.imangi.templerun",
+    "slug": "imangi-studios/temple-run",
+    "version": "1.37.0",
+    "category": "game",
+    "note": "game",
+    "file": "top-games/com.imangi.templerun_1.37.0_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
     "package": "com.innersloth.spacemafia",
