@@ -104,14 +104,6 @@
     "file": "top-apps/com.microsoft.teams_1416.1.0.0.2026092403_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.netflix.mediaclient",
-    "slug": "netflix-inc/netflix",
-    "version": "200147",
-    "category": "app",
-    "note": "video",
-    "file": "top-apps/com.netflix.mediaclient_200147_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
-  },
-  {
     "package": "com.reddit.frontpage",
     "slug": "redditinc/reddit",
     "version": "2026.22.0",
