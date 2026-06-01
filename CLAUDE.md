@@ -55,7 +55,7 @@ Or use the shortcut: `source lunch-digitalis.sh` after `source build/envsetup.sh
 
 Run the emulator:
 ```bash
-emulator -memory 4096 -writable-system -partition-size 65536 -qemu -cpu host &
+emulator -memory 4096 -writable-system -qemu -cpu host &
 ```
 
 Install and run sample apps:
