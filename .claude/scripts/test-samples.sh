@@ -162,6 +162,7 @@ declare -A MODULES=(
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha/com.example.hellosha.MainActivity"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
+    ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative/com.example.helloreactnative.MainActivity"
 )
 
 # Test package names (applicationId + ".test")
@@ -209,6 +210,7 @@ declare -A TEST_PACKAGES=(
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.test"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.test"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.test"
+    ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative.test"
 )
 
 # Fully qualified test class names
@@ -256,6 +258,7 @@ declare -A TEST_CLASSES=(
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.StatusTest"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.StatusTest"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.StatusTest"
+    ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative.StatusTest"
 )
 
 # Ordered list for consistent output
@@ -269,6 +272,7 @@ MODULE_ORDER=(
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-lrcpc hello-lse hello-pac-ret hello-widemul
+    hello-reactnative
 )
 
 # Check emulator
