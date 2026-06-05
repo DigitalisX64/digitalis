@@ -258,7 +258,7 @@ declare -A TEST_CLASSES=(
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha.StatusTest"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave.StatusTest"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress.StatusTest"
-    ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative.StatusTest"
+    ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative.ScreenshotTest"
 )
 
 # Ordered list for consistent output
