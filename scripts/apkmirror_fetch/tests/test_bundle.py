@@ -5,7 +5,7 @@ import tempfile
 import unittest
 import zipfile
 
-from apkmirror_fetch import bundle, axml, arsc, apksign
+from apkmirror_fetch import bundle, axml, apksign
 from apkmirror_fetch.tests.fixtures import make_axml_fixture as fx_axml
 from apkmirror_fetch.tests.fixtures import make_arsc_fixture as fx_arsc
 
@@ -72,15 +72,19 @@ class TestBundle(unittest.TestCase):
             z.writestr("meta.sai_v2.json", b"{}")
         return path
 
-    def test_full_merge_end_to_end(self):
+    def test_native_merge_end_to_end(self):
+        # Native mode is the pure-Python base+arm64-lib merge (no Java). It signs,
+        # strips manifest split markers, and keeps only base.apk's resource table.
+        # The full APKEditor merge is exercised live by the fetch script against a
+        # real bundle (a synthetic fixture manifest is too minimal for APKEditor).
         apkm = self._make_apkm()
         cache = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, cache, ignore_errors=True)
         out = apkm + ".merged.apk"
         self.addCleanup(lambda: os.path.exists(out) and os.remove(out))
 
-        mode = bundle.merge_apkm(apkm, out, cache_dir=cache, mode="full")
-        self.assertEqual(mode, "full")
+        mode = bundle.merge_apkm(apkm, out, cache_dir=cache, mode="native")
+        self.assertEqual(mode, "native")
 
         # signed and self-verifies
         self.assertTrue(apksign.has_v2_block(out))
@@ -89,13 +93,24 @@ class TestBundle(unittest.TestCase):
         with zipfile.ZipFile(out) as z:
             names = z.namelist()
             self.assertIn("lib/arm64-v8a/libfoo.so", names)
-            self.assertIn("res/drawable-xxhdpi/img.png", names)
+            self.assertIn("resources.arsc", names)
             # manifest split markers stripped
             doc = axml.parse(z.read("AndroidManifest.xml"))
             self.assertNotIn("requiredSplitTypes",
                              {a.name for a in doc.root.attributes})
-            # resources.arsc now carries both configs
-            table = arsc.parse(z.read("resources.arsc"))
-            configs = arsc.list_type_configs(table)
-            self.assertIn("DEFAULT", configs)
-            self.assertIn("xxhdpi", configs)
+
+    def test_strip_foreign_abis(self):
+        src = _apk({
+            "AndroidManifest.xml": fx_axml.build_bytes(),
+            "lib/arm64-v8a/libfoo.so": b"keep",
+            "lib/armeabi-v7a/libfoo.so": b"drop",
+            "lib/x86_64/libfoo.so": b"drop",
+            "res/x.png": b"keep",
+        })
+        out = bundle._strip_foreign_abis(src)
+        with zipfile.ZipFile(io.BytesIO(out)) as z:
+            names = z.namelist()
+            self.assertIn("lib/arm64-v8a/libfoo.so", names)
+            self.assertIn("res/x.png", names)
+            self.assertNotIn("lib/armeabi-v7a/libfoo.so", names)
+            self.assertNotIn("lib/x86_64/libfoo.so", names)

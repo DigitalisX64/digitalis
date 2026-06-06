@@ -6,11 +6,15 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import List
 
-from apkmirror_fetch import arsc, axml, apksign
+from apkmirror_fetch import axml, apksign, apkeditor
 
 _ARCH_RE = re.compile(r"split_config\.arm64_v8a\.apk$")
 _CONFIG_RE = re.compile(r"split_config\.(.+)\.apk$")
 _OTHER_ARCH = ("armeabi_v7a", "x86", "x86_64", "armeabi")
+# Foreign-ABI native-lib directories to strip from the merged universal APK; these
+# regression APKs are arm64-v8a-only so any other ABI's libs are dead weight.
+_KEEP_ABI = "arm64-v8a"
+_FOREIGN_ABIS = ("armeabi-v7a", "armeabi", "x86", "x86_64", "mips", "mips64")
 
 
 @dataclass
@@ -57,62 +61,61 @@ def _native_merge(base_bytes, arch_bytes):
     return out.getvalue()
 
 
-def _full_merge(splits_bytes, sel):
-    merged = _native_merge(splits_bytes[sel.base], splits_bytes[sel.arch])
-    with zipfile.ZipFile(io.BytesIO(merged)) as zm:
-        has_arsc = "resources.arsc" in zm.namelist()
-    if not has_arsc or not sel.extras:
-        return merged
+def _strip_foreign_abis(src_bytes):
+    """Drop every native-lib dir except arm64-v8a from a merged universal APK.
 
-    split_tables, res_files = [], {}
-    for name in sel.extras:
-        with zipfile.ZipFile(io.BytesIO(splits_bytes[name])) as zs:
-            nm = zs.namelist()
-            if "resources.arsc" in nm:
-                split_tables.append(arsc.parse(zs.read("resources.arsc")))
-            for f in nm:
-                if f.startswith("res/"):
-                    res_files[f] = zs.read(f)
-
-    with zipfile.ZipFile(io.BytesIO(merged)) as zm:
-        base_table = arsc.parse(zm.read("resources.arsc"))
-        if split_tables:
-            base_table = arsc.merge(base_table, split_tables)
-        new_arsc = arsc.serialize(base_table)
-        out = io.BytesIO()
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as zo:
-            for zi in zm.infolist():
-                if zi.is_dir():
-                    continue
-                if zi.filename == "resources.arsc":
-                    zo.writestr("resources.arsc", new_arsc)
-                elif zi.filename in res_files:
-                    continue   # superseded by the split copy below
-                else:
-                    zo.writestr(zi.filename, zm.read(zi.filename))
-            for f, data in res_files.items():
-                zo.writestr(f, data)
+    APKEditor fuses *all* ABI splits (it has no arm64-only mode), so the universal
+    APK carries armeabi-v7a/x86/... libs we never run. Removing them keeps the
+    artifact the same arm64-v8a-only shape as the single-APK download path and trims
+    tens of MB. Resource entries are unaffected — only `lib/<abi>/` payloads go.
+    """
+    out = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(src_bytes)) as zin, \
+            zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as zo:
+        for zi in zin.infolist():
+            if zi.is_dir():
+                continue
+            parts = zi.filename.split("/")
+            if (len(parts) >= 2 and parts[0] == "lib"
+                    and parts[1] in _FOREIGN_ABIS):
+                continue
+            zo.writestr(zi.filename, zin.read(zi.filename))
     return out.getvalue()
 
 
-def merge_apkm(apkm_path, out_path, cache_dir, mode="full"):
-    """Merge .apkm -> one signed APK. Returns 'full' or 'native-fallback'."""
-    with zipfile.ZipFile(apkm_path) as z:
-        names = z.namelist()
-        sel = select_splits(names, mode)
-        if not sel.base or not sel.arch:
-            raise ValueError("bundle missing base or arm64-v8a split")
-        blobs = {n: z.read(n) for n in [sel.base, sel.arch] + sel.extras}
-
-    used_mode = mode
+def _apkeditor_merge(apkm_path, cache_dir):
+    """Full merge via APKEditor, then strip foreign-ABI libs. Returns APK bytes."""
+    tmp_merged = os.path.join(cache_dir, "apkeditor_merged.apk")
     try:
-        merged = (_full_merge(blobs, sel) if mode == "full"
-                  else _native_merge(blobs[sel.base], blobs[sel.arch]))
-    except Exception:
-        if mode != "full":
-            raise
-        used_mode = "native-fallback"
-        merged = _native_merge(blobs[sel.base], blobs[sel.arch])
+        apkeditor.merge(apkm_path, tmp_merged, cache_dir)
+        with open(tmp_merged, "rb") as f:
+            merged = f.read()
+    finally:
+        if os.path.exists(tmp_merged):
+            os.remove(tmp_merged)
+    return _strip_foreign_abis(merged)
+
+
+def merge_apkm(apkm_path, out_path, cache_dir, mode="full"):
+    """Merge .apkm -> one signed arm64-v8a APK.
+
+    Returns the merge mode actually used: 'full' (APKEditor, all splits including
+    feature/density modules), 'native' (base + arm64 lib only, pure-Python), or
+    'native-fallback' (APKEditor unavailable/failed in full mode, degraded to the
+    pure-Python native merge — incomplete resource table, warned in the summary).
+    """
+    used_mode = mode
+    if mode == "full":
+        try:
+            merged = _apkeditor_merge(apkm_path, cache_dir)
+        except Exception:
+            # APKEditor missing (no java / network) or failed: degrade to the
+            # pure-Python base+arm64 merge so the fetch still yields *an* APK,
+            # but flag it — its resource table is base-only and may crash.
+            used_mode = "native-fallback"
+            merged = _python_native_only(apkm_path)
+    else:
+        merged = _python_native_only(apkm_path)
 
     tmp = out_path + ".unsigned"
     with open(tmp, "wb") as f:
@@ -122,4 +125,13 @@ def merge_apkm(apkm_path, out_path, cache_dir, mode="full"):
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
-    return "full" if used_mode == "full" else "native-fallback"
+    return used_mode
+
+
+def _python_native_only(apkm_path):
+    """Pure-Python merge of base.apk + the arm64-v8a native split only."""
+    with zipfile.ZipFile(apkm_path) as z:
+        sel = select_splits(z.namelist(), "native")
+        if not sel.base or not sel.arch:
+            raise ValueError("bundle missing base or arm64-v8a split")
+        return _native_merge(z.read(sel.base), z.read(sel.arch))
