@@ -2815,7 +2815,7 @@ See [section 4](#4-the-big-picture) for the prose walkthrough; the diagram above
 | Engine | Coverage | Handles |
 |---|---|---|
 | Lite Translator (JIT) | ~98% of executed instructions | integer, branch, load/store, system, scalar FP (incl. conversions, FMA, FCSEL, FP16), and most NEON SIMD (arithmetic, logical, compare, shifts, widening MAC, reductions, permute, vector FP, FCMA/DotProd/BF16) |
-| Interpreter | fallback | syscalls, most system-register access, CRC32, crypto (AES/SHA), vector narrowing/lengthening, de-interleaving `LD2-4`/`ST2-4`, most vector modified-immediate forms |
+| Interpreter | fallback | syscalls, most system-register access, IEEE `CRC32`, crypto (AES/SHA/SM3/SM4), the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2) |
 
 A `kInterpreted` marker is installed at any guest PC the JIT can't handle, so subsequent dispatcher entries route directly to the interpreter instead of re-attempting compilation. See [section 7](#7-two-execution-paths-jit-and-interpreter) and [section 11](#11-translation-cache-and-dispatch-loop).
 

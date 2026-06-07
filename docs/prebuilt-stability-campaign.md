@@ -30,10 +30,16 @@ criteria below.
   add per-app branches or hard-coded app names anywhere.
 
 ### Environment
-- The Digitalis product bakes a 20G data partition (`config.ini.digitalis`), so
+- The Digitalis product bakes an 80G data partition (`config.ini.digitalis`;
+  raised from 25G so asset-heavy titles like Genshin Impact have room), so
   launch in visible mode with host GPU and NO `-partition-size` flag:
   `emulator -memory 4096 -writable-system -qemu -cpu host`.
-  Use `-wipe-data` once if you need a fresh data partition.
+  Use `-wipe-data` once if you need a fresh data partition (the emulator resizes
+  the userdata ext4 to the 80G cap on first boot — verify with `df -h /data`).
+- After a fresh `-wipe-data` boot, `/system` is read-only until `adb root &&
+  adb remount && adb reboot` (overlayfs needs the reboot). `adb push` to /system
+  silently no-ops otherwise — ALWAYS verify `adb shell md5sum` of the pushed
+  lib equals the build-tree md5 before trusting a repro.
 - Reboot the emulator at the start of a clean baseline run so leftover processes
   from prior tests don't contaminate triage (a stray process's crash can be
   misattributed to the app under test).

@@ -81,6 +81,8 @@ The interpreter is ~10–100× slower per instruction than JIT-translated code, 
 
 Recently promoted to the JIT (no longer interpreter-only): vector `FCVTN`/`FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE`/`URSQRTE`, the I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family, `.2S<-.2D` `ADDHN/SUBHN/RADDHN/RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and `PMULL`. The `ORR/BIC #imm` vector forms were also corrected to read-modify-write (they previously replaced `Vd`).
 
+AdvSIMD modified-immediate correctness fix: **`FMOV` (vector, immediate)** (`cmode=0b1111`) was unimplemented in `ExpandSimdModifiedImm` (interpreter) and its JIT mirror — it byte-replicated `imm8` instead of running `VFPExpandImm`, so `fmov v.4s, #1.0` (`imm8=0x70`) yielded `0x70707070` (≈2.97e29f) per lane instead of `0x3F800000`. This corrupted any NEON `floorf()`/area computation that materialises a float constant via FMOV immediate — Unity 6 (Crossy Road, Temple Run 2) computed a garbage allocation size (`-N<<32`) and self-aborted with `raise(SIGTRAP)`. Now implements `VFPExpandImm` for single- and double-precision FMOV vector immediates in both backends (`op=1/cmode=0b1111`, `fmov v.2d`, was also mis-routed to MVNI). Covered by `FmovImm4S`/`FmovImm2D` exec tests.
+
 ---
 
 ## 4. Practical impact
