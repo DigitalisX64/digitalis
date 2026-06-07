@@ -214,6 +214,13 @@ Multi-cycle prebuilt-APK investigations tend to cycle through wrong hypotheses b
 
 - **Scatter-trace then narrow.** Don't add one `TRACE()` at a time and rebuild for every hypothesis. Sprinkle 5–10 `TRACE()` calls across every plausible candidate spot in a single build — every suspect function entry, every backward-branch target, every potential infinite-loop top, every syscall handler, every error-return path. Run one trace capture. The output tells you which spots actually fire and with what frequency / argument values — usually one or two of the scattered points reveal a 1000× anomaly that the others don't, and the narrowing happens in one round-trip instead of N. Cost is one extra build/push; payoff is replacing N cycles of "one-shot diagnostic, capture, revert, next" with one cycle of "broad scatter, narrow, fix." **Strip every temp `TRACE()` before commit** per the existing "no temp debug log in commits" rule — the broad scatter is for diagnosis only, not for shipping.
 
+### Test-first, then on-device tracing (the hello-qt IC IVAU bug)
+
+- **Host test first; go on-device when host tests pass but the device keeps failing.** A host gtest is the fastest loop, but differential fuzzers are blind to bugs needing real region structure / inputs / self-modifying-code timing. After ~2 host repros pass while the device still crashes, stop writing fuzzers — that hypothesis is excluded, the bug isn't.
+- **On-device: scatter many traces in ONE build to cut round-trips, then strip them when fixed.** Each build/push/reboot is slow, so instrument every candidate at once (syscall handlers, dispatch, the crash signal handler). At a crash, walk the guest x29 frame chain via `/proc/self/mem` to pin the real call path — `insn_addr` is stale. `git checkout` all diagnostics once the root cause lands.
+- **`force-interpret X fixes it` does NOT prove X is buggy** — it changes region chaining, not just X's codegen. Confirm a suspect region's codegen against the interpreter (host test or an on-device JIT-vs-interpreter self-check) before trusting the localization.
+- **Reusable gotcha:** ARM64 has no `flush_icache` syscall — user-space JITs (PCRE2/sljit, ART, V8) signal self-modified code with **`IC IVAU`**. A translator must treat `IC IVAU, Xt` as a translation-cache invalidation of the line at `Xt`, not a NOP; otherwise it runs stale translations of regenerated code. `DC CVAU` stays a NOP (shared in-process memory).
+
 ## Critical Conventions
 
 - **Decoder dispatch order matters.** Multiple instruction groups share encoding prefixes. Always check distinguishing bits (bit29 for LD/ST, bit24 for single/multi struct, bits[11:10] for three-diff/three-same). Missing a bit routes instructions to the wrong handler silently.

@@ -163,6 +163,7 @@ declare -A MODULES=(
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
     ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative/com.example.helloreactnative.MainActivity"
+    ["hello-qt"]="com.example.hellodigitalis.helloqt/org.qtproject.qt.android.bindings.QtActivity"
 )
 
 # Test package names (applicationId + ".test")
@@ -272,7 +273,7 @@ MODULE_ORDER=(
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-lrcpc hello-lse hello-pac-ret hello-widemul
-    hello-reactnative
+    hello-reactnative hello-qt
 )
 
 # Check emulator
@@ -337,6 +338,11 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # Install APK
     apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/debug/${mod}-debug.apk"
+    # Fallback: Qt-built samples (hello-qt) ship a prebuilt APK in the module
+    # root instead of the gradle outputs tree.
+    if [[ ! -f "$apk" && -f "${SAMPLE_DIR}/${mod}/${mod}-debug.apk" ]]; then
+        apk="${SAMPLE_DIR}/${mod}/${mod}-debug.apk"
+    fi
     if [[ ! -f "$apk" ]]; then
         echo "  SKIP: $mod (no APK — run ./gradlew :${mod}:assembleDebug first)"
         continue
