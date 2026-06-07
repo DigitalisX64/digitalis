@@ -143,6 +143,7 @@ declare -A MODULES=(
     ["orderfile"]="com.example.hellodigitalis.orderfile/com.example.hellodigitalis.orderfile.MainActivity"
     ["hello-gles1"]="com.example.hellodigitalis.hellogles1/com.example.hellogles1.MainActivity"
     ["hello-gles3"]="com.example.hellodigitalis.hellogles3/com.example.hellogles3.MainActivity"
+    ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk/com.example.hellobinderndk.MainActivity"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi/com.example.hellonnapi.MainActivity"
@@ -193,6 +194,7 @@ declare -A TEST_PACKAGES=(
     ["orderfile"]="com.example.hellodigitalis.orderfile.test"
     ["hello-gles1"]="com.example.hellodigitalis.hellogles1.test"
     ["hello-gles3"]="com.example.hellodigitalis.hellogles3.test"
+    ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.test"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.test"
@@ -242,6 +244,7 @@ declare -A TEST_CLASSES=(
     ["orderfile"]="com.example.hellodigitalis.orderfile.StatusTest"
     ["hello-gles1"]="com.example.hellodigitalis.hellogles1.ScreenshotTest"
     ["hello-gles3"]="com.example.hellodigitalis.hellogles3.ScreenshotTest"
+    ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
     ["hello-binder-ndk"]="com.example.hellodigitalis.hellobinderndk.StatusTest"
     ["hello-nnapi"]="com.example.hellodigitalis.hellonnapi.StatusTest"
@@ -272,7 +275,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-aaudio hello-binder-ndk hello-nnapi
+    hello-gles1 hello-gles3 hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-lrcpc hello-lse hello-pac-ret hello-widemul
