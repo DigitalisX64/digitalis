@@ -310,7 +310,9 @@ if [[ "$MODE" == "screenshots" || "$MODE" == "status" || "$MODE" == "update-refe
     for mod in "${MODULE_ORDER[@]}"; do
         if [[ -n "$FILTER" && "$mod" != "$FILTER" ]]; then continue; fi
         # Only consider modules whose test class matches the current mode.
-        if [[ -n "$TEST_SUFFIX" && "${TEST_CLASSES[$mod]}" != *"$TEST_SUFFIX" ]]; then continue; fi
+        # `:-` tolerates modules in MODULE_ORDER with no TEST_CLASSES entry (e.g.
+        # hello-qt, which is liveness-only / built standalone) under `set -u`.
+        if [[ -n "$TEST_SUFFIX" && "${TEST_CLASSES[$mod]:-}" != *"$TEST_SUFFIX" ]]; then continue; fi
         test_apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/androidTest/debug/${mod}-debug-androidTest.apk"
         if [[ ! -f "$test_apk" ]]; then
             missing_test_tasks+=(":${mod}:assembleAndroidTest")
@@ -425,7 +427,8 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # Only run modules whose test class matches this mode (ScreenshotTest for
     # --screenshots, StatusTest for --status). Don't count skipped modules.
-    if [[ "${TEST_CLASSES[$mod]}" != *"$TEST_SUFFIX" ]]; then
+    # `:-` tolerates MODULE_ORDER modules with no TEST_CLASSES entry (liveness-only).
+    if [[ "${TEST_CLASSES[$mod]:-}" != *"$TEST_SUFFIX" ]]; then
         continue
     fi
 
