@@ -149,6 +149,7 @@ declare -A MODULES=(
     ["hello-sqlcipher"]="com.example.hellodigitalis.hellosqlcipher/com.example.hellosqlcipher.MainActivity"
     ["hello-conscrypt"]="com.example.hellodigitalis.helloconscrypt/com.example.helloconscrypt.MainActivity"
     ["hello-graphics-path"]="com.example.hellodigitalis.hellographicspath/com.example.hellographicspath.MainActivity"
+    ["hello-gif"]="com.example.hellodigitalis.hellogif/com.example.hellogif.MainActivity"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv/com.example.hellommkv.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
@@ -207,6 +208,7 @@ declare -A TEST_PACKAGES=(
     ["hello-sqlcipher"]="com.example.hellodigitalis.hellosqlcipher.test"
     ["hello-conscrypt"]="com.example.hellodigitalis.helloconscrypt.test"
     ["hello-graphics-path"]="com.example.hellodigitalis.hellographicspath.test"
+    ["hello-gif"]="com.example.hellodigitalis.hellogif.test"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
@@ -264,6 +266,7 @@ declare -A TEST_CLASSES=(
     ["hello-sqlcipher"]="com.example.hellodigitalis.hellosqlcipher.StatusTest"
     ["hello-conscrypt"]="com.example.hellodigitalis.helloconscrypt.StatusTest"
     ["hello-graphics-path"]="com.example.hellodigitalis.hellographicspath.StatusTest"
+    ["hello-gif"]="com.example.hellodigitalis.hellogif.StatusTest"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.StatusTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
@@ -296,7 +299,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
+    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul
