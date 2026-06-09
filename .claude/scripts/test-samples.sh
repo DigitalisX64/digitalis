@@ -152,6 +152,7 @@ declare -A MODULES=(
     ["hello-gif"]="com.example.hellodigitalis.hellogif/com.example.hellogif.MainActivity"
     ["hello-zxing"]="com.example.hellodigitalis.hellozxing/com.example.hellozxing.MainActivity"
     ["hello-quickjs"]="com.example.hellodigitalis.helloquickjs/com.example.helloquickjs.MainActivity"
+    ["hello-sqlite-bundled"]="com.example.hellodigitalis.hellosqlitebundled/com.example.hellosqlitebundled.MainActivity"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv/com.example.hellommkv.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
@@ -213,6 +214,7 @@ declare -A TEST_PACKAGES=(
     ["hello-gif"]="com.example.hellodigitalis.hellogif.test"
     ["hello-zxing"]="com.example.hellodigitalis.hellozxing.test"
     ["hello-quickjs"]="com.example.hellodigitalis.helloquickjs.test"
+    ["hello-sqlite-bundled"]="com.example.hellodigitalis.hellosqlitebundled.test"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
@@ -273,6 +275,7 @@ declare -A TEST_CLASSES=(
     ["hello-gif"]="com.example.hellodigitalis.hellogif.StatusTest"
     ["hello-zxing"]="com.example.hellodigitalis.hellozxing.StatusTest"
     ["hello-quickjs"]="com.example.hellodigitalis.helloquickjs.StatusTest"
+    ["hello-sqlite-bundled"]="com.example.hellodigitalis.hellosqlitebundled.StatusTest"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.StatusTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
@@ -305,7 +308,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
+    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul
