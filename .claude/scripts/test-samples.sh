@@ -154,6 +154,10 @@ declare -A MODULES=(
     ["hello-quickjs"]="com.example.hellodigitalis.helloquickjs/com.example.helloquickjs.MainActivity"
     ["hello-sqlite-bundled"]="com.example.hellodigitalis.hellosqlitebundled/com.example.hellosqlitebundled.MainActivity"
     ["hello-tflite"]="com.example.hellodigitalis.hellotflite/com.example.hellotflite.MainActivity"
+    ["hello-litert-llm"]="com.example.hellodigitalis.hellolitertllm/com.example.hellolitertllm.MainActivity"
+    ["hello-libpag"]="com.example.hellodigitalis.hellolibpag/com.example.hellolibpag.MainActivity"
+    ["hello-zstd"]="com.example.hellodigitalis.hellozstd/com.example.hellozstd.MainActivity"
+    ["hello-libvlc"]="com.example.hellodigitalis.hellolibvlc/com.example.hellolibvlc.MainActivity"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv/com.example.hellommkv.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
@@ -217,6 +221,10 @@ declare -A TEST_PACKAGES=(
     ["hello-quickjs"]="com.example.hellodigitalis.helloquickjs.test"
     ["hello-sqlite-bundled"]="com.example.hellodigitalis.hellosqlitebundled.test"
     ["hello-tflite"]="com.example.hellodigitalis.hellotflite.test"
+    ["hello-litert-llm"]="com.example.hellodigitalis.hellolitertllm.test"
+    ["hello-libpag"]="com.example.hellodigitalis.hellolibpag.test"
+    ["hello-zstd"]="com.example.hellodigitalis.hellozstd.test"
+    ["hello-libvlc"]="com.example.hellodigitalis.hellolibvlc.test"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
@@ -279,6 +287,10 @@ declare -A TEST_CLASSES=(
     ["hello-quickjs"]="com.example.hellodigitalis.helloquickjs.StatusTest"
     ["hello-sqlite-bundled"]="com.example.hellodigitalis.hellosqlitebundled.StatusTest"
     ["hello-tflite"]="com.example.hellodigitalis.hellotflite.StatusTest"
+    ["hello-litert-llm"]="com.example.hellodigitalis.hellolitertllm.StatusTest"
+    ["hello-libpag"]="com.example.hellodigitalis.hellolibpag.StatusTest"
+    ["hello-zstd"]="com.example.hellodigitalis.hellozstd.StatusTest"
+    ["hello-libvlc"]="com.example.hellodigitalis.hellolibvlc.StatusTest"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.StatusTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
@@ -311,7 +323,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
+    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul
