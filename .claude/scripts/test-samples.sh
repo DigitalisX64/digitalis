@@ -145,6 +145,7 @@ declare -A MODULES=(
     ["hello-gles3"]="com.example.hellodigitalis.hellogles3/com.example.hellogles3.MainActivity"
     ["hello-msaa"]="com.example.hellodigitalis.hellomsaa/com.example.hellomsaa.MainActivity"
     ["hello-ijkplayer"]="com.example.hellodigitalis.helloijkplayer/com.example.helloijkplayer.MainActivity"
+    ["hello-opencv"]="com.example.hellodigitalis.helloopencv/com.example.helloopencv.MainActivity"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv/com.example.hellommkv.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
@@ -199,6 +200,7 @@ declare -A TEST_PACKAGES=(
     ["hello-gles3"]="com.example.hellodigitalis.hellogles3.test"
     ["hello-msaa"]="com.example.hellodigitalis.hellomsaa.test"
     ["hello-ijkplayer"]="com.example.hellodigitalis.helloijkplayer.test"
+    ["hello-opencv"]="com.example.hellodigitalis.helloopencv.test"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
@@ -252,6 +254,7 @@ declare -A TEST_CLASSES=(
     ["hello-gles3"]="com.example.hellodigitalis.hellogles3.ScreenshotTest"
     ["hello-msaa"]="com.example.hellodigitalis.hellomsaa.ScreenshotTest"
     ["hello-ijkplayer"]="com.example.hellodigitalis.helloijkplayer.StatusTest"
+    ["hello-opencv"]="com.example.hellodigitalis.helloopencv.StatusTest"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.StatusTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
@@ -284,7 +287,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
+    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul
