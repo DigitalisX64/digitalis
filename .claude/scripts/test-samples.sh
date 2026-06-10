@@ -168,6 +168,7 @@ declare -A MODULES=(
     ["hello-renderscript-toolkit"]="com.example.hellodigitalis.hellorenderscripttoolkit/com.example.hellorenderscripttoolkit.MainActivity"
     ["hello-pytorch"]="com.example.hellodigitalis.hellopytorch/com.example.hellopytorch.MainActivity"
     ["hello-gpuimage"]="com.example.hellodigitalis.hellogpuimage/com.example.hellogpuimage.MainActivity"
+    ["hello-camera-core"]="com.example.hellodigitalis.hellocameracore/com.example.hellocameracore.MainActivity"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv/com.example.hellommkv.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
@@ -245,6 +246,7 @@ declare -A TEST_PACKAGES=(
     ["hello-renderscript-toolkit"]="com.example.hellodigitalis.hellorenderscripttoolkit.test"
     ["hello-pytorch"]="com.example.hellodigitalis.hellopytorch.test"
     ["hello-gpuimage"]="com.example.hellodigitalis.hellogpuimage.test"
+    ["hello-camera-core"]="com.example.hellodigitalis.hellocameracore.test"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
@@ -321,6 +323,7 @@ declare -A TEST_CLASSES=(
     ["hello-renderscript-toolkit"]="com.example.hellodigitalis.hellorenderscripttoolkit.StatusTest"
     ["hello-pytorch"]="com.example.hellodigitalis.hellopytorch.StatusTest"
     ["hello-gpuimage"]="com.example.hellodigitalis.hellogpuimage.StatusTest"
+    ["hello-camera-core"]="com.example.hellodigitalis.hellocameracore.StatusTest"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.StatusTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
@@ -353,7 +356,7 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
+    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul
