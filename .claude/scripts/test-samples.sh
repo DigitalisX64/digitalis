@@ -173,6 +173,11 @@ declare -A MODULES=(
     ["hello-oboe"]="com.example.hellodigitalis.hellooboe/com.example.hellooboe.MainActivity"
     ["hello-ffmpeg-kit"]="com.example.hellodigitalis.helloffmpegkit/com.example.helloffmpegkit.MainActivity"
     ["hello-ncnn"]="com.example.hellodigitalis.helloncnn/com.example.helloncnn.MainActivity"
+    ["hello-aes"]="com.example.hellodigitalis.helloaes/com.example.helloaes.MainActivity"
+    ["hello-cntvct"]="com.example.hellodigitalis.hellocntvct/com.example.hellocntvct.MainActivity"
+    ["hello-cronet"]="com.example.hellodigitalis.hellocronet/com.example.hellocronet.MainActivity"
+    ["hello-ldxp"]="com.example.hellodigitalis.helloldxp/com.example.helloldxp.MainActivity"
+    ["hello-sigaction"]="com.example.hellodigitalis.hellosigaction/com.example.hellosigaction.MainActivity"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx/com.example.hellolynx.MainActivity"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv/com.example.hellommkv.MainActivity"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio/com.example.helloaaudio.MainActivity"
@@ -255,6 +260,11 @@ declare -A TEST_PACKAGES=(
     ["hello-oboe"]="com.example.hellodigitalis.hellooboe.test"
     ["hello-ffmpeg-kit"]="com.example.hellodigitalis.helloffmpegkit.test"
     ["hello-ncnn"]="com.example.hellodigitalis.helloncnn.test"
+    ["hello-aes"]="com.example.hellodigitalis.helloaes.test"
+    ["hello-cntvct"]="com.example.hellodigitalis.hellocntvct.test"
+    ["hello-cronet"]="com.example.hellodigitalis.hellocronet.test"
+    ["hello-ldxp"]="com.example.hellodigitalis.helloldxp.test"
+    ["hello-sigaction"]="com.example.hellodigitalis.hellosigaction.test"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.test"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.test"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.test"
@@ -336,6 +346,11 @@ declare -A TEST_CLASSES=(
     ["hello-oboe"]="com.example.hellodigitalis.hellooboe.StatusTest"
     ["hello-ffmpeg-kit"]="com.example.hellodigitalis.helloffmpegkit.StatusTest"
     ["hello-ncnn"]="com.example.hellodigitalis.helloncnn.StatusTest"
+    ["hello-aes"]="com.example.hellodigitalis.helloaes.StatusTest"
+    ["hello-cntvct"]="com.example.hellodigitalis.hellocntvct.StatusTest"
+    ["hello-cronet"]="com.example.hellodigitalis.hellocronet.StatusTest"
+    ["hello-ldxp"]="com.example.hellodigitalis.helloldxp.StatusTest"
+    ["hello-sigaction"]="com.example.hellodigitalis.hellosigaction.StatusTest"
     ["hello-lynx"]="com.example.hellodigitalis.hellolynx.ScreenshotTest"
     ["hello-mmkv"]="com.example.hellodigitalis.hellommkv.StatusTest"
     ["hello-aaudio"]="com.example.hellodigitalis.helloaaudio.StatusTest"
@@ -371,7 +386,7 @@ MODULE_ORDER=(
     hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-tesseract hello-oboe hello-ffmpeg-kit hello-ncnn hello-lynx hello-aaudio hello-binder-ndk hello-nnapi
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
-    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul
+    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction
     hello-reactnative hello-qt
 )
 
