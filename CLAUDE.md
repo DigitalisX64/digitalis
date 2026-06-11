@@ -153,6 +153,7 @@ re-route through `frameworks/libs/binary_translation/`.
 ## Git Conventions
 
 - **No Co-Authored-By lines.** Do not add `Co-Authored-By` trailers to commit messages.
+- **Never push to a remote without the user's explicit permission (binding).** Commit locally as usual, but `git push` (to any remote, in any sub-repo: `sample/hellodigitalis`, `digitalis`, `frameworks/libs/binary_translation`, `digitalisx64.github.io`, etc.) only when the user has approved it for that specific push. The user reviews changes and usually pushes manually. This applies to every dispatch cycle and every direct edit; when a task feels "done", the deliverable is the local commit, not a push.
 
 ## File Header Conventions
 
