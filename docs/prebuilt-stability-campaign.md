@@ -67,7 +67,12 @@ criteria below.
 - Fix the ROOT CAUSE in `frameworks/libs/binary_translation/` (decoder,
   interpreter, lite_translator JIT, proxy libraries, syscall emulation,
   mmap/BSS handling) — never a workaround in the app or in the test scripts.
-- Diagnose with tracing FIRST (see CLAUDE.md "Debugging Prebuilt APKs"):
+- Read the tombstone FIRST: guest crashes produce full debuggerd tombstones
+  (`/data/tombstones/`) with the abort message and mixed host/guest backtrace.
+  (If tombstones are missing for translated processes only, the
+  `F_SETPIPE_SZ` fcntl passthrough in `kernel_api/fcntl_emulation.cc` has
+  regressed — debuggerd needs it to stream the dump.)
+- Then diagnose with tracing (see CLAUDE.md "Debugging Prebuilt APKs"):
   `adb root; adb shell setenforce 0;
   adb shell setprop berberis.tracing '<pkg>=digitalis-trace.log'`; reproduce;
   pull and read the trace to localize the offending guest PC / instruction.
@@ -123,6 +128,16 @@ When triaging a FAIL, classify it — not every failure is translator-fixable:
   obfuscated commercial native lib (Chromium `CHECK` in Brave; a constructor
   exception swallowed by the app's own breakpad/crashlytics in Shazam). May or
   may not be translator-caused; needs symbolized debugging.
+- **fd-ownership (fdsan) aborts:** an abort message like `fdsan: attempted to
+  close file descriptor N, expected to be owned by …, actually unowned` means
+  a file descriptor's ownership tag was violated across the guest/host
+  boundary. Two shapes seen so far: Berberis closing an fd with a stale tag
+  (fixed — `ScopedFd` now closes with the fd's current tag), and a host owner
+  finding its tag already cleared, suggesting a guest-side `close()` on an fd
+  the proxy layer handed over without `dup()` (open — Kuaishou's host-side
+  `Fence::~Fence` abort in the buffer-release path). Translator-side
+  candidates: proxy libs passing sync/fence fds (libnativewindow,
+  AHardwareBuffer, Vulkan fence export).
 - **Environment-limited (NOT translator-fixable on this image):** Java
   `FATAL EXCEPTION` from missing Google Play Services / auth (most Microsoft,
   shopping, and social apps), anti-emulator/integrity checks (Supercell, Signal),

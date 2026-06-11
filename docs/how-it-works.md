@@ -973,6 +973,8 @@ Digitalis includes several hard-won fixes for subtle syscall issues:
 
 **Threading avoidance patterns.** Guest and host threading primitives can interact in problematic ways (e.g., guest code calling host libc, which uses its own mutexes). Digitalis and Berberis avoid constructs like `pthread_once` in critical paths to prevent potential deadlocks.
 
+**Pipe-sizing fcntl passthrough.** `GuestFcntl` (in `kernel_api/fcntl_emulation.cc`) dispatches each fcntl command explicitly and returns `ENOSYS` for anything unknown. `F_SETPIPE_SZ`/`F_GETPIPE_SZ` take a plain int argument and share command values across guest and host, so they pass straight through. This matters more than it looks: bionic's `debuggerd` crash handler issues `F_SETPIPE_SZ` while streaming a crashed process's state to `tombstoned` — when it got `ENOSYS`, every *guest* crash silently produced no tombstone, hiding the very stack traces needed to debug translated apps.
+
 ---
 
 ## 11. Translation Cache and Dispatch Loop
@@ -1099,6 +1101,8 @@ Crashes show up in Android's logcat as signal names:
 | `SIGABRT` | Assertion or abort | Incorrect API behavior from proxy library |
 | `SIGILL` | Illegal instruction | Guest code jumped to non-executable memory |
 | `Fatal signal` | Generic fatal | Various translation errors |
+
+Guest crashes produce full debuggerd tombstones (`/data/tombstones/`), same as native crashes — read the tombstone before anything else. It carries the abort message (e.g. fdsan fd-ownership violations), the signal, and the backtrace through both host frames and the guest's JIT-translated frames. (This relies on the `F_SETPIPE_SZ` fcntl passthrough described in [Section 10](#10-syscall-emulation) — if tombstones ever vanish for translated processes only, suspect the syscall/fcntl path first.)
 
 ### Common Crash Categories
 
