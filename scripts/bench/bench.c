@@ -15,18 +15,17 @@
  */
 
 /*
- * Digitalis lite-translator microbenchmark (P7 harness).
+ * Digitalis lite-translator microbenchmark.
  *
- * Four kernels that isolate the translator hot paths each plan item targets:
+ * Four kernels that isolate distinct translator hot paths:
  *
  *   alu      tight integer ALU loop — baseline JIT throughput, no branches,
  *            no memory traffic.
- *   branch   data-dependent CMP + B.cond in a tight loop — the exact shape
- *            P3 (CMP/B.cond fusion + NZCV elision) and P2 (in-region back
- *            edge) make faster.  The values are LCG-random so the host branch
- *            predictor cannot hide a slow conditional path.
- *   syscall  getpid() loop — the P1 (syscall-in-JIT) target; rerun this to
- *            confirm the P1 win has not regressed.
+ *   branch   data-dependent CMP + B.cond in a tight loop — exercises condition
+ *            evaluation and branch/loop codegen.  The values are LCG-random so
+ *            the host branch predictor cannot hide a slow conditional path.
+ *   syscall  raw svc #0 getpid loop — the guest syscall path through the
+ *            translator (not the proxy getpid trampoline).
  *   memcpy   bulk memcpy — proxy-libc / mem path throughput.
  *
  * Each kernel prints one machine-readable line:
@@ -92,8 +91,8 @@ __attribute__((noinline)) static uint64_t kernel_branch(const uint32_t* data,
 // Raw arm64 getpid (svc #0, __NR_getpid = 172).  We deliberately bypass the
 // libc/proxy getpid wrapper: the proxy libc intercepts getpid() as a direct
 // host trampoline (~3 ns), which never exercises the guest SVC path.  The raw
-// svc forces the translator's syscall path — the one P1 (syscall-in-JIT)
-// optimized and the one real binder/ioctl/futex traffic takes.
+// svc forces the translator's syscall-in-JIT path — the one real
+// binder/ioctl/futex traffic takes.
 __attribute__((noinline)) static uint64_t kernel_syscall(uint64_t iters) {
   uint64_t last = 0;
   for (uint64_t i = 0; i < iters; i++) {

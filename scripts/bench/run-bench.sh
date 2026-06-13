@@ -17,7 +17,7 @@
 # Push bench-arm64 to the booted Digitalis emulator, run it under the
 # translator, and print the per-kernel ns/iter.  Run it once before a perf
 # change and once after; the median ns_per_iter per kernel is the before/after
-# number every plan2 P-item must cite.
+# number to cite for any perf claim.
 #
 # Usage:
 #   run-bench.sh [--reps N] [--label TEXT] [-- ALU BRANCH SYSCALL MEMCPY]

@@ -1,24 +1,23 @@
-# Digitalis lite-translator microbenchmark (plan2 P7 harness)
+# Digitalis lite-translator microbenchmark
 
-A tiny on-device benchmark that isolates the translator hot paths each plan2
-performance item targets, so every P-item lands with a real before/after
-number instead of a hand-wave. This is the "measure first" requirement (P7) the
-plan makes a prerequisite for P1–P6.
+A tiny on-device benchmark that isolates distinct translator hot paths, so any
+performance change lands with a real before/after number instead of a
+hand-wave.
 
 ## Kernels
 
-| kernel | what it stresses | plan item |
-|--------|------------------|-----------|
-| `alu` | tight dependent integer ALU loop, no branches/memory | baseline JIT throughput |
-| `branch` | data-dependent `CMP`+`B.cond` in a tight loop (LCG-random, unpredictable) | **P3** (CMP/B.cond fusion, NZCV elision), **P2** (in-region back edge) |
-| `syscall` | raw `svc #0` getpid loop — the guest syscall path, not the proxy getpid trampoline | **P1** (syscall-in-JIT, done) |
-| `memcpy` | bulk 64 KiB `memcpy` | mem / proxy-libc path |
+| kernel | what it stresses |
+|--------|------------------|
+| `alu` | tight dependent integer ALU loop, no branches/memory — baseline JIT throughput |
+| `branch` | data-dependent `CMP`+`B.cond` in a tight loop (LCG-random, unpredictable) — condition evaluation and branch/loop codegen |
+| `syscall` | raw `svc #0` getpid loop — the guest syscall path, not the proxy getpid trampoline |
+| `memcpy` | bulk 64 KiB `memcpy` — mem / proxy-libc path |
 
 The `syscall` kernel deliberately issues a raw `svc #0` (`__NR_getpid`, x8=172)
 rather than calling `getpid()`: the proxy libc intercepts `getpid()` as a
 direct host trampoline (~3 ns) that never exercises the guest `SVC` path. The
-raw `svc` forces the translator's actual syscall path — the one P1 optimized
-and the one real binder/ioctl/futex traffic takes.
+raw `svc` forces the translator's actual syscall path — the one real
+binder/ioctl/futex traffic takes.
 
 ## Usage
 
@@ -49,13 +48,10 @@ Median ns/iter over 5 reps on `sdk_phone64_x86_64_digitalis`:
 | syscall | 303 |
 | memcpy | 787 |
 
-The `syscall` number reproduces P1's ~308 ns measurement (syscall-in-JIT). The
-`branch` number is the figure P3/P2 must move.
-
 ## Contract
 
-No plan2 perf claim ships without a before/after pair from this harness. Keep
-the `BENCH <name> iters=… ns_total=… ns_per_iter=…` output prefix stable —
+No perf claim ships without a before/after pair from this harness. Keep the
+`BENCH <name> iters=… ns_total=… ns_per_iter=…` output prefix stable —
 `run-bench.sh` parses it.
 
 > Note: editors using a host (x86_64) toolchain flag the `x0`/`x8` register
