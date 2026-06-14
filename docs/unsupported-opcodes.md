@@ -90,26 +90,39 @@ AdvSIMD modified-immediate correctness fix: **`FMOV` (vector, immediate)** (`cmo
 
 ## 3a. Heavy-tier-only gaps (lite/interpreter cover them; heavy bails)
 
-These instructions are fully supported and correct via the lite translator and/or interpreter; the **heavy optimizer** (`heavy_optimizer/arm64/`) just doesn't translate them yet, so a hot region containing one bails out of the second gear and keeps running its lite translation — correct, only without the heavy-tier speedup. This is a *performance* gap, never an `Undefined arm64 instruction`.
+These instructions are fully supported and correct via the lite translator and/or interpreter; the **heavy optimizer** (`heavy_optimizer/arm64/frontend.{h,cc}`) just doesn't translate them yet, so a hot region containing one bails out of the second gear and keeps running its lite translation — correct, only without the heavy-tier speedup. This is a *performance* gap, never an `Undefined arm64 instruction`.
 
-The heavy optimizer **now translates** (these were previously heavy-tier bails and are no longer gaps):
+A heavy bail is mechanical: the frontend callback calls `UndefinedReturningVoid()`/`UndefinedReturningReg()` → `Undefined()`, which sets `success_ = false`, appends a `PseudoJump(kExitGeneratedCode)`, and makes every later read-helper return a dead temp and every write-helper a no-op (so no IR lands in the already-terminated block). The runtime then re-lite-translates the whole region (`runtime/arm64/translator_x86_64.cc`), and the region settles permanently at the lite tier.
 
-- **Data processing:** `REV`/`REV32`, `CLS`, `SBFIZ`; `UDIV`/`SDIV`, `UMULH`/`SMULH`; `SBFX`.
+The heavy optimizer **now translates** (current `frontend.{h,cc}` coverage). The first gear's whole "common integer + branch + load/store" core is mirrored here, plus several recent SIMD/FP/atomic additions:
+
+- **Integer ALU (immediate & register):** `ADD`/`SUB`/`ADDS`/`SUBS`/`CMP`/`CMN`, `AND`/`ORR`/`EOR`/`ANDS`/`TST`/`BIC`/`ORN`/`EON` (shifted register), extended-register add/sub, `MOVZ`/`MOVN`/`MOVK`.
+- **Bitfield & extract:** full `SBFM`/`UBFM`/`BFM` (LSL/LSR/ASR, UXTB/UXTH/SXTB/SXTH/SXTW, `UBFX`/`SBFX`/`UBFIZ`/`SBFIZ`/`BFI`/`BFXIL`/`BFC`); `EXTR` 32-bit (64-bit non-zero-lsb still bails).
+- **Multiply / divide / shifts:** `MADD`/`MSUB`/`SMADDL`/`UMADDL`/`SMULL`/`UMULL`/`SMULH`/`UMULH`, `UDIV`/`SDIV`, variable shifts `LSLV`/`LSRV`/`ASRV`/`RORV`.
+- **Bit ops:** `REV`/`REV16`/`REV32`; `CLZ`/`CLS` (host-LZCNT-gated).
 - **PC-relative / system:** `ADRP`/`ADR`, `MRS TPIDR_EL0`.
-- **AdvSIMD modified-immediate:** `MOVI`/`MVNI`/`FMOV` (vector) / `ORR`/`BIC` (vector immediate), and `DUP` (general).
-- **SIMD&FP load/store:** `LDR`/`STR`/`LDP`/`STP` in the `Q`/`D`/`S` forms.
-- **Load/store-exclusive:** `LDXR`/`STXR`/`LDAXR`/`STLXR`/`LDAR`/`STLR`.
+- **Branches & conditionals:** `B`/`BL`/`BR`/`BLR`/`RET`, `B.cond` (all conditions), `CBZ`/`CBNZ`, `TBZ`/`TBNZ`, `CSEL`/`CSINC`/`CSINV`/`CSNEG`, `CCMP`/`CCMN`.
+- **Loads / stores:** integer `LDR`/`STR` all sizes (signed & unsigned), register-offset forms, `LDP`/`STP`/`LDPSW`, pre/post-index writeback — all with TBI masking and fault recovery.
+- **Scalar FP (via the intrinsic layer):** `FADD`/`FSUB`/`FMUL`/`FDIV` (S/D), `FMOV` (register & immediate), `FABS`, `FNEG`.
+- **NEON integer three-same:** `ADD`/`SUB`/`MUL` (supported element sizes) and `AND`/`ORR`/`EOR` (incl. the `ORR rn==rm` MOV-vector alias).
+- **AdvSIMD modified-immediate:** `MOVI`/`MVNI`/`FMOV` (vector) / `ORR`/`BIC` (vector immediate), and `DUP` (general register).
+- **SIMD&FP load/store:** `LDR`/`STR` (Q/D/S) and `LDP`/`STP` (Q pair).
+- **Load/store-exclusive:** `LDXR`/`LDAXR`/`STXR`/`STLXR` (sized `LOCK CMPXCHG`), `LDAR`/`STLR`.
 
 Promoting `ADRP`, `MRS TPIDR_EL0`, and `SBFX` in particular mattered: these appear in nearly every real-app region, so heavy bailing on them previously kept the second gear from ever engaging on real workloads.
 
-Still **heavy-tier-only** (the heavy frontend bails; lite/interpreter handle them):
+Still **heavy-tier-only** (the heavy frontend bails; lite/interpreter handle them). Grouped by family:
 
-| Instruction(s) | Notes |
-|---|---|
-| `RBIT` | Bit-reverse; heavy frontend bails, lite/interpreter handle it. |
-| `DUP` (element) | Element-indexed duplicate (the general-register `DUP` form *is* heavy-translated). |
-| LSE atomics: `CAS*`/`SWP*`/`LDADD*`/… | Heavy bails; lite/interpreter handle them. |
-| Various FP/NEON ops | Assorted floating-point / vector ops still bail from the heavy tier. |
+| Family | Bails on | Notes |
+|---|---|---|
+| Integer | `ADC`/`SBC` (add/sub with carry), `RBIT`, `EXTR` 64-bit non-zero-lsb | No host carry-chain / bit-reverse / 64-bit `SHRD` IR op. |
+| System | `MRS` (any sysreg ≠ `TPIDR_EL0`), `MSR`, `IC IVAU`, `SVC`, `BRK` | Side-effecting / runtime-handled; heavy declines. |
+| MTE | `ADDG`/`SUBG`, `IRG`/`GMI`/`SUBP`, `LDG`/`STG`/… | `MteDataProc`/`MteLoadStore` bail. |
+| Scalar FP (beyond the 6 above) | `FMAX`/`FMIN`/`FMAXNM`/`FMINNM`/`FNMUL`, `FCMP`/`FCMPE`, `FCCMP`, `FCSEL`, `FSQRT`, `FRINT*`, `FCVT`(precision)/`BFCVT`, all FP16, `FMADD`/`FMSUB`/`FNMADD`/`FNMSUB`, fixed-point & int conversions (`SCVTF`/`UCVTF`/`FCVTZS`/`FCVTZU`) | Only the four basic binops + FMOV/FABS/FNEG are heavy-lowered. |
+| NEON (most) | three-same beyond `ADD`/`SUB`/`MUL`/`AND`/`ORR`/`EOR` (incl. `CMEQ`/`CMGT`/saturating/shifts/pairwise/FP-three-same); the unsupported `ADD`/`SUB`/`MUL` element sizes (8-/64-bit); `AdvSimdThreeDiff` (widening/narrowing); two-reg-misc; shift-by-imm; indexed-element; `EXT`/permute/`TBL`; multi-struct & single-struct; SIMD register-offset & literal load/store; SIMD&FP B/H `LDR`/`STR` and D/S pairs; `DUP`(element)/`INS`/`SMOV`/`UMOV` | The bulk of Advanced SIMD is still lite/interpreter-only at the heavy tier. |
+| SIMD extensions | `FCADD`/`FCMLA` (FCMA), `BFDOT`/`BFMMLA` (BF16), `SDOT`/`UDOT`/`USDOT` (DotProduct), `SMMLA`/`UMMLA`/`USMMLA` (I8MM) | Heavy bails; lite JIT-lowers most of these. |
+| Atomics | LSE: `CAS*`/`CASP*`/`SWP*`/`LDADD*`/`LDSET*`/… | Heavy bails; lite/interpreter handle them. |
+| Crypto | `AES*`, `SHA1*`/`SHA256*`/`SHA512*`, `SM3*`/`SM4*`, `EOR3`/`BCAX`/`RAX1`/`XAR` | Heavy bails (these are interpreter-only even at the lite tier — see §3). |
 
 ---
 

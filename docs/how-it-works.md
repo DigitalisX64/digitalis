@@ -12,7 +12,7 @@ A guide to the ARM64-to-x86_64 binary translator — from first principles to im
 4. [The Big Picture](#4-the-big-picture)
 5. [How an ARM64 App Starts](#5-how-an-arm64-app-starts)
 6. [Decoding ARM64 Instructions](#6-decoding-arm64-instructions)
-7. [Two Execution Paths: JIT and Interpreter](#7-two-execution-paths-jit-and-interpreter)
+7. [Three Execution Tiers: Lite JIT, Heavy Optimizer, and Interpreter](#7-three-execution-tiers-lite-jit-heavy-optimizer-and-interpreter)
 8. [Register Allocation](#8-register-allocation)
 9. [Talking to the Host: Proxy Libraries](#9-talking-to-the-host-proxy-libraries)
 10. [Syscall Emulation](#10-syscall-emulation)
@@ -107,7 +107,7 @@ graph TD
 
 The JIT compiler (called the "Lite Translator") handles the vast majority of instructions — roughly 98% of what a typical app executes. This includes arithmetic, logic, branches, memory loads and stores, and basic SIMD operations.
 
-The interpreter handles the rest: system calls (which need special emulation), complex SIMD instructions (pairwise operations, widening, cross-lane reductions), and any instruction the JIT hasn't implemented yet. When the JIT encounters an instruction it can't translate, it marks that location for interpreter handling, and the dispatch loop routes future executions of that address to the interpreter.
+The interpreter handles the rest: complex or rare SIMD (pairwise operations, widening/narrowing, cross-lane reductions), the crypto families (AES/SHA/SM3/SM4) and IEEE CRC32, and any instruction the JIT hasn't implemented yet. When the JIT encounters an instruction it can't translate, it marks that location for interpreter handling, and the dispatch loop routes future executions of that address to the interpreter. (System calls are *not* in this list — the JIT lowers `SVC` inline; see [§10](#10-syscall-emulation).) Hot regions also get a third, faster path — the heavy optimizer — described in [§7](#7-three-execution-tiers-lite-jit-heavy-optimizer-and-interpreter).
 
 This dual approach gives Digitalis near-native performance for the common case while maintaining correctness for the full ARM64 instruction set.
 
@@ -619,7 +619,7 @@ The decoder handles these ARM64 instruction categories:
 
 ---
 
-## 7. Two Execution Paths: JIT and Interpreter
+## 7. Three Execution Tiers: Lite JIT, Heavy Optimizer, and Interpreter
 
 When Digitalis encounters ARM64 code, it has two ways to run it.
 
@@ -677,7 +677,7 @@ A region has one entry point (the starting PC) and continues until the compiler 
 - **Register pressure**: the register allocator is running low on available host registers (see `IsGpRegPoolLow()`)
 - **End of basic block**: any other termination condition
 
-Note: **SVC (system call)** is handled differently — it sets `success_ = false` (a translation failure), not a normal region end. This triggers the partial-success path described below.
+Note: **SVC (system call)** ends the region but is *not* a bail. The lite translator lowers it inline (`LiteTranslator::Svc()` in `lite_translator.cc`): it flushes mapped guest registers back to `ThreadState`, mirrors the host MXCSR into the guest FPSR, emits a direct call to `RunGuestSyscall`, and direct-dispatches to `pc+4`. A syscall therefore stays inside JIT-compiled code and never round-trips through the interpreter. (Earlier versions *did* bail SVC via `success_ = false`; that marked the SVC's own PC `kInterpreted` so every syscall bounced through the interpreter — see [§10](#10-syscall-emulation).)
 
 The infrastructure for **backward branch inlining** exists — `RegisterGuestPcLabel` creates a label at each guest PC, and `TryLocalBackwardBranch` could jump to it — but this is currently disabled because it would trap the CPU in tight loops without checking for pending signals between iterations.
 
@@ -732,21 +732,54 @@ Normally, when a JIT-compiled region finishes, control returns to the `ExecuteGu
 
 The interpreter implements the `SemanticsListener` interface, just like the JIT, but instead of generating code, it directly updates the `ThreadState` registers and memory.
 
-**`InterpretInsn()`** handles a single instruction: decode, execute, advance PC. **`InterpretBatch()`** is a Digitalis optimization that processes multiple instructions in a loop, reusing the Decoder and Interpreter objects instead of reconstructing them for each instruction. Object construction accounts for roughly 60% of per-instruction cost, so batching yields around a 2.5x speedup.
+**`InterpretInsn()`** handles a single instruction: construct a `Decoder<SemanticsPlayer<Interpreter>>`, decode, execute, advance PC. **`InterpretBatch()`** is a Digitalis optimization that processes a run of consecutive interpreter-handled instructions in a loop, reusing the same Decoder and Interpreter objects (calling `interpreter.Reset()` between them) instead of reconstructing them each time. Object construction — chiefly the templated decoder instantiation — accounts for roughly 60% of per-instruction cost, so batching is about **3x faster**. The batch runs up to a cap (500 instructions) and breaks early the moment the next PC has a JIT (`kLiteTranslated`/`kHeavyOptimized`) cache entry, handing control back so translated code takes over.
 
-All memory accesses in the interpreter use **`FaultyLoad`** and **`FaultyStore`** instead of raw `memcpy`. This is essential: if an ARM64 instruction accesses invalid memory, the fault must be routed to the guest's signal handler, not the host's. Raw `memcpy` would cause a host SIGSEGV that bypasses the guest signal handling entirely. The Faulty variants let the runtime intercept the fault and deliver it as an ARM64 signal.
+All memory accesses in the interpreter use **`FaultyLoad`** and **`FaultyStore`** instead of raw `memcpy`. This is essential: if an ARM64 instruction accesses invalid memory, the fault must be routed to the guest's signal handler, not the host's. Raw `memcpy` would cause a host SIGSEGV that bypasses the guest signal handling entirely. The Faulty variants are hand-written asm stubs whose load/store instruction is registered with the host SIGSEGV recovery table (`AddFaultyMemoryAccessRecoveryCode`); a host fault inside one redirects to a recovery label that returns `is_fault = 1`, letting the interpreter raise a *guest* signal instead of dying.
 
 The interpreter handles the full ARM64 SIMD instruction set that the JIT hasn't implemented: pairwise operations, widening/narrowing conversions, across-lanes reductions, permute and table lookup, compare and select, CRC32 calculations, and scalar floating-point conversions.
 
-### Two-Gear JIT: Lite Translator, then Heavy Optimizer
+#### IC IVAU: Self-Modifying-Code Cache Invalidation
 
-The Lite Translator is the JIT's **first gear** — a single-pass translator that emits working x86_64 code fast, but with only local (per-region) register allocation. For code that runs once or twice, that's the right trade-off: spend as little time translating as possible.
+ARM64 has no `flush_icache` syscall. User-space JITs that emit code at run time — PCRE2/sljit, ART, V8, Hermes — signal that they have rewritten an instruction line with the **`IC IVAU, Xt`** cache-maintenance instruction (invalidate instruction cache by virtual address). A binary translator *must* treat this as a translation-cache invalidation of the line at `Xt`: if it doesn't, and the JIT regenerates code at a previously-translated address, Digitalis would keep executing the **stale** translation of the old code. The interpreter's `IcIvau()` calls `InvalidateGuestRange()` to drop the cached translation for that line; the lite translator ends its region at `IC IVAU` (`success_ = false`) so the interpreter performs the invalidation. (`DC CVAU`, data-cache clean, stays a NOP — in a shared-memory in-process model there is nothing to flush.) Missing this was the root cause of the `hello-qt` PCRE2 stale-translation crash.
 
-Code that runs *repeatedly* — the inner loops where a program spends most of its time — justifies more translation effort. Digitalis's JIT therefore has a **second gear**: the **heavy optimizer** (`heavy_optimizer/arm64/`). Each lite-translated region carries an invocation counter; once a region has run enough times to cross a hotness threshold, the heavy optimizer re-translates it with an optimizing pipeline — **global register allocation** across the whole region (instead of the lite translator's local allocation) and **loop optimizations** — and the optimized version replaces the lite version in the translation cache (a `kLiteTranslated → kHeavyOptimized` transition).
+### The Third Tier: The Heavy Optimizer (Two-Gear JIT)
 
-This is the **default** for the ARM64 backend: every region starts at lite, and hot regions automatically gear up. The heavy optimizer is neutral-or-faster than the lite translator across microbenchmarks, and about **2x faster** on a register-pressure kernel where global allocation pays off most. Gear-up is gated to regions of roughly **20 or more guest instructions**, so tiny loops — where the extra optimization wouldn't recover its own translation cost — stay on the lite translator and aren't regressed.
+So far this section has described two ways to run guest code — the lite JIT and the interpreter. There is a **third tier**, and it is the default for the ARM64 backend: a **second-gear optimizing JIT** called the **heavy optimizer** (`heavy_optimizer/arm64/`). The runtime calls the overall arrangement *two-gear* (`TranslationMode::kTwoGear`, set in `translator_x86_64.cc`).
 
-A region whose hot path contains an instruction the heavy optimizer doesn't yet handle simply stays in lite (the heavy frontend bails and the lite version keeps running) — still correct, just without the second-gear speedup. See [unsupported-opcodes.md](unsupported-opcodes.md) for the per-tier instruction status.
+```mermaid
+graph TD
+    NEW["New guest PC"] --> LITE["First gear: Lite Translator<br/><i>single-pass, local reg-alloc, fast to emit</i>"]
+    LITE --> RUN["Run; region carries an<br/>invocation_counter (self-profiling)"]
+    RUN --> HOT{"counter crosses<br/>kGearSwitchThreshold<br/>(1000)?"}
+    HOT -->|"No"| RUN
+    HOT -->|"Yes"| GU{"region ≥<br/>gear-up min<br/>(20 insns)?"}
+    GU -->|"No — too small"| STAY["Stay lite (re-lite, no profiling)"]
+    GU -->|"Yes"| HEAVY["Second gear: Heavy Optimizer<br/><i>SSA MachineIR, global reg-alloc, loop opts</i>"]
+    HEAVY -->|"success"| INSTALL["Replace in cache<br/>kLiteTranslated → kHeavyOptimized"]
+    HEAVY -->|"bail (unsupported insn)"| RELITE["Re-lite the whole region<br/>(settles permanently at lite)"]
+```
+
+**Why two gears.** The lite translator is the **first gear**: a single-pass translator that emits working x86_64 fast, but with only *local* (per-region) register allocation. For code that runs once or twice that is exactly right — spend as little time translating as possible. Code that runs *repeatedly* — the inner loops where a program spends most of its time — justifies more translation effort, which is what the heavy optimizer invests.
+
+**How gear-up is triggered.** When two-gear mode is active, the lite translator emits a small **self-profiling** counter at region entry (`enable_self_profiling = true`, `counter_location = &entry->invocation_counter`). Each execution increments it; when it crosses `kGearSwitchThreshold` (**1000**), the generated code calls back into `berberis_HandleLiteCounterThresholdReached`, which re-translates the region in second gear via `LockForGearUpTranslation` (the entry must still be `kLiteTranslated`). Gear-up is gated to regions of at least `kDefaultGearUpMinInsns` (**20** guest instructions, overridable via `BERBERIS_GEARUP_MIN_INSNS`) — tiny loops, where the optimization wouldn't recover its own cost, stay lite and are never regressed.
+
+**The heavy pipeline — an SSA machine IR.** Where the lite translator emits x86_64 bytes directly per instruction, the heavy optimizer lowers a whole region into a **guest-agnostic, SSA-form machine IR** (`x86_64::MachineIR`) and then runs an optimizing backend:
+
+```mermaid
+graph LR
+    A["ARM64 region"] --> B["Decoder → SemanticsPlayer"]
+    B --> C["HeavyOptimizerFrontend<br/>emit x86_64::MachineIR (SSA)"]
+    C --> D["x86_64::GenCode<br/>liveness · global reg-alloc ·<br/>guest-context load/store elimination ·<br/>loop-invariant hoisting"]
+    D --> E["Final x86_64 host code"]
+```
+
+The frontend builds IR through a `Gen<Insn, kSSA>(...)` helper (which allocates fresh SSA output vregs and inserts `PseudoCopy` to preserve single-assignment form). Scalar floating-point goes through an **intrinsic layer** (`inline_intrinsic.h` / `call_intrinsic.h`): a binary op like `FADD`/`FMUL` is matched against a binding table and lowered to a single host SSE instruction when the rounding mode is host-default, or otherwise emitted as a call to a shared C++ intrinsic. Because the IR is SSA and spans the whole region, `x86_64::GenCode` can do **global** linear-scan register allocation, eliminate redundant guest-context (ThreadState) loads/stores within the region, and hoist loop-invariant guest-register/flag traffic out of loops — none of which the per-instruction lite translator can do.
+
+**What happens on an unsupported instruction.** The heavy frontend covers integer ALU + NZCV flags, branches (including in-region loops), loads/stores (with TBI masking + fault recovery), CSEL/CCMP, scalar FP (via the intrinsic layer), a subset of NEON integer, SIMD/FP load-store, SIMD modified-immediate + DUP, load/store-exclusive, division & wide-multiply, REV/CLS/SBFIZ, ADRP, and `MRS TPIDR_EL0`. For anything else, a frontend callback calls `Undefined()` — which sets `success_ = false`, appends an exit terminator, and turns subsequent IR-emitting helpers into no-ops so nothing lands in the dead block. The runtime then simply **re-lite-translates the region**: the result is still correct, just without the second-gear speedup, and the region settles permanently at the lite tier. A heavy bail is therefore *never* an `Undefined arm64 instruction` crash — only a missed optimization.
+
+This last point is a binding project rule: when you add a *common* instruction, cover it in **every** tier where it is reachable. A heavy bail on something like `ADRP` or `MRS TPIDR_EL0` (which appear in nearly every real-app region) silently kept the second gear from ever engaging on real workloads until those were promoted. See [unsupported-opcodes.md](unsupported-opcodes.md) for the per-tier instruction status.
+
+**Measured result.** The heavy optimizer is neutral-or-faster than the lite translator across microbenchmarks and about **2x faster** on a register-pressure kernel where global allocation pays off most.
 
 ---
 
@@ -801,9 +834,9 @@ The register pool, in allocation order: **RBX, RCX, RSI, RDI, R8-R15, RDX**. The
 
 The `Allocator<RegType>` class manages register mappings. When `GetReg()` encounters a guest register without a mapping, it calls `GetMappedRegisterOrMap()` to allocate a host register slot, then loads the guest value from ThreadState memory: `[rbp + offset_of(cpu.x[reg])]`.
 
-**Permanent vs temporary mappings.** Permanent mappings persist across all instructions in a region — they're used for guest registers that appear repeatedly. Temporary mappings are per-instruction scratch registers, allocated from the pool end in reverse order and released after each instruction.
+**Permanent vs temporary mappings.** Permanent mappings persist across all instructions in a region — they're used for guest registers that appear repeatedly. Temporary mappings are per-instruction scratch registers, allocated from the pool end in reverse order (so they don't collide with permanent mappings allocated from the front) and released after each instruction via `FreeTemps()`. The pool order matters: `RCX` sits early (so it tends to get a permanent mapping rather than being a scratch) but is saved/restored around variable-shift instructions that need `CL`; `RDX` sits last and is saved/restored around `DIV`/`MUL`.
 
-**Early region termination.** When the register pool gets tight, `IsGpRegPoolLow()` returns true and the JIT ends the current region rather than risking cascading spills. This is a Digitalis-specific optimization that keeps JIT-compiled code quality high.
+**Spill-to-temp before early termination.** When a guest register needs a host slot but the permanent pool is exhausted, the JIT does *not* immediately cut the region. It first falls back to a **temp-based access**: allocate a temporary, load the guest value from `ThreadState` for the read (or write it back for a store). Only when the pool is so tight that even a temp can't be had does `IsGpRegPoolLow()` fire and the JIT end the region cleanly (rather than risk cascading spills). Spilling first keeps regions long; cutting is the last resort.
 
 **PUSH/POP vs SUB/ADD.** When saving registers before reading condition flags (via LAHF), the JIT must use PUSH/POP or LEA for stack adjustment — never SUB RSP or ADD RSP. The reason: SUB and ADD clobber x86_64's FLAGS register, which would destroy the very flags that LAHF needs to read. PUSH/POP don't affect FLAGS.
 
@@ -934,6 +967,17 @@ Whether a given symbol can be covered comes down to its signature:
   guest thread (with thread-local storage) to whatever host thread the callback
   arrives on — a binder thread, a looper thread — asynchronous callbacks are
   safe.
+- **Host-side `RegisterNatives` entry points** are the subtle case. A symbol like
+  `android::RegisterDrawFunctor(JNIEnv*)` (the WebView hardware-accel
+  registration that Douyin's Lynx UI calls) runs `jniRegisterNativeMethods` on
+  the **host** VM, so it needs a valid *host* `JNIEnv` for the current thread —
+  not a translated guest one. These are called from guest-spawned worker threads
+  never attached to the host VM, so `ToHostJNIEnv` would yield null and the host
+  function would SIGSEGV on its first `*env`. The trampoline instead obtains a
+  host env from the captured host `JavaVM` (`GetHostJavaVM()` + `GetEnv`,
+  attaching the thread if detached and detaching afterwards) and forwards. This
+  covered 17 of `libwebviewchromium_plat_support`'s 18 symbols and unblocked
+  WebView hardware-accelerated drawing under translation.
 
 Some symbols genuinely can't be expressed as a correct trampoline and are left
 to abort cleanly rather than be covered with guesswork: variadic functions, a
@@ -942,6 +986,18 @@ with many callbacks that can't be verified, and a library's internal C++
 (`_ZN7android…`) symbols that NDK apps never call. The current inventory —
 what's covered and what's deferred, with the reason for each — lives in
 [`proxy-coverage-gaps.md`](./proxy-coverage-gaps.md).
+
+Two sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
+are *not* `DoBadTrampoline` stories. **Missing-symbol additions** supply symbols
+the upstream proxy omits entirely (libc fast-path helpers like the `*64`
+stat/mmap family, libm's `__*_finite` math entry points) through the same
+extras-registry — they never abort, they just fill a hole. And the **host-call
+redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
+bypasses the guest PLT and branches *directly into a host system library's
+x86_64 code*: the resulting non-executable-fault is caught by a `HandleNoExec`
+hook that re-resolves the same symbol in the **guest** copy of the library and
+redirects the guest PC there, so the call runs under translation instead of
+crashing.
 
 ---
 
@@ -955,7 +1011,7 @@ Digitalis intercepts all guest system calls:
 
 ```mermaid
 graph TD
-    A["ARM64 SVC instruction detected<br/><i>in interpreter</i>"] --> B["RunGuestSyscall()"]
+    A["ARM64 SVC instruction<br/><i>JIT-emitted inline call</i>"] --> B["RunGuestSyscall()"]
     B --> C["Translate syscall number<br/><i>ARM64 nr → x86_64 nr</i>"]
     C --> D["Convert arguments<br/><i>X0-X5 → RDI, RSI, RDX, R10, R8, R9</i>"]
     D --> E{"Struct arguments?"}
@@ -969,11 +1025,11 @@ graph TD
     J --> K
 ```
 
-The JIT doesn't handle SVC directly — it sets `success_ = false` so the instruction falls back to the interpreter.
+**The JIT lowers `SVC` inline.** It does *not* bail to the interpreter. `LiteTranslator::Svc()` flushes mapped guest registers back to `ThreadState` (so `RunGuestSyscall` reads them from memory), mirrors the host MXCSR into the guest FPSR, emits a direct `call RunGuestSyscall`, and direct-dispatches to `pc+4`. `RunGuestSyscall` reads the syscall number from `X8`, dispatches through the translation table, and writes the result (or `-errno`) back to `X0`. (The interpreter has its own `Svc()` that calls the same `RunGuestSyscall`, used when a region is running interpreted.)
 
 ### Going Deeper
 
-The syscall mapping is defined in an autogenerated header, `gen_syscall_emulation_arm64_to_x86_64-inl.h`, which maps each ARM64 syscall number to an implementation function. Struct conversion is handled case-by-case: the guest `stat` struct is unpacked from ARM64 layout and repacked into x86_64 layout before passing to the host kernel, and the reverse on return.
+The syscall mapping is defined in an autogenerated header, `gen_syscall_emulation_arm64_to_x86_64-inl.h`, whose single `switch (guest_nr)` maps each ARM64 syscall number to its x86_64 `syscall(...)` (e.g. ARM64 `write` 64 → x86_64 1, `futex` 98 → 202). A few numbers route to custom handlers (`close`/`close_range`/`dup3`/`fcntl`/`mmap`/`rt_sigaction`). Struct conversion is handled case-by-case: the guest `stat` struct is unpacked from ARM64 layout and repacked into x86_64 layout before passing to the host kernel, and the reverse on return. Two vDSO calls (`clock_gettime`, `gettimeofday`) are serviced inline without entering the kernel, and `uname` is masqueraded to report `aarch64` so anti-emulator SDKs see a consistent machine string.
 
 Digitalis includes several hard-won fixes for subtle syscall issues:
 
@@ -984,6 +1040,8 @@ Digitalis includes several hard-won fixes for subtle syscall issues:
 **Threading avoidance patterns.** Guest and host threading primitives can interact in problematic ways (e.g., guest code calling host libc, which uses its own mutexes). Digitalis and Berberis avoid constructs like `pthread_once` in critical paths to prevent potential deadlocks.
 
 **Pipe-sizing fcntl passthrough.** `GuestFcntl` (in `kernel_api/fcntl_emulation.cc`) dispatches each fcntl command explicitly and returns `ENOSYS` for anything unknown. `F_SETPIPE_SZ`/`F_GETPIPE_SZ` take a plain int argument and share command values across guest and host, so they pass straight through. This matters more than it looks: bionic's `debuggerd` crash handler issues `F_SETPIPE_SZ` while streaming a crashed process's state to `tombstoned` — when it got `ENOSYS`, every *guest* crash silently produced no tombstone, hiding the very stack traces needed to debug translated apps.
+
+**fdsan-safe fd ops.** Android's `fdsan` tags file descriptors with their owner (a `FILE*`, a `unique_fd`, etc.) and *aborts* the process on a double-close or wrong-owner close. Because guest and host share one file-descriptor table under translation, a guest `close`/`close_range`/`dup3` of an fd that the host runtime still owns would trip fdsan. The arm64 handlers (`RunGuestSyscall___NR_close` and friends) consult `android_fdsan_get_owner_tag(fd)` first: an untagged fd is closed raw; a tagged-but-still-open fd is left alone (the real host owner will close it); a tagged-but-already-closed fd has its stale tag scrubbed before the raw close. The bridge also demotes the global fdsan error level to *warn-once* at init. This neutralized launch-time fdsan aborts in Kuaishou and Baidu Maps.
 
 ---
 
@@ -1055,7 +1113,19 @@ The `TranslationCache` class uses **lock-free reads** (atomic pointer loads) for
 | `kEntryInvalidating` | Entry being invalidated |
 | `kEntryWrapping` | Entry being wrapped |
 
-**`GuestCodeEntry::Kind`** is a separate classification for cache entries (not to be confused with the trampoline addresses above): `kInterpreted`, `kLiteTranslated`, `kHeavyOptimized`, `kGuestWrapped`, `kHostWrapped`, `kUnderProcessing`, `kSpecialHandler`.
+**`GuestCodeEntry::Kind`** is a separate classification for cache entries (not to be confused with the trampoline addresses above), and it is what records which *tier* produced a given region:
+
+| Kind | Meaning |
+|------|---------|
+| `kInterpreted` | PC runs the interpreter (the entry points at the `kEntryInterpret` stub) |
+| `kLiteTranslated` | a first-gear lite-JIT region is installed |
+| `kHeavyOptimized` | a second-gear heavy-optimizer region is installed (geared up from lite) |
+| `kGuestWrapped` | a guest function fronted by a host-callable adapter (`WrapGuestFunction`) |
+| `kHostWrapped` | a host function re-exported to the guest (a proxy trampoline) |
+| `kUnderProcessing` | locked: being translated, wrapped, or invalidated by some thread |
+| `kSpecialHandler` | non-executable / unpredictable address with a dedicated handler |
+
+Each entry also carries an `invocation_counter` — the hotness counter the two-gear mechanism reads to decide when to gear a `kLiteTranslated` region up to `kHeavyOptimized`.
 
 **Thread safety.** When multiple threads hit the same untranslated address simultaneously, the cache's state machine prevents duplicate work: only one thread transitions the entry from `NotTranslated` to `Translating`, and the others wait.
 
@@ -1192,9 +1262,11 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **JIT — second gear (Heavy Optimizer).** The ARM64 heavy optimizer (`heavy_optimizer/arm64/`) re-translates hot lite-translated regions with global register allocation and loop optimizations, replacing them in the cache. It is the **default** second gear: gear-up is gated to regions of roughly 20+ guest instructions (so tiny loops aren't regressed), and the optimizer is neutral-or-faster than lite across microbenchmarks, ~2x on a register-pressure kernel. Instructions the heavy frontend doesn't yet translate cause it to bail back to the (correct) lite version rather than crash.
 
-**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~2.5x speedup), and the fallback path for instructions without a JIT translation — IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the I8MM mixed-sign dot/matmul ops, and vector narrowing / de-interleaving structure loads.
+**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across consecutive instructions for ~3x speedup), and the fallback path for instructions without a JIT translation — IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the `SUQADD/USQADD .1D/.2D` saturating accumulate, and a handful of host-feature-gated paths (e.g. FP16 without `F16C`). (The I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family was promoted to the JIT and is no longer interpreter-only.)
 
-**Syscall Emulation.** ARM64-to-x86_64 syscall number mapping, the futex BSS workaround for Bionic's pthread_mutex implementation, and BSS partial-page zeroing in `sys_mman_emulation.cc`.
+**Syscall Emulation.** ARM64-to-x86_64 syscall number mapping with inline `SVC` lowering in the JIT, the futex BSS workaround for Bionic's pthread_mutex implementation, BSS partial-page zeroing in `sys_mman_emulation.cc`, fdsan-safe `close`/`close_range`/`dup3`, and the `F_SETPIPE_SZ` fcntl passthrough that keeps guest tombstones working.
+
+**Proxy coverage & anti-tamper fixes.** A Digitalis-only extras registry (`android_api/digitalis_extra_proxy/`) that covers `DoBadTrampoline` symbol gaps in-surface (libnativehelper JNI helpers, libbinder_ndk service-notification callbacks, the WebView hardware-accel `Register*`/`GraphicBufferImpl` symbols) and supplies missing libc/libm fast-path symbols, plus the host-call redirect for hardened apps. Alongside these, several real-app launch fixes: fdsan-safe fd ops, the `SIGALRM` deadman-watchdog neutralization, hidden-API exemption + pending-exception clearing, a null-`jclass` `GetStaticFieldID` tolerance, and the `IC IVAU` self-modified-code cache invalidation.
 
 **Guest Loader.** ARM64-specific namespace path configuration (`/system/lib64/arm64/`), vDSO whitelist for cross-namespace visibility, and guest linker namespace fallback for incomplete ARM64 configs. (The libc.so mapping protection via `GuestMapShadow` is upstream Berberis infrastructure that Digitalis relies on.)
 
@@ -1467,7 +1539,7 @@ The `device_arch_info/` and `runtime_primitives/platform.cc` infrastructure dete
 
 - **AVX (256-bit YMM)**: The assembler supports AVX instructions (`Vmovapd`, `Vmovdqu`, `Vmovsd`, etc.) and defines YMM registers, but the ARM64 JIT does not emit any of them. All SIMD stays at 128-bit XMM.
 - **AVX-512 (512-bit ZMM)**: Not supported at all — no ZMM register definitions in the assembler, no AVX-512 instruction emission anywhere.
-- **Hardware CRC32 (SSE4.2)**: Despite x86_64 having a dedicated `crc32` instruction, Digitalis's CRC32 support is entirely software — the interpreter computes CRC32 with bitwise operations using polynomial constants (`0xEDB88320` for ISO 3309, `0x82F63B78` for Castagnoli). Using hardware CRC32 would be a future optimization opportunity.
+- **AVX-512 `VPSRAQ`**: the only ARM64 path that *wants* AVX-512 is `.2D` signed arithmetic shift (`SSHR`/`SSRA`/`SRSHR`/`SRSRA` scalar/`.2D`); on baseline x86_64 that bails to the interpreter rather than emitting AVX-512.
 
 #### Why SSE2 Is Enough for Now
 
@@ -1573,6 +1645,12 @@ After the fault is caught and the guest PC is identified, the signal must be del
 4. **Restore guest CPU state**: when the handler returns, `GuestContext::Restore` restores the (possibly modified) CPU state from the context
 5. **Resume execution**: the dispatch loop continues from wherever the restored PC points
 
+### Claiming the Host Fault Signals
+
+For any of the above to work, Digitalis must be the host-side owner of the fault signals. `ClaimHostFaultSignals()` installs Digitalis's `HandleFaultForRecovery` handler for `SIGSEGV` and `SIGBUS` at startup (with `SA_SIGINFO | SA_RESTART | SA_NODEFER`). When one of these fires, the handler looks up the faulting *host* PC in the recovery map; if a recovery entry exists it redirects host execution there and queues the signal for guest delivery, otherwise it re-raises with `SIG_DFL` to terminate. Guest-registered handlers for other signals go through a separate path (`HandleHostSignal`), and the NativeBridge `getSignalHandler()` callback hands this handler to the framework so debuggerd can cooperate.
+
+While claiming those signals, the arm64 build also sets a **baseline `SIGALRM` disposition of `SIG_IGN`** — but *only* if `SIGALRM` is still `SIG_DFL` at that moment. This neutralizes a specific anti-tamper trick: some integrity SDKs (Kuaishou's was the case that surfaced it) arm a handler-less `SIGALRM` "deadman" timer expecting their check to finish before it fires and kill the process. Under translation the check runs slower, loses the race, and the kernel would deliver `SIGALRM` with no handler — terminating the app. Defaulting the host disposition to ignore discards a handler-less fire harmlessly; the instant the guest installs its own `SIGALRM` handler via `rt_sigaction`, that real handler replaces the ignore, so legitimate timer use is unaffected.
+
 ### Pending Signals
 
 The dispatch loop checks for pending signals on every iteration:
@@ -1674,7 +1752,7 @@ graph TD
     subgraph Syscall_Work["Event Polling"]
         S1["ALooper_pollOnce calls epoll_wait"]
         S2["ARM64 SVC #0 instruction"]
-        S3["Interpreter catches SVC"]
+        S3["JIT-emitted inline call<br/>(LiteTranslator::Svc → EmitSyscall)"]
         S4["RunGuestSyscall: translate<br/>epoll_wait nr + args"]
         S5["Host kernel: epoll_wait()"]
         S1 --> S2 --> S3 --> S4 --> S5
@@ -2579,7 +2657,8 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 
 | ARM64 | x86_64 Translation | Path | Notes |
 |-------|-------------------|------|-------|
-| `SVC #0` | *intentionally not JIT'd* | Interpreter | Sets `success_=false` → syscall emulation |
+| `SVC #0` | inline `call RunGuestSyscall` | JIT | `LiteTranslator::Svc()` → `EmitSyscall()`, then direct-dispatch to `pc+4` (no interpreter round-trip) |
+| `IC IVAU, Xt` | translation-cache invalidation | Interpreter | Self-modified-code flush; `InvalidateGuestRange()` on the line at `Xt` (not a NOP) |
 | `MRS Xd, TPIDR_EL0` | `movq dst, [ThreadState.tls]` | JIT | Thread-local storage pointer |
 | `MRS Xd, NZCV` | load + shift from ThreadState flags | JIT | Read condition flags |
 | `MRS Xd, CTR_EL0` | `movq dst, 0x8444c004` | JIT | Cache type (constant) |
@@ -2845,7 +2924,7 @@ See [section 4](#4-the-big-picture) for the prose walkthrough; the diagram above
 | Lite Translator (JIT) | ~98% of executed instructions | integer, branch, load/store, system, scalar FP (incl. conversions, FMA, FCSEL, FP16), and most NEON SIMD (arithmetic, logical, compare, shifts, widening MAC, reductions, permute, vector FP, FCMA/DotProd/BF16) |
 | Interpreter | fallback | syscalls, most system-register access, IEEE `CRC32`, crypto (AES/SHA/SM3/SM4), the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2) |
 
-A `kInterpreted` marker is installed at any guest PC the JIT can't handle, so subsequent dispatcher entries route directly to the interpreter instead of re-attempting compilation. See [section 7](#7-two-execution-paths-jit-and-interpreter) and [section 11](#11-translation-cache-and-dispatch-loop).
+A `kInterpreted` marker is installed at any guest PC the JIT can't handle, so subsequent dispatcher entries route directly to the interpreter instead of re-attempting compilation. See [section 7](#7-three-execution-tiers-lite-jit-heavy-optimizer-and-interpreter) and [section 11](#11-translation-cache-and-dispatch-loop).
 
 ### D.3 Worked Examples — ARM64 → x86_64
 
@@ -3098,7 +3177,7 @@ mov   [rbp + nzcv_off], ax
 
 ### D.8 Syscall Emulation Path
 
-Syscalls are always interpreter-only because they cross the kernel boundary and can have side effects (signals, exec) the JIT can't model.
+The JIT lowers `SVC` **inline** — `LiteTranslator::Svc()` flushes mapped registers, mirrors MXCSR→FPSR, emits a direct `call RunGuestSyscall`, and direct-dispatches to `pc+4`. The crossing into the kernel still happens in `RunGuestSyscall` (a C++ runtime call), but the dispatch never round-trips through the interpreter.
 
 ```mermaid
 flowchart TD
