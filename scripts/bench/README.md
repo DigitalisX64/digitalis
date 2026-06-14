@@ -12,6 +12,7 @@ hand-wave.
 | `branch` | data-dependent `CMP`+`B.cond` in a tight loop (LCG-random, unpredictable) — condition evaluation and branch/loop codegen |
 | `syscall` | raw `svc #0` getpid loop — the guest syscall path, not the proxy getpid trampoline |
 | `memcpy` | bulk 64 KiB `memcpy` — mem / proxy-libc path |
+| `regpress` | 16 coupled accumulators in a branch-free dependent loop — more live values than the lite tier's 13 host registers, so it isolates the two-gear heavy tier's global register allocation (lite spills per iteration) |
 
 The `syscall` kernel deliberately issues a raw `svc #0` (`__NR_getpid`, x8=172)
 rather than calling `getpid()`: the proxy libc intercepts `getpid()` as a
@@ -34,19 +35,25 @@ digitalis/scripts/bench/run-bench.sh --reps 5 --label after
 
 `run-bench.sh` repeats the run (`--reps`, default 5) and reports the median
 `ns_per_iter` per kernel — the least-noisy single number to quote. Trailing
-args after `--` override the four iteration counts
-(`alu branch syscall memcpy`) for slower hosts.
+args after `--` override the five iteration counts
+(`alu branch syscall memcpy regpress`) for slower hosts.
 
-## Baseline (2026-06-13, current translator)
+## Two-gear vs lite (2026-06-14)
 
-Median ns/iter over 5 reps on `sdk_phone64_x86_64_digitalis`:
+Median ns/iter over 5 reps on `sdk_phone64_x86_64_digitalis`, comparing the
+single-gear lite tier against the two-gear default (`BERBERIS_MODE`):
 
-| kernel | ns/iter |
-|--------|---------|
-| alu | 1.69 |
-| branch | 4.25 |
-| syscall | 303 |
-| memcpy | 787 |
+| kernel | lite | two-gear | note |
+|--------|------|----------|------|
+| alu | 1.70 | 1.70 | neutral (fits lite's register budget) |
+| branch | 4.30 | 4.34 | neutral (stays lite — sub-threshold region) |
+| syscall | 316 | 313 | neutral |
+| memcpy | 788 | 795 | neutral |
+| regpress | 9.94 | **4.85** | **2.05× faster** — heavy's global register allocation beats lite's per-iteration spills |
+
+Two-gear is neutral on the kernels that fit the lite tier's 13-register mapping
+and ~2× faster where register pressure forces lite to spill — the case the
+heavy tier's global allocation targets.
 
 ## Contract
 

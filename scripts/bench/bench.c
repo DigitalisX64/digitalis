@@ -27,6 +27,10 @@
  *   syscall  raw svc #0 getpid loop — the guest syscall path through the
  *            translator (not the proxy getpid trampoline).
  *   memcpy   bulk memcpy — proxy-libc / mem path throughput.
+ *   regpress 16 coupled accumulators in a branch-free dependent loop — more
+ *            simultaneously-live values than the lite tier's 13-register host
+ *            mapping, so it exercises the heavy (two-gear) tier's global
+ *            register allocation where the lite tier must spill per iteration.
  *
  * Each kernel prints one machine-readable line:
  *   BENCH <name> iters=<N> ns_total=<T> ns_per_iter=<F>
@@ -93,6 +97,41 @@ __attribute__((noinline)) static uint64_t kernel_branch(const uint32_t* data,
 // host trampoline (~3 ns), which never exercises the guest SVC path.  The raw
 // svc forces the translator's syscall-in-JIT path — the one real
 // binder/ioctl/futex traffic takes.
+// High register pressure: 16 coupled accumulators updated in a branch-free
+// dependent chain per iteration. The cross-lane coupling defeats vectorization
+// and reassociation, and 16 simultaneously-live 64-bit values exceed the lite
+// translator's 13-register host mapping, forcing per-iteration spills to
+// ThreadState. This is where the heavy tier's global register allocation across
+// an in-region loop has the most room to beat the lite tier's single-pass
+// mapping — a large straight-line loop body (no internal branches), so it forms
+// one region and gears up.
+__attribute__((noinline)) static uint64_t kernel_regpress(uint64_t iters, uint64_t seed) {
+  uint64_t a[16];
+  for (int j = 0; j < 16; j++) a[j] = seed + (uint64_t)j * 0x9e3779b97f4a7c15ull + 1u;
+  for (uint64_t i = 0; i < iters; i++) {
+    // Each lane mixes with its neighbour (mod 16) so no lane is independent.
+    a[0] = a[0] * 6364136223846793005ull + a[1];
+    a[1] = a[1] ^ (a[2] << 13) ^ (a[2] >> 7);
+    a[2] = a[2] + a[3] + i;
+    a[3] = a[3] * 2862933555777941757ull + a[4];
+    a[4] = a[4] ^ (a[5] << 11) ^ (a[5] >> 9);
+    a[5] = a[5] + a[6] + a[0];
+    a[6] = a[6] * 3202034522624059733ull + a[7];
+    a[7] = a[7] ^ (a[8] << 17) ^ (a[8] >> 5);
+    a[8] = a[8] + a[9] + a[1];
+    a[9] = a[9] * 6364136223846793005ull + a[10];
+    a[10] = a[10] ^ (a[11] << 7) ^ (a[11] >> 13);
+    a[11] = a[11] + a[12] + a[2];
+    a[12] = a[12] * 2862933555777941757ull + a[13];
+    a[13] = a[13] ^ (a[14] << 19) ^ (a[14] >> 3);
+    a[14] = a[14] + a[15] + a[3];
+    a[15] = a[15] * 3202034522624059733ull + a[0];
+  }
+  uint64_t r = 0;
+  for (int j = 0; j < 16; j++) r ^= a[j];
+  return r;
+}
+
 __attribute__((noinline)) static uint64_t kernel_syscall(uint64_t iters) {
   uint64_t last = 0;
   for (uint64_t i = 0; i < iters; i++) {
@@ -131,6 +170,7 @@ int main(int argc, char** argv) {
   uint64_t branch_iters = (argc > 2) ? strtoull(argv[2], NULL, 0) : 50000000ull;
   uint64_t syscall_iters = (argc > 3) ? strtoull(argv[3], NULL, 0) : 2000000ull;
   uint64_t memcpy_iters = (argc > 4) ? strtoull(argv[4], NULL, 0) : 200000ull;
+  uint64_t regpress_iters = (argc > 5) ? strtoull(argv[5], NULL, 0) : 5000000ull;
 
   // Branch kernel data: LCG-random so the conditionals are unpredictable.
   enum { kN = 4096 };
@@ -153,6 +193,7 @@ int main(int argc, char** argv) {
   g_sink ^= kernel_branch(data, kN, 100000);
   g_sink ^= kernel_syscall(1000);
   g_sink ^= kernel_memcpy(dst, src, kBuf, 100);
+  g_sink ^= kernel_regpress(100000, 3);
 
   t0 = now_ns();
   g_sink ^= kernel_alu(alu_iters, t0 | 1u);
@@ -173,6 +214,11 @@ int main(int argc, char** argv) {
   g_sink ^= kernel_memcpy(dst, src, kBuf, memcpy_iters);
   t1 = now_ns();
   report("memcpy", memcpy_iters, t1 - t0);
+
+  t0 = now_ns();
+  g_sink ^= kernel_regpress(regpress_iters, t0 | 1u);
+  t1 = now_ns();
+  report("regpress", regpress_iters, t1 - t0);
 
   // Consume the sink so nothing is dead.
   fprintf(stderr, "sink=%llu\n", (unsigned long long)g_sink);

@@ -20,12 +20,12 @@
 # number to cite for any perf claim.
 #
 # Usage:
-#   run-bench.sh [--reps N] [--label TEXT] [-- ALU BRANCH SYSCALL MEMCPY]
+#   run-bench.sh [--reps N] [--label TEXT] [-- ALU BRANCH SYSCALL MEMCPY REGPRESS]
 #     --reps N   repeat the whole run N times (default 5); the median per
 #                kernel is reported (least noisy single number).
 #     --label    free-text tag echoed into the output header.
-#     trailing args after `--` are passed verbatim as the four iteration
-#     counts to bench-arm64 (alu branch syscall memcpy).
+#     trailing args after `--` are passed verbatim as the five iteration
+#     counts to bench-arm64 (alu branch syscall memcpy regpress).
 
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -66,7 +66,7 @@ for ((r = 1; r <= reps; r++)); do
 done
 
 # Median ns_per_iter per kernel name, computed without external deps.
-for k in alu branch syscall memcpy; do
+for k in alu branch syscall memcpy regpress; do
   vals=$(awk -v k="$k" '$1=="BENCH" && $2==k {
            for (i=1;i<=NF;i++){ if ($i ~ /^ns_per_iter=/){ sub(/ns_per_iter=/,"",$i); print $i } }
          }' "$tmp" | sort -n)
