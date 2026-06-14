@@ -738,6 +738,16 @@ All memory accesses in the interpreter use **`FaultyLoad`** and **`FaultyStore`*
 
 The interpreter handles the full ARM64 SIMD instruction set that the JIT hasn't implemented: pairwise operations, widening/narrowing conversions, across-lanes reductions, permute and table lookup, compare and select, CRC32 calculations, and scalar floating-point conversions.
 
+### Two-Gear JIT: Lite Translator, then Heavy Optimizer
+
+The Lite Translator is the JIT's **first gear** — a single-pass translator that emits working x86_64 code fast, but with only local (per-region) register allocation. For code that runs once or twice, that's the right trade-off: spend as little time translating as possible.
+
+Code that runs *repeatedly* — the inner loops where a program spends most of its time — justifies more translation effort. Digitalis's JIT therefore has a **second gear**: the **heavy optimizer** (`heavy_optimizer/arm64/`). Each lite-translated region carries an invocation counter; once a region has run enough times to cross a hotness threshold, the heavy optimizer re-translates it with an optimizing pipeline — **global register allocation** across the whole region (instead of the lite translator's local allocation) and **loop optimizations** — and the optimized version replaces the lite version in the translation cache (a `kLiteTranslated → kHeavyOptimized` transition).
+
+This is the **default** for the ARM64 backend: every region starts at lite, and hot regions automatically gear up. The heavy optimizer is neutral-or-faster than the lite translator across microbenchmarks, and about **2x faster** on a register-pressure kernel where global allocation pays off most. Gear-up is gated to regions of roughly **20 or more guest instructions**, so tiny loops — where the extra optimization wouldn't recover its own translation cost — stay on the lite translator and aren't regressed.
+
+A region whose hot path contains an instruction the heavy optimizer doesn't yet handle simply stays in lite (the heavy frontend bails and the lite version keeps running) — still correct, just without the second-gear speedup. See [unsupported-opcodes.md](unsupported-opcodes.md) for the per-tier instruction status.
+
 ---
 
 ## 8. Register Allocation
@@ -1010,11 +1020,12 @@ The only explicit check in the loop is for `kEntryStop`, which breaks the loop w
 stateDiagram-v2
     [*] --> NotTranslated
     NotTranslated --> Translating : JIT starts
-    Translating --> LiteTranslated : JIT succeeds
+    Translating --> LiteTranslated : lite JIT succeeds
     Translating --> Interpreted : JIT fails
+    LiteTranslated --> HeavyOptimized : region runs hot (gear-up)
 ```
 
-(Upstream Berberis also supports a `LiteTranslated → HeavyOptimized` gear-up transition via `kGearSwitchThreshold`, but this is not used in the ARM64 backend.)
+A lite-translated region that keeps executing eventually gears up: once its invocation counter crosses the threshold, the **heavy optimizer** re-translates it with global register allocation and loop optimizations and replaces the lite version in the cache (a `LiteTranslated → HeavyOptimized` transition). This is the default for ARM64 — see [Section 7](#two-gear-jit-lite-translator-then-heavy-optimizer) and the [RISC-V/ARM64 comparison](#the-two-gear-translation-pipeline) for details.
 
 When translated code is cached, it runs repeatedly without any translation overhead. This is why JIT compilation pays off even though it's expensive the first time: hot loops execute the cached native code thousands of times.
 
@@ -1048,7 +1059,7 @@ The `TranslationCache` class uses **lock-free reads** (atomic pointer loads) for
 
 **Thread safety.** When multiple threads hit the same untranslated address simultaneously, the cache's state machine prevents duplicate work: only one thread transitions the entry from `NotTranslated` to `Translating`, and the others wait.
 
-**Eager translation.** Both ARM64 and RISC-V paths pass a threshold of 0 to `AddAndLockForTranslation`, meaning every code region is translated on first encounter. The `kGearSwitchThreshold = 1000` in upstream Berberis governs **gear-up** — re-optimizing a lite-translated region with heavier optimization — not the initial translation decision.
+**Eager translation.** Both ARM64 and RISC-V paths pass a threshold of 0 to `AddAndLockForTranslation`, meaning every code region is translated (with the lite translator) on first encounter. The separate `kGearSwitchThreshold` governs **gear-up** — re-optimizing a hot lite-translated region with the heavy optimizer — not the initial translation decision.
 
 ---
 
@@ -1177,7 +1188,9 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Decoder.** The complete ARM64 instruction decoder: bit-field parsing for all instruction groups (data processing, branches, loads/stores, SIMD/FP), including instructions not present in the original Berberis decoder — CRC32/CRC32C, the SM3/SM4 crypto groups, I8MM dot/matrix-multiply (`USDOT/SUDOT/USMMLA`), `FRINT32X/64X/32Z/64Z`, MTE tag ops, the RNG system registers (`RNDR/RNDRRS`), and `BRK`.
 
-**JIT (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region. Host-feature-gated native paths fall back to the interpreter when the host CPU lacks the needed extension — e.g. `CRC32C*` uses the SSE4.2 `crc32` instruction and bails when SSE4.2 is absent.
+**JIT — first gear (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region. Host-feature-gated native paths fall back to the interpreter when the host CPU lacks the needed extension — e.g. `CRC32C*` uses the SSE4.2 `crc32` instruction and bails when SSE4.2 is absent.
+
+**JIT — second gear (Heavy Optimizer).** The ARM64 heavy optimizer (`heavy_optimizer/arm64/`) re-translates hot lite-translated regions with global register allocation and loop optimizations, replacing them in the cache. It is the **default** second gear: gear-up is gated to regions of roughly 20+ guest instructions (so tiny loops aren't regressed), and the optimizer is neutral-or-faster than lite across microbenchmarks, ~2x on a register-pressure kernel. Instructions the heavy frontend doesn't yet translate cause it to bail back to the (correct) lite version rather than crash.
 
 **Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across multiple instructions for ~2.5x speedup), and the fallback path for instructions without a JIT translation — IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the I8MM mixed-sign dot/matmul ops, and vector narrowing / de-interleaving structure loads.
 
@@ -2250,6 +2263,7 @@ graph TD
         A_DEC["ARM64 Decoder<br/><i>fixed 32-bit instructions</i>"]
         A_INT["ARM64 Interpreter"]
         A_JIT["ARM64 Lite Translator"]
+        A_HEAVY["ARM64 Heavy Optimizer<br/><i>two-gear second gear</i>"]
         A_SYS["ARM64 Syscall Emulation"]
         A_STATE["ARM64 Guest State<br/><i>X0-X30, V0-V31, NZCV</i>"]
     end
@@ -2262,7 +2276,7 @@ The shared layer is substantial: the translation cache, dispatch loop, x86_64 as
 
 ### The Two-Gear Translation Pipeline
 
-The biggest architectural difference between the RISC-V and ARM64 backends is the **translation pipeline**. RISC-V uses a sophisticated two-gear system; ARM64 uses a simpler single-gear approach.
+Both the RISC-V and ARM64 backends use a **two-gear** translation pipeline: a fast single-pass lite translator for first gear, and an optimizing heavy optimizer for the hot-region second gear.
 
 ```mermaid
 graph TD
@@ -2271,33 +2285,38 @@ graph TD
         R_LITE --> R_CACHE["Install in cache<br/><i>kLiteTranslated</i>"]
         R_CACHE --> R_RUN["Execute translated code"]
         R_RUN --> R_COUNT["Invocation counter++"]
-        R_COUNT --> R_THRESH{"Counter >= 1000?<br/><i>kGearSwitchThreshold</i>"}
+        R_COUNT --> R_THRESH{"Counter >= threshold?<br/><i>kGearSwitchThreshold</i>"}
         R_THRESH -->|"No"| R_RUN
         R_THRESH -->|"Yes"| R_HEAVY_OPT["Gear 2: Heavy Optimizer<br/><i>liveness analysis, deep optimization<br/>max 200 instructions per region</i>"]
         R_HEAVY_OPT --> R_UPGRADE["Replace in cache<br/><i>kHeavyOptimized</i>"]
         R_UPGRADE --> R_RUN_OPT["Execute optimized code<br/><i>faster than lite translation</i>"]
     end
 
-    subgraph ARM64_Pipeline["ARM64 (Digitalis): Single-Gear Pipeline"]
-        A_NEW["New code region"] --> A_LITE["Lite Translator<br/><i>translate on first encounter</i>"]
+    subgraph ARM64_Pipeline["ARM64 (Digitalis): Two-Gear Pipeline"]
+        A_NEW["New code region"] --> A_LITE["Gear 1: Lite Translator<br/><i>translate on first encounter</i>"]
         A_LITE --> A_CACHE["Install in cache<br/><i>kLiteTranslated</i>"]
         A_CACHE --> A_RUN["Execute translated code"]
         A_RUN --> A_DIRECT["Direct dispatch to next region<br/><i>allow_dispatch = true</i>"]
         A_DIRECT --> A_RUN
+        A_RUN --> A_THRESH{"Region hot &<br/>&gt;= ~20 instructions?"}
+        A_THRESH -->|"Yes"| A_HEAVY["Gear 2: Heavy Optimizer<br/><i>global register allocation,<br/>loop optimizations</i>"]
+        A_HEAVY --> A_UPGRADE["Replace in cache<br/><i>kHeavyOptimized</i>"]
     end
 ```
 
-**RISC-V's two-gear approach:**
+**The two-gear approach (both backends):**
 
-1. **Gear 1 — Lite Translation**: Quick translation on first encounter, same as ARM64. Produces working but not heavily optimized x86_64 code.
+1. **Gear 1 — Lite Translation**: Quick single-pass translation on first encounter. Produces working but only locally-optimized x86_64 code.
 2. **Invocation counting**: Each translated region has a counter. Every time the region executes, the counter increments.
-3. **Gear 2 — Heavy Optimization**: When the counter reaches `kGearSwitchThreshold` (1000 invocations), the heavy optimizer kicks in. It performs deep analysis — liveness analysis, register allocation optimization, and advanced code generation — to produce faster x86_64 code. The result replaces the lite-translated version in the cache.
+3. **Gear 2 — Heavy Optimization**: When the counter crosses `kGearSwitchThreshold`, the heavy optimizer kicks in. It performs deep analysis — liveness analysis, global register allocation across the region, and loop optimizations — to produce faster x86_64 code. The result replaces the lite-translated version in the cache.
 
-The heavy optimizer caps regions at 200 instructions to control memory consumption of its analysis data structures (particularly the `LivenessAnalyzer`).
+The RISC-V heavy optimizer caps regions at 200 instructions to control memory consumption of its analysis data structures (particularly the `LivenessAnalyzer`).
 
-**ARM64's single-gear approach:**
+**ARM64 specifics:**
 
-Digitalis translates every region once with the Lite Translator and doesn't re-optimize. The JIT is stable enough (only 16 known region breaks during development, all from register pressure) that the lite-translated code is good enough. Instead of investing in heavy optimization, Digitalis uses **direct dispatch** — translated regions jump directly to each other through the translation cache, skipping the `ExecuteGuest()` loop overhead.
+The two-gear pipeline is the **default** for the ARM64 backend. Gear-up is gated to regions of roughly **20 or more guest instructions** so that tiny loops — where the heavy optimizer's extra translation cost wouldn't pay off — stay on the lite translator rather than being regressed. Measured against the lite translator, the heavy optimizer is neutral-or-faster across microbenchmarks and about **2x faster** on a register-pressure kernel (where global register allocation helps most). ARM64 also uses **direct dispatch** — translated regions jump directly to each other through the translation cache, skipping the `ExecuteGuest()` loop overhead — independently of which gear produced a given region.
+
+A region whose hot path contains an instruction the ARM64 heavy optimizer doesn't yet translate simply stays in lite (the heavy frontend bails, the lite version keeps running) — correct, just without the second-gear speedup. See [unsupported-opcodes.md](unsupported-opcodes.md) for the per-tier instruction status.
 
 ### RISC-V Translation Modes
 
@@ -2311,7 +2330,7 @@ The RISC-V backend supports five different translation modes, selectable at runt
 | `kHeavyOptimizeOrFallbackToLiteTranslator` | Try heavy first, fall back to lite |
 | `kLiteTranslateThenHeavyOptimize` | **Default (two-gear)** — lite first, then heavy |
 
-ARM64 has no mode selection — it always does lite translation with interpreter fallback.
+ARM64 likewise defaults to the two-gear `kLiteTranslateThenHeavyOptimize` mode (lite translation first, with heavy optimization of hot regions and interpreter fallback for unsupported instructions).
 
 ### Guest State Comparison
 
@@ -2378,10 +2397,10 @@ Digitalis benefits enormously from the shared infrastructure that was built for 
 1. **ARM64 decoder** — simpler than RISC-V's (no variable-length instructions) but with more encoding complexity (SIMD/FP)
 2. **ARM64 lite translator** — larger code generator (~84KB vs ~22KB) due to ARM64's wider instruction set, especially SIMD
 3. **ARM64 interpreter** — full instruction semantics including NEON SIMD that the JIT doesn't cover
-4. **ARM64 syscall emulation** — different syscall numbers and ABI from both RISC-V and x86_64
-5. **No heavy optimizer** — ARM64 skips the two-gear pipeline in favor of simpler, direct-dispatch lite translation
+4. **ARM64 heavy optimizer** — the second-gear optimizing backend (`heavy_optimizer/arm64/`) that re-translates hot regions with global register allocation and loop optimizations
+5. **ARM64 syscall emulation** — different syscall numbers and ABI from both RISC-V and x86_64
 
-The single-gear decision reflects a pragmatic trade-off: the ARM64 lite translator produces good-enough code that the complexity of heavy optimization isn't yet justified. If performance-critical hot loops become a bottleneck in the future, the heavy optimizer infrastructure already exists in the shared codebase and could be adapted for ARM64.
+The two-gear pipeline is the default for ARM64: hot regions automatically gear up from the lite translator to the heavy optimizer (gated to regions of ~20+ instructions so tiny loops aren't regressed), while direct dispatch keeps inter-region overhead low for code that stays in first gear.
 
 ---
 
@@ -2717,7 +2736,7 @@ graph TD
 | `decoder/` | Parses raw instruction bytes into structured operations. Contains architecture-specific decoders (`arm64/`, `riscv64/`) and the `SemanticsPlayer` bridge that connects the decoder to either the JIT or interpreter. | `decoder/include/berberis/decoder/arm64/decoder.h`, `semantics_player.h` |
 | `interpreter/` | Per-instruction simulation fallback. Implements the full instruction set for each architecture by directly updating `ThreadState`. Used for instructions the JIT can't handle. | `interpreter/arm64/interpreter.h` |
 | `lite_translator/` | The JIT compiler. Translates guest instruction regions into native x86_64 machine code. Contains the register allocator, code emitter, and region management for each architecture. | `lite_translator/arm64_to_x86_64/lite_translator.h`, `allocator.h`, `lite_translate_region.cc` |
-| `heavy_optimizer/` | Second-gear JIT for RISC-V. Performs deeper analysis (liveness, register allocation optimization) on hot code regions. **Not used by the ARM64 backend.** | `heavy_optimizer/riscv64/frontend.h` |
+| `heavy_optimizer/` | Second-gear optimizing JIT for both backends. Performs deeper analysis (liveness, global register allocation, loop optimizations) on hot code regions and replaces their lite translations in the cache. The default second gear for ARM64. | `heavy_optimizer/arm64/frontend.h`, `heavy_optimizer/riscv64/frontend.h` |
 | `runtime/` | Execution control for each architecture. Contains `ExecuteGuest()` (the dispatch loop), `TranslateRegion()` (JIT entry point), and architecture-specific translation configuration. | `runtime/execute_guest.cc`, `runtime/arm64/translator_x86_64.cc` |
 | `runtime_primitives/` | Shared infrastructure used by the runtime: `TranslationCache` (the code lookup table), `HostCodePiece` (translated code representation), code pool management, the W^X dual-mapped exec regions, and entry point constants. | `runtime_primitives/include/berberis/runtime_primitives/translation_cache.h`, `runtime_library.h` |
 
@@ -2740,7 +2759,7 @@ These directories handle the host (target) architecture — generating x86_64 ma
 | Directory | What It Does | Key Files |
 |-----------|-------------|-----------|
 | `assembler/` | x86_64 machine code assembler. Provides `Assembler` class with methods like `Addq()`, `Movq()`, `Jcc()` that emit the correct variable-length x86_64 byte sequences. Used by both the lite translator and heavy optimizer. | `assembler/include/berberis/assembler/x86_64.h` |
-| `backend/` | Abstraction layer between the optimizer's intermediate representation and the final x86_64 code emission. Used by the heavy optimizer (RISC-V). | `backend/x86_64/` |
+| `backend/` | Abstraction layer between the optimizer's intermediate representation and the final x86_64 code emission. Used by the heavy optimizer (both backends). | `backend/x86_64/` |
 | `code_gen_lib/` | Shared code generation utilities: `MacroAssembler` (higher-level assembler with common patterns), label management, and code patching. | `code_gen_lib/include/berberis/code_gen_lib/code_gen_lib.h` |
 | `calling_conventions/` | Defines the host x86_64 calling convention: which registers are caller-saved vs callee-saved, argument passing rules, and stack frame layout. | `calling_conventions/include/berberis/calling_conventions/calling_conventions_x86_64.h` |
 | `exec_region/` | Manages executable memory regions. The actual W^X dual-mapping for the translation cache lives in `runtime_primitives/exec_region_anonymous.cc` and `exec_region_elf_backed.cc` (one R+X view for the CPU, one R+W alias for the JIT writes). | `exec_region/exec_region.cc`, `runtime_primitives/exec_region_anonymous.cc` |

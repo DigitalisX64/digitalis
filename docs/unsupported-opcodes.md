@@ -1,12 +1,15 @@
 # ARM64 Opcode Support Gaps
 
-Three kinds of gap exist in the Digitalis ARM64 backend:
+Four kinds of gap exist in the Digitalis ARM64 backend:
 
 1. **Exception-generating instructions.** How `SVC`/`BRK`/`HLT`/`HVC`/`SMC`/`DCPS` are decoded and turned into guest signals. None abort the translator. Section 1 below.
 2. **Not decoded — entire extension absent.** The decoder has no dispatch for the extension at all; instructions fall through to a high-level catch-all `Undefined()`. Section 2 below.
 3. **Decoded and correct, but interpreter-only.** The instruction runs correctly, but the JIT (`lite_translator/arm64_to_x86_64/`) has no fast path for it. Every guest region containing one ends at that instruction, the interpreter executes it, and the dispatcher resumes JIT for the next region. Functionally correct, ~10–100× slower per instance. Section 3 below.
+4. **Decoded and lite-translated, but heavy-tier-only.** The instruction runs correctly and even has a first-gear (lite) JIT fast path, but the second-gear **heavy optimizer** doesn't translate it yet, so a hot region containing one can't gear up. A *performance* gap only, never an `Undefined arm64 instruction`. Section 3a below.
 
-For everything that **is** JIT-translated (the fast path), see [Appendix B in `how-it-works.md`](how-it-works.md#appendix-b-arm64-to-x86_64-instruction-mapping). This document lists only what remains unsupported or interpreter-only.
+A note on tiers: ARM64 guest code runs through three translation tiers — the **interpreter**, the **lite translator** (first-gear single-pass JIT), and the **heavy optimizer** (second-gear optimizing JIT, the default for hot regions). Gaps 1–3 are about correctness/coverage and apply to the lite + interpreter path. The heavy optimizer (gap 4) is a *performance* tier on top of that: an instruction it doesn't yet translate doesn't fail — the heavy frontend bails and the region keeps running its lite/interpreter translation, correctly, just without the second-gear speedup. So a "heavy-tier gap" is never an `Undefined arm64 instruction`; it only means a hot region containing that instruction won't gear up.
+
+For everything that **is** JIT-translated (the fast path), see [Appendix B in `how-it-works.md`](how-it-works.md#appendix-b-arm64-to-x86_64-instruction-mapping). This document lists only what remains unsupported, interpreter-only, or lite-only (no heavy-tier fast path).
 
 All line references are into `frameworks/libs/binary_translation/decoder/include/berberis/decoder/arm64/decoder.h` unless noted. The decoder is actively evolving — **re-validate line numbers against the codebase before relying on them.**
 
@@ -85,6 +88,31 @@ AdvSIMD modified-immediate correctness fix: **`FMOV` (vector, immediate)** (`cmo
 
 ---
 
+## 3a. Heavy-tier-only gaps (lite/interpreter cover them; heavy bails)
+
+These instructions are fully supported and correct via the lite translator and/or interpreter; the **heavy optimizer** (`heavy_optimizer/arm64/`) just doesn't translate them yet, so a hot region containing one bails out of the second gear and keeps running its lite translation — correct, only without the heavy-tier speedup. This is a *performance* gap, never an `Undefined arm64 instruction`.
+
+The heavy optimizer **now translates** (these were previously heavy-tier bails and are no longer gaps):
+
+- **Data processing:** `REV`/`REV32`, `CLS`, `SBFIZ`; `UDIV`/`SDIV`, `UMULH`/`SMULH`; `SBFX`.
+- **PC-relative / system:** `ADRP`/`ADR`, `MRS TPIDR_EL0`.
+- **AdvSIMD modified-immediate:** `MOVI`/`MVNI`/`FMOV` (vector) / `ORR`/`BIC` (vector immediate), and `DUP` (general).
+- **SIMD&FP load/store:** `LDR`/`STR`/`LDP`/`STP` in the `Q`/`D`/`S` forms.
+- **Load/store-exclusive:** `LDXR`/`STXR`/`LDAXR`/`STLXR`/`LDAR`/`STLR`.
+
+Promoting `ADRP`, `MRS TPIDR_EL0`, and `SBFX` in particular mattered: these appear in nearly every real-app region, so heavy bailing on them previously kept the second gear from ever engaging on real workloads.
+
+Still **heavy-tier-only** (the heavy frontend bails; lite/interpreter handle them):
+
+| Instruction(s) | Notes |
+|---|---|
+| `RBIT` | Bit-reverse; heavy frontend bails, lite/interpreter handle it. |
+| `DUP` (element) | Element-indexed duplicate (the general-register `DUP` form *is* heavy-translated). |
+| LSE atomics: `CAS*`/`SWP*`/`LDADD*`/… | Heavy bails; lite/interpreter handle them. |
+| Various FP/NEON ops | Assorted floating-point / vector ops still bail from the heavy tier. |
+
+---
+
 ## 4. Practical impact
 
 What matters in practice for ARM64-only Android apps on the Digitalis emulator:
@@ -95,8 +123,9 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
 | **`SUQADD/USQADD .1D/.2D`, MTE, non-modelled MRS/MSR (perf)** | Vanishingly rare | **None–Low** — correct, interpreter-speed; not on real hot paths. |
 | **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
+| **Heavy-tier-only ops (§3a: `RBIT`, `DUP`-element, LSE atomics, …)** | Any app with a hot loop over one of these | **None–Low** — correct via lite/interpreter; the only cost is that such a hot region can't gear up to the heavy optimizer. |
 
-The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure).
+The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure). The remaining heavy-tier gaps (§3a) are purely a second-gear performance consideration, not a correctness gap.
 
 ---
 
@@ -109,13 +138,16 @@ For a decoded-but-`Undefined()` instruction that should instead execute (already
 | **Decoder** | `decoder/include/berberis/decoder/arm64/decoder.h` | Replace the `Undefined()` with `insn_consumer_->Xxx(args)` |
 | **Semantics bridge** | `decoder/include/berberis/decoder/arm64/semantics_player.h` | Add `Xxx()` forwarding the structured args to the consumer |
 | **Interpreter** | `interpreter/arm64/interpreter.h` | Implement `Xxx()` |
-| **JIT (optional)** | `lite_translator/arm64_to_x86_64/lite_translator.h` | Implement `Xxx()` for the hot path |
-| **Tests** | `lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc` | Add a region exec test exercising the new instruction |
+| **Lite JIT (optional)** | `lite_translator/arm64_to_x86_64/lite_translator.h` | Implement `Xxx()` for the first-gear fast path |
+| **Heavy JIT (optional)** | `heavy_optimizer/arm64/frontend.{h,cc}` | Translate `Xxx()` so hot regions containing it can gear up to the second gear |
+| **Tests** | `lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`, `heavy_optimizer/arm64/frontend_tests.cc` | Add a region exec test per tier exercising the new instruction |
 
 For [Section 3](#3-decoded-and-correct-but-interpreter-only) (decoded, needs a JIT fast path), only the JIT case-arm and a region exec test are needed — the decoder and interpreter already handle the instruction.
+
+For [Section 3a](#3a-heavy-tier-only-gaps-liteinterpreter-cover-them-heavy-bails) (decoded and lite-translated, but the heavy frontend bails) only the heavy frontend case-arm and a `frontend_tests.cc` exec test are needed — closing one of these lets a hot region gear up, but the instruction already runs correctly without it.
 
 For entire extensions in [Section 2](#2-entire-arm-extensions-with-no-decoder-dispatch-at-all), the decoder needs new top-level dispatch cases under the relevant `op0` bit pattern in `DecodeInstruction()` first.
 
 ---
 
-*Re-validate against the codebase before relying on the line numbers — the decoder and lite translator are actively evolving.*
+*Re-validate against the codebase before relying on the line numbers — the decoder, lite translator, and heavy optimizer are actively evolving.*

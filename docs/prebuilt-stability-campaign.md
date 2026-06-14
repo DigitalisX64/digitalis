@@ -134,10 +134,31 @@ When triaging a FAIL, classify it — not every failure is translator-fixable:
   boundary. Two shapes seen so far: Berberis closing an fd with a stale tag
   (fixed — `ScopedFd` now closes with the fd's current tag), and a host owner
   finding its tag already cleared, suggesting a guest-side `close()` on an fd
-  the proxy layer handed over without `dup()` (open — Kuaishou's host-side
+  the proxy layer handed over without `dup()` (Kuaishou's host-side
   `Fence::~Fence` abort in the buffer-release path). Translator-side
   candidates: proxy libs passing sync/fence fds (libnativewindow,
   AHardwareBuffer, Vulkan fence export).
+- **Anti-tamper / integrity-SDK aborts that ARE translator-fixable:** several
+  anti-tamper SDKs (the kind bundled by large Chinese super-apps) fail in ways
+  rooted in the emulator environment or in translation timing, not in a genuine
+  integrity violation — those are root-causable in the translator:
+  - **SIGALRM deadman watchdog (fixed).** The SDK arms a handler-less
+    `ITIMER_REAL`/`alarm()` deadman timer and expects its integrity check to
+    disarm it first; under translation the check runs slower, the timer fires,
+    and the default SIGALRM disposition *terminates the process*. Berberis now
+    defaults the host SIGALRM disposition to `SIG_IGN` at arm64 init (in
+    `ClaimHostFaultSignals`); a guest that installs its own SIGALRM handler
+    overrides it. This was Kuaishou's dominant ~15-second launch death
+    (0% → ~75% launch survival; it now passes the prebuilt gate). arm64-only.
+  - **CheckJNI null-jclass abort (fixed).** Host ART runs with CheckJNI **on**
+    on the emulator (it is **off** on production devices), so a guest passing a
+    null `jclass` to `GetStaticFieldID` is a process-fatal abort instead of the
+    production behaviour of returning a null `jfieldID`. Berberis now mirrors the
+    CheckJNI-off path via a hand-coded JNI trampoline that returns a null
+    `jfieldID` for a null `jclass`. This fixed Baidu Maps' `:SandBoxProcess`
+    abort — its sofire anti-tamper SDK's `FindClass` returned null from a
+    host-spawned worker thread and the next `GetStaticFieldID` aborted.
+    arm64-only.
 - **Environment-limited (NOT translator-fixable on this image):** Java
   `FATAL EXCEPTION` from missing Google Play Services / auth (most Microsoft,
   shopping, and social apps), anti-emulator/integrity checks (Supercell, Signal),
