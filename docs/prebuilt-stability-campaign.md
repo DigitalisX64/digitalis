@@ -121,9 +121,24 @@ criteria below.
 When triaging a FAIL, classify it — not every failure is translator-fixable:
 
 - **Clean translator gap (fix these):** `Undefined arm64 instruction` (missing/
-  mis-dispatched opcode), a `CHECK`/abort inside `libberberis_arm64`, a guest
+  mis-dispatched opcode), a `CHECK`/abort inside `libberberis_arm64`, a
+  `Bad '<sym>' call` from an uncovered `DoBadTrampoline` proxy symbol, a guest
   file the translator redirects to but that is missing, or a wrong-output bug in
   an instruction (decoder mis-dispatch, ADC/SBC carry, etc.).
+  - **Douyin `RegisterDrawFunctor` `Bad '<sym>' call` (fixed).**
+    `com.ss.android.ugc.aweme` aborted at launch: its Lynx native lib
+    (`libclay.so`) calls `android::RegisterDrawFunctor` during WebView init, and
+    the upstream proxy left all 18 `libwebviewchromium_plat_support` symbols as
+    `DoBadTrampoline`, so the call aborted with `Bad '<sym>' call`. Digitalis now
+    covers 17 of the 18 in-surface
+    (`digitalis_extra_libwebviewchromium_plat_support_trampolines.cc`): the three
+    `Register*(JNIEnv*)` entry points via the host-VM-attach technique (they run
+    `jniRegisterNativeMethods` on the host VM from a guest-spawned worker thread,
+    so they need a host env fetched from the captured host `JavaVM`, not a
+    translated guest one), and the 13 `GraphicBufferImpl` methods +
+    `RaiseFileNumberLimit()` via `GetTrampolineFunc` (flat LP64 signatures). The
+    call now forwards to the host and the app survives launch. (`JNI_OnLoad` is
+    the one deferred symbol — see `proxy-coverage-gaps.md`.)
 - **Deep per-app forensics:** a guest `brk`/`__builtin_trap` from a stripped,
   obfuscated commercial native lib (Chromium `CHECK` in Brave; a constructor
   exception swallowed by the app's own breakpad/crashlytics in Shazam). May or
