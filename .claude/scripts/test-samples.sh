@@ -203,6 +203,22 @@ declare -A MODULES=(
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
     ["hello-reactnative"]="com.example.hellodigitalis.helloreactnative/com.example.helloreactnative.MainActivity"
     ["hello-qt"]="com.example.hellodigitalis.helloqt/org.qtproject.qt.android.bindings.QtActivity"
+    ["hello-onnxruntime"]="com.example.hellodigitalis.helloonnxruntime/com.example.helloonnxruntime.MainActivity"
+    ["hello-jna"]="com.example.hellodigitalis.hellojna/com.example.hellojna.MainActivity"
+    ["hello-libsodium"]="com.example.hellodigitalis.hellolibsodium/com.example.hellolibsodium.MainActivity"
+    ["hello-j2v8"]="com.example.hellodigitalis.helloj2v8/com.example.helloj2v8.MainActivity"
+    ["hello-couchbase"]="com.example.hellodigitalis.hellocouchbase/com.example.hellocouchbase.MainActivity"
+    ["hello-avif"]="com.example.hellodigitalis.helloavif/com.example.helloavif.MainActivity"
+    ["hello-themis"]="com.example.hellodigitalis.hellothemis/com.example.hellothemis.MainActivity"
+    ["hello-wcdb"]="com.example.hellodigitalis.hellowcdb/com.example.hellowcdb.MainActivity"
+    ["hello-vosk"]="com.example.hellodigitalis.hellovosk/com.example.hellovosk.MainActivity"
+    ["hello-mediapipe"]="com.example.hellodigitalis.hellomediapipe/com.example.hellomediapipe.MainActivity"
+    ["hello-argon2"]="com.example.hellodigitalis.helloargon2/com.example.helloargon2.MainActivity"
+    ["hello-webrtc"]="com.example.hellodigitalis.hellowebrtc/com.example.hellowebrtc.MainActivity"
+    ["hello-duktape"]="com.example.hellodigitalis.helloduktape/com.example.helloduktape.MainActivity"
+    ["hello-fbjni"]="com.example.hellodigitalis.hellofbjni/com.example.hellofbjni.MainActivity"
+    ["hello-libtorrent4j"]="com.example.hellodigitalis.hellolibtorrent4j/com.example.hellolibtorrent4j.MainActivity"
+    ["hello-javacpp"]="com.example.hellodigitalis.hellojavacpp/com.example.hellojavacpp.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -249,6 +265,7 @@ MODULE_ORDER=(
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction
+    hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-argon2 hello-webrtc hello-duktape hello-fbjni hello-libtorrent4j hello-javacpp
     hello-reactnative hello-qt
 )
 
