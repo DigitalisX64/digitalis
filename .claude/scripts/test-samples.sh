@@ -216,6 +216,7 @@ declare -A MODULES=(
     ["hello-argon2"]="com.example.hellodigitalis.helloargon2/com.example.helloargon2.MainActivity"
     ["hello-webrtc"]="com.example.hellodigitalis.hellowebrtc/com.example.hellowebrtc.MainActivity"
     ["hello-duktape"]="com.example.hellodigitalis.helloduktape/com.example.helloduktape.MainActivity"
+    ["hello-wireguard"]="com.example.hellodigitalis.hellowireguard/com.example.hellowireguard.MainActivity"
     ["hello-fbjni"]="com.example.hellodigitalis.hellofbjni/com.example.hellofbjni.MainActivity"
     ["hello-libtorrent4j"]="com.example.hellodigitalis.hellolibtorrent4j/com.example.hellolibtorrent4j.MainActivity"
     ["hello-javacpp"]="com.example.hellodigitalis.hellojavacpp/com.example.hellojavacpp.MainActivity"
@@ -265,7 +266,7 @@ MODULE_ORDER=(
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction
-    hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-argon2 hello-webrtc hello-duktape hello-fbjni hello-libtorrent4j hello-javacpp
+    hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp
     hello-reactnative hello-qt
 )
 
