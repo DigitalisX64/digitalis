@@ -1,3 +1,64 @@
+# Digitalis — On-Screen Rendering, New Samples & Binary Distribution (2026-06-21)
+
+This update adds a guest `libgui.so` stub that unblocks Google Filament's
+on-screen render path under translation, grows the always-green sample suite to
+**116 ARM64-only modules** with 11 more third-party native-library samples, and
+ships Docker-based tooling to distribute Digitalis as binaries only.
+
+## New: guest `libgui.so` stub — on-screen Filament rendering
+
+Google Filament's Android platform layer `dlopen`s `libgui.so` and calls
+`android::Surface::hook_perform` on its SwapChain present path. Digitalis ships no
+guest `libgui.so` — surface/buffer management is proxied to the host GPU stack,
+which is exactly why `hello-vulkan` renders on screen without any guest libgui — so
+that `dlopen` returned NULL and the guest then executed a host address →
+`berberis_HandleNoExec` SIGSEGV.
+
+A *full* guest `libgui.so` is the wrong fix: it would run its own guest-side
+BufferQueue/SurfaceFlinger client and fight the host-proxied present path. Instead
+Digitalis now ships a minimal **guest-only `libgui.so` stub**
+(`frameworks/libs/binary_translation/android_api/digitalis_libgui_stub`, installed
+as `/system/lib64/arm64/libgui.so`) that exports `hook_perform` as a benign no-op
+(the real `NATIVE_WINDOW_SET_*` operations belong to the host), so the
+`dlopen`/`dlsym` succeed and the present path stays on the proxied route. The stub
+is built in-tree as a native-bridge guest library and added to the distribution
+set; the upstream riscv64 build is unaffected (arm64-only product wiring).
+
+## New samples (sample suite → 116)
+
+11 more third-party native-library samples now run under translation as part of the
+always-green suite:
+
+- **3D rendering:** Google Filament's physically-based renderer
+  (`hello-filament`, a headless GPU-resource smoke test) and its native glTF loader
+  gltfio (`hello-gltfio`). **`hello-filament-render`** draws a lit glTF cube on
+  screen via Filament's Vulkan backend — a deterministic screenshot sample, enabled
+  by the `libgui.so` stub above.
+- **Numeric / scientific:** OpenBLAS (`hello-openblas`), FFTW (`hello-fftw`), the
+  GNU Scientific Library (`hello-gsl`).
+- **Physics:** Box2D 2D physics (`hello-box2d`).
+- **Imaging / OCR pre-processing:** libyuv color conversion (`hello-libyuv`),
+  Leptonica image processing (`hello-leptonica`).
+- **Compression:** Snappy (`hello-snappy`).
+- **Crypto:** secp256k1 Bitcoin-curve ECDSA (`hello-secp256k1`).
+
+All run on the x86_64 emulator via NativeBridge translation; the full sample suite,
+the host unit tests (2460 `Arm64*`), the screenshot tests, and the prebuilt-app gate
+are green.
+
+## Binary-only distribution (Docker)
+
+New tooling under `digitalis/docker/` and `digitalis/scripts/` packages the
+translator as **binaries only** for other AOSP x86_64 products to drop in: the
+73-artifact distribution set defined in `berberis_config.mk`
+(`libberberis_arm64.so`, the proxy libraries, program runners, the ARM64 guest
+libraries, and configs), plus a generated consumer `.mk` and an integration README.
+A reproducible `digitalis-build` Docker container reuses the host `out/` tree (bind-
+mounted at the same path) so neither the container nor a normal host developer has
+to rebuild the project. See `digitalis/docker/README.md`.
+
+---
+
 # Digitalis — Sample-Suite Expansion & Heap-Lifetime Fixes (2026-06-20)
 
 This update grows the always-green sample suite to **104 ARM64-only modules**
