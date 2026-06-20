@@ -31,6 +31,26 @@ emulator
 # And then build and install sample/hellodigitalis with Gradle to test
 ```
 
+## Binary-only distribution (Docker)
+
+Build the translator as a **binary-only** bundle that other AOSP x86_64 products can
+drop in without compiling Berberis from source. The build runs in a reproducible
+Docker container whose build identity defaults to `digitalis-build`, and it reuses
+the host's existing `out/` so a normal developer never has to rebuild the tree.
+
+```bash
+# Build + package the prebuilt bundle (incremental; reuses out/).
+digitalis/docker/build-digitalis.sh
+
+# Verify the produced bundle (presence, ELF arch, native-bridge export, checksums).
+digitalis/scripts/verify-digitalis-prebuilts.sh
+```
+
+The output `digitalis/dist/digitalis-prebuilts/` holds the translator, proxy libs,
+ARM64 guest libs, and configs, plus a `digitalis-prebuilts.mk` a consumer product
+inherits to enable native bridge. See [`docker/README.md`](docker/README.md) for the
+build identity/uid parameters, host-path reuse details, and integration steps.
+
 ## Claude Code Integration
 
 This repo includes a `/dispatch` slash command and an automated dispatch script for Claude Code.
