@@ -1,4 +1,4 @@
-# Digitalis — Expanded Sample Suite & Heap-Lifetime Fixes (June 2026)
+# Digitalis — Sample-Suite Expansion & Heap-Lifetime Fixes (2026-06-20)
 
 This update grows the always-green sample suite to **104 ARM64-only modules**
 (from 85) by adding ~20 third-party native-library samples, and fixes a
@@ -58,7 +58,7 @@ AAR, not a translator bug; pinning to a consistent build (`4.1.7`) resolves it.
 
 ---
 
-# Digitalis — Prebuilt-App Stability & Translator Update (June 2026)
+# Digitalis — Prebuilt-App Stability & Translator Update (2026-06-15)
 
 We started a **prebuilt-APK stability campaign**: instead of testing only our own
 sample apps, Digitalis now installs, launches, and soaks **real ARM64-only top
