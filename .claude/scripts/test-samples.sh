@@ -223,6 +223,7 @@ declare -A MODULES=(
     ["hello-javacpp"]="com.example.hellodigitalis.hellojavacpp/com.example.hellojavacpp.MainActivity"
     ["hello-javet"]="com.example.hellodigitalis.hellojavet/com.example.hellojavet.MainActivity"
     ["hello-maplibre"]="com.example.hellodigitalis.hellomaplibre/com.example.hellomaplibre.MainActivity"
+    ["hello-snappy"]="com.example.hellodigitalis.hellosnappy/com.example.hellosnappy.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -269,7 +270,7 @@ MODULE_ORDER=(
     hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction
-    hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre
+    hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
     hello-reactnative hello-qt
 )
 
