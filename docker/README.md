@@ -18,7 +18,9 @@ A `digitalis/dist/digitalis-prebuilts/` tree (and a matching `.tar.gz`) holding 
 - `system/bin/arm64/{app_process64,linker64}`.
 - Configs: `system/etc/ld.config.arm64.txt`, `system/etc/init/berberis.rc`,
   `system/etc/binfmt_misc/arm64_{dyn,exe}`.
-- `digitalis-prebuilts.mk`, `MANIFEST.txt`, `SHA256SUMS`, this `README.md`.
+- `digitalis-prebuilts.mk`, `MANIFEST.txt`, `SHA256SUMS`, and a generated
+  `README.md` that documents how a consumer integrates the bundle into an x86_64
+  product source.
 
 **Scope:** the translator only. The consuming product supplies the x86_64 host
 system (and, for Vulkan, the GFXStream/ANGLE GPU stack).
