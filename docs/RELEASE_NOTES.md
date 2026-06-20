@@ -50,7 +50,7 @@ are green.
 
 New tooling under `digitalis/docker/` and `digitalis/scripts/` packages the
 translator as **binaries only** for other AOSP x86_64 products to drop in: the
-73-artifact distribution set defined in `berberis_config.mk`
+74-artifact distribution set defined in `berberis_config.mk`
 (`libberberis_arm64.so`, the proxy libraries, program runners, the ARM64 guest
 libraries, and configs), plus a generated consumer `.mk` and an integration README.
 A reproducible `digitalis-build` Docker container reuses the host `out/` tree (bind-

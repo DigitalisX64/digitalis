@@ -29,10 +29,10 @@ The decoder has no case for these — the instruction bits hit a high-level catc
 
 | Extension | ARM rev | Representative instructions | Where it lands |
 |---|---|---|---|
-| **SVE** (Scalable Vector Extension) | ARMv8.2 / v9 | All Z-register ops: predicated arithmetic, gather/scatter, FFR, reductions, permute (`SPLICE/COMPACT/REV/UZP/ZIP/TRN`), `PTRUE`, `WHILELT`, … | top-level `Undefined()` (`DecodeInstruction` default ~2009, `op0 ∈ {0001,0010,0011}`) |
-| **SVE2** | ARMv9 | Multiply, bitwise, bit-permute, FP, crypto-helper SVE2 instructions | ~2009 |
-| **SME** (Scalable Matrix Extension) | ARMv9.2 | `ZA` tile access, `MOVA`, `ADDHA/ADDVA`, `SMOPA/UMOPA/…`, SME load/store, streaming-mode entry/exit | ~2009 |
-| **FP8 / FAMINMAX / LUT** | ARMv9.x | FP8 convert/dot, `FAMAX/FAMIN`, `LUTI2/LUTI4` | ~3590 |
+| **SVE** (Scalable Vector Extension) | ARMv8.2 / v9 | All Z-register ops: predicated arithmetic, gather/scatter, FFR, reductions, permute (`SPLICE/COMPACT/REV/UZP/ZIP/TRN`), `PTRUE`, `WHILELT`, … | top-level `default: Undefined()` (`DecodeInstruction`, `decoder.h:1982`, `op0 ∈ {0001,0010,0011}`) |
+| **SVE2** | ARMv9 | Multiply, bitwise, bit-permute, FP, crypto-helper SVE2 instructions | same — `decoder.h:1982` |
+| **SME** (Scalable Matrix Extension) | ARMv9.2 | `ZA` tile access, `MOVA`, `ADDHA/ADDVA`, `SMOPA/UMOPA/…`, SME load/store, streaming-mode entry/exit | same — `decoder.h:1982` |
+| **FP8 / FAMINMAX / LUT** | ARMv9.x | FP8 convert/dot, `FAMAX/FAMIN`, `LUTI2/LUTI4` | no dedicated dispatch — these are SIMD&FP encodings (`op0 = x111`) that enter `DecodeSimdFp()` (`decoder.h:3045+`) and bottom out in one of its `Undefined()` paths |
 
 **Deliberately deferred:** SVE/SVE2/SME/FP8 are a from-scratch undertaking (new Z/P register state, a separate decode tree, gather/scatter) and **no Android device exposes them to user code**, so they remain documented gaps rather than committed work — per the project plan's beyond-manual tier.
 
@@ -59,7 +59,7 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 ### Scalar system
 | Family | Instructions | Notes |
 |---|---|---|
-| System registers (MRS/MSR) | Everything except `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0` | The JIT handles those five; all other reads/writes bail to the interpreter (mostly modelled as constants / no-ops). Low-value to promote — rarely on a hot path. |
+| System registers (MRS/MSR) | Everything outside the small JIT-modelled set | The JIT lowers `MRS` reads of `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0` and `MSR` writes of `NZCV`, `TPIDR_EL0` (`lite_translator.h:796`/`850`); every other read/write bails to the interpreter, which models a larger set (FPCR/FPSR, RNDR/RNDRRS, CNTFRQ/CNTVCT/CNTPCT_EL0, …) as constants / no-ops. Low-value to promote — rarely on a hot path. |
 | MTE data-processing & load/store | `IRG/GMI/SUBP/STG/LDG/…` | Decoded, but the JIT bails (`MteDataProc`/`MteLoadStore`); interpreter executes with no-MTE-backing semantics. Rarely hot. |
 
 ### Host-feature-gated fast paths
@@ -69,8 +69,9 @@ Where the host x86_64 CPU lacks a feature, the corresponding JIT path bails to t
 | All FP16 (`F16C` round-trip) | `F16C` |
 | `FMADD/FMSUB/FNMADD/FNMSUB` and FMA-based FP-vector MAC | `FMA` |
 | `CRC32CB/CH/CW/CX` (Castagnoli) | `SSE4.2` (`crc32`) — bails to the software-polynomial interpreter path when absent |
-| `.2D` signed arithmetic shifts (`SSHR/SSRA/SRSHR/SRSRA` scalar/`.2D`) | `AVX-512` (`VPSRAQ`) — bails on baseline x86_64 |
 | Any `FP128` / `ftype == 0b10` scalar FP | n/a (reserved/quad — not lowered) |
+
+The 64-bit-element signed arithmetic shifts (`SSHR/SSRA/SRSHR/SRSRA` scalar-D and `.2D`) are **no longer** gated on AVX-512 (`VPSRAQ`): the lite translator lowers them unconditionally via a 64-bit-GPR `Sarq` fallback (load each lane with `Movq`, `Sarq` by the shift count, write back), so they JIT on baseline x86_64. Only the reserved `.1D` form bails (`lite_translator.h:20446`).
 
 ### Why this matters
 

@@ -9,7 +9,7 @@ developer never has to rebuild the tree.
 ## What you get
 
 A `digitalis/dist/digitalis-prebuilts/` tree (and a matching `.tar.gz`) holding the
-73 canonical artifacts from `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64`:
+74 canonical artifacts from `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64`:
 
 - `system/lib64/libberberis_arm64.so` — the translator / native bridge.
 - `system/lib64/libberberis_exec_region.so` + 21 `libberberis_proxy_*.so` proxy libs.
