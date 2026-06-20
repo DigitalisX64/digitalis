@@ -224,6 +224,15 @@ declare -A MODULES=(
     ["hello-javet"]="com.example.hellodigitalis.hellojavet/com.example.hellojavet.MainActivity"
     ["hello-maplibre"]="com.example.hellodigitalis.hellomaplibre/com.example.hellomaplibre.MainActivity"
     ["hello-snappy"]="com.example.hellodigitalis.hellosnappy/com.example.hellosnappy.MainActivity"
+    ["hello-libyuv"]="com.example.hellodigitalis.hellolibyuv/com.example.hellolibyuv.MainActivity"
+    ["hello-secp256k1"]="com.example.hellodigitalis.hellosecp256k1/com.example.hellosecp256k1.MainActivity"
+    ["hello-filament"]="com.example.hellodigitalis.hellofilament/com.example.hellofilament.MainActivity"
+    ["hello-gltfio"]="com.example.hellodigitalis.hellogltfio/com.example.hellogltfio.MainActivity"
+    ["hello-openblas"]="com.example.hellodigitalis.helloopenblas/com.example.helloopenblas.MainActivity"
+    ["hello-fftw"]="com.example.hellodigitalis.hellofftw/com.example.hellofftw.MainActivity"
+    ["hello-gsl"]="com.example.hellodigitalis.hellogsl/com.example.hellogsl.MainActivity"
+    ["hello-leptonica"]="com.example.hellodigitalis.helloleptonica/com.example.helloleptonica.MainActivity"
+    ["hello-box2d"]="com.example.hellodigitalis.hellobox2d/com.example.hellobox2d.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -271,6 +280,7 @@ MODULE_ORDER=(
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction
     hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
+    hello-libyuv hello-secp256k1 hello-filament hello-gltfio hello-openblas hello-fftw hello-gsl hello-leptonica hello-box2d
     hello-reactnative hello-qt
 )
 
