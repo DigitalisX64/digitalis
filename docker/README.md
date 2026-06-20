@@ -86,6 +86,9 @@ makefile is well-formed, and the recorded `SHA256SUMS` still match. It prints th
   root-owned files in `out/`. If you build as a different user, the image is rebuilt
   with that uid automatically.
 - **No hardcoded paths:** nothing in these scripts or the generated bundle embeds an
-  absolute build path. Everything is derived from `git rev-parse --show-toplevel` at
-  runtime, so the tree works wherever it is checked out (as long as host and
-  container agree on the path, which the `-v "$REPO":"$REPO"` mount guarantees).
+  absolute build path. The tree root is taken from `ANDROID_BUILD_TOP` (the env var
+  AOSP's `lunch` exports) when set, otherwise found by walking up to the canonical
+  AOSP marker `build/make/core/envsetup.mk` (the same one envsetup's `gettop` uses);
+  the package step then re-verifies it against `gettop` after sourcing envsetup. So
+  the tree works wherever it is checked out, and host and container agree on the path
+  via the `-v "$REPO":"$REPO"` mount.

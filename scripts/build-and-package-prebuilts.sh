@@ -58,19 +58,26 @@ BUILD_DATE="${BUILD_DATE:-$(date +%Y-%m-%d)}"
 USERNAME="${USERNAME:-${BUILD_USERNAME:-digitalis-build}}"
 export BUILD_USERNAME="$USERNAME"
 
-# Find the AOSP tree root by walking up to the dir holding build/envsetup.sh.
-# (git rev-parse is wrong here: digitalis/ is its own repo project and the AOSP
-# root itself is not a git repo.)
+# Find the AOSP tree root. Prefer ANDROID_BUILD_TOP — the env var AOSP's `lunch`
+# (build/envsetup.sh) exports — so when the developer has already set up their build
+# environment we honor exactly that tree. Otherwise bootstrap by walking up to the
+# canonical AOSP TOPFILE (build/make/core/envsetup.mk, the same marker envsetup's
+# gettop uses). git rev-parse is unsuitable: the AOSP root is not a git repo and
+# digitalis/ is its own repo project. After sourcing envsetup below we re-verify
+# this against gettop and adopt envsetup's value authoritatively.
 find_aosp_root() {
+  if [ -n "${ANDROID_BUILD_TOP:-}" ] && [ -f "${ANDROID_BUILD_TOP}/build/make/core/envsetup.mk" ]; then
+    ( cd -- "$ANDROID_BUILD_TOP" && pwd ); return 0
+  fi
   local d; d="$(cd -- "$1" && pwd)"
   while [ "$d" != "/" ]; do
-    [ -f "$d/build/envsetup.sh" ] && { echo "$d"; return 0; }
+    [ -f "$d/build/make/core/envsetup.mk" ] && { echo "$d"; return 0; }
     d="$(dirname -- "$d")"
   done
   return 1
 }
 SELF_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO="$(find_aosp_root "$SELF_DIR")" || { echo "cannot locate AOSP root (no build/envsetup.sh above $SELF_DIR)" >&2; exit 1; }
+REPO="$(find_aosp_root "$SELF_DIR")" || { echo "cannot locate AOSP root (set ANDROID_BUILD_TOP, or run from inside a tree with build/make/core/envsetup.mk)" >&2; exit 1; }
 cd "$REPO"
 
 CONFIG_MK="frameworks/libs/binary_translation/berberis_config.mk"
@@ -96,6 +103,17 @@ echo ">>> repo=$REPO product=$TARGET_PRODUCT release=$TARGET_RELEASE variant=$TA
 echo ">>> BUILD_USERNAME=$USERNAME"
 # shellcheck disable=SC1091
 source build/envsetup.sh >/dev/null
+
+# Now that envsetup is sourced, verify the tree root against its own authority
+# (ANDROID_BUILD_TOP if lunch'd, else the gettop function envsetup defines) and
+# adopt that value if it differs from the bootstrap detection.
+env_top="${ANDROID_BUILD_TOP:-$(gettop 2>/dev/null || true)}"
+if [ -n "$env_top" ] && [ "$env_top" != "$REPO" ]; then
+  echo ">>> adopting envsetup tree root: $env_top (bootstrap had $REPO)" >&2
+  REPO="$env_top"
+  cd "$REPO"
+fi
+echo ">>> tree root: $REPO"
 
 # ---- build the distribution modules ----------------------------------------
 if [ "$COLLECT_ONLY" -eq 0 ]; then
