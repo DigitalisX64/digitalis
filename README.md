@@ -24,6 +24,13 @@ lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug
 m
 ```
 
+Or use the lunch shortcut (it sources `build/envsetup.sh` for you if needed), then `m`:
+
+```
+source digitalis/scripts/lunch-digitalis.sh
+m
+```
+
 ## Run
 
 ```
