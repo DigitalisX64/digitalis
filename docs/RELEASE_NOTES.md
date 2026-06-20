@@ -1,3 +1,63 @@
+# Digitalis — Expanded Sample Suite & Heap-Lifetime Fixes (June 2026)
+
+This update grows the always-green sample suite to **104 ARM64-only modules**
+(from 85) by adding ~20 third-party native-library samples, and fixes a
+heap-lifetime translator bug and an intermittent heavy-allocation crash that
+those new samples surfaced.
+
+## New samples (sample suite: 85 → 104)
+
+~20 new third-party native-library samples now run under translation on the
+x86_64 emulator as part of the always-green suite:
+
+- **Databases / storage:** Couchbase Lite (`hello-couchbase`), Tencent WCDB
+  (`hello-wcdb`).
+- **Crypto:** libsodium (`hello-libsodium`), Argon2 (`hello-argon2`), Themis
+  (`hello-themis`).
+- **On-device ML / speech / vision:** ONNX Runtime (`hello-onnxruntime`),
+  MediaPipe (`hello-mediapipe`), Vosk offline speech (`hello-vosk`).
+- **Graphics / maps / imaging:** MapLibre vector maps (`hello-maplibre`), Rive
+  vector animation (`hello-rive`), libavif (`hello-avif`).
+- **Media / RTC:** WebRTC (`hello-webrtc`).
+- **Networking / VPN / P2P:** WireGuard (`hello-wireguard`), libtorrent4j
+  (`hello-libtorrent4j`).
+- **JS engines:** Duktape (`hello-duktape`), J2V8 (`hello-j2v8`), Javet V8
+  (`hello-javet`).
+- **JNI bridges:** JavaCPP (`hello-javacpp`), JNA (`hello-jna`), Facebook fbjni
+  (`hello-fbjni`).
+
+## Fixes
+
+**MapLibre — `wstring_convert: from_bytes error` at native init
+(`hello-maplibre`).** MapLibre's `FileSource::getAPIBaseUrl` frees its base-URL
+`std::string` at one call site and re-reads it at the next — a use-after-free
+that is benign on real hardware (the allocator does not recycle the chunk in
+that window). Under translation the guest heap (host Scudo) is shared with the
+translator's own allocations: once the freed chunk's Scudo region empties the
+pages are released, and the lite/heavy translator's bump arena (`MmapPool`)
+immediately re-grabs that address and zero-initialises an IR node over the
+still-referenced bytes, so the guest converts zeros and throws. Root-caused with
+an in-process `mprotect` memory watchpoint that caught the free and the arena's
+overwrite. Fixed with a bounded **free-quarantine** in the `--wrap=free` proxy
+(`libberberis_proxy_libc`): the most recent guest frees are deferred through a
+fixed ring so a just-freed chunk and its region stay live across the window,
+bringing free timing closer to hardware so benign guest use-after-frees stay
+benign.
+
+**Heavy-allocation crash — GWP-ASan guard-page underflow in the free probe.**
+That same `--wrap=free` proxy peeks the 16 bytes before each freed pointer to
+detect non-heap (Qt shared-null) frees. GWP-ASan (the platform sampling
+allocator) flushes ~1/1000 allocations against a guard page, so the peek read
+that guard page and intermittently crashed any heavy-allocation app. The probe
+now skips the peek for page-boundary-adjacent pointers (always a real
+GWP-ASan-guarded heap pointer, never a static shared-null).
+
+**Javet V8 (`hello-javet`).** A `SIGABRT` at V8 startup was a compile-time
+embedder/V8 sandbox build-config mismatch in the `javet-v8-android:5.0.8` arm64
+AAR, not a translator bug; pinning to a consistent build (`4.1.7`) resolves it.
+
+---
+
 # Digitalis — Prebuilt-App Stability & Translator Update (June 2026)
 
 We started a **prebuilt-APK stability campaign**: instead of testing only our own
