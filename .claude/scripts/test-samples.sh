@@ -234,6 +234,10 @@ declare -A MODULES=(
     ["hello-leptonica"]="com.example.hellodigitalis.helloleptonica/com.example.helloleptonica.MainActivity"
     ["hello-box2d"]="com.example.hellodigitalis.hellobox2d/com.example.hellobox2d.MainActivity"
     ["hello-filament-render"]="com.example.hellodigitalis.hellofilamentrender/com.example.hellofilamentrender.MainActivity"
+    ["hello-lua"]="com.example.hellodigitalis.hellolua/com.example.hellolua.MainActivity"
+    ["hello-mupdf"]="com.example.hellodigitalis.hellomupdf/com.example.hellomupdf.MainActivity"
+    ["hello-sentry-ndk"]="com.example.hellodigitalis.hellosentryndk/com.example.hellosentryndk.MainActivity"
+    ["hello-bullet"]="com.example.hellodigitalis.hellobullet/com.example.hellobullet.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -283,6 +287,7 @@ MODULE_ORDER=(
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction
     hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
     hello-libyuv hello-secp256k1 hello-filament hello-gltfio hello-openblas hello-fftw hello-gsl hello-leptonica hello-box2d hello-filament-render
+    hello-lua hello-mupdf hello-sentry-ndk hello-bullet
     hello-reactnative hello-qt
 )
 
