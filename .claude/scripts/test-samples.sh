@@ -200,6 +200,7 @@ declare -A MODULES=(
     ["hello-bf16"]="com.example.hellodigitalis.hellobf16/com.example.hellobf16.MainActivity"
     ["hello-barriers"]="com.example.hellodigitalis.hellobarriers/com.example.hellobarriers.MainActivity"
     ["hello-neon"]="com.example.hellodigitalis.helloneon/com.example.helloneon.MainActivity"
+    ["hello-glyphblit"]="com.example.hellodigitalis.helloglyphblit/com.example.helloglyphblit.MainActivity"
     ["hello-sha-crypto"]="com.example.hellodigitalis.hellosha/com.example.hellosha.MainActivity"
     ["hello-ld-interleave"]="com.example.hellodigitalis.helloldinterleave/com.example.helloldinterleave.MainActivity"
     ["hello-superpack-regress"]="com.example.hellodigitalis.hellosuperpackregress/com.example.hellosuperpackregress.MainActivity"
@@ -290,7 +291,7 @@ MODULE_ORDER=(
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
     hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-tesseract hello-oboe hello-ffmpeg-kit hello-ncnn hello-lynx hello-aaudio hello-binder-ndk hello-jnihelp hello-webview-functor hello-nnapi
-    hello-fp-vector hello-neon hello-sha-crypto hello-ld-interleave hello-superpack-regress
+    hello-fp-vector hello-neon hello-glyphblit hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
     hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp
     hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
