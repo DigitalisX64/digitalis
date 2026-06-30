@@ -1,3 +1,66 @@
+# Digitalis — Crisp Web Text in Chromium Browsers (2026-06-30)
+
+This update fixes garbled, sheared web-page text in Chromium-based browsers under
+translation — the long-standing glyph-rendering issue. Helium (Chromium 149) now
+renders article text **fully crisp**, matching the interpreter. The root cause was
+two single-region lite-JIT codegen bugs in the ARM64 vector fixed-point conversion
+instructions, both found with exhaustive host JIT-vs-interpreter differentials.
+
+## Fixed: garbled web-text glyphs in Chromium / Skia
+
+Chromium rasterizes glyph coordinates and coverage through the ARM64 vector
+fixed-point conversions SCVTF / UCVTF / FCVTZS / FCVTZU (the `AdvSimdShiftByImm`
+opcodes `0b11100` / `0b11111`). Two lite-JIT codegen bugs in those handlers
+corrupted the converted values, so the renderer's web-content text — but not the
+host-rendered browser chrome — came out sheared and fragmented, with some glyphs
+missing entirely:
+
+- **Only lane 0 was converted.** The handlers emitted scalar codegen (convert
+  `Vn` lane 0, zero the rest of `Vd`) that the vector `.2S` / `.4S` / `.2D` forms
+  also reached, so half — or three-quarters — of every converted vector came out
+  zero. That sheared the rasterized text.
+- **In-place conversions clobbered their source.** The per-lane fix initially
+  zeroed `Vd` up front, which destroys `Vn` for the very common in-place forms
+  (`ucvtf v0, v0` / `fcvtzs v0, v0`, which Skia applies to coordinate vectors),
+  zeroing the result and blanking specific diagonal-stroke glyphs (w, v, k, A, T).
+  The shipped fix writes each lane before reading the next and zeroes only the
+  unused high bytes after the loop, so `rd == rn` is safe.
+
+A latent interpreter undefined-behaviour bug in the same instructions — the `.2D`
+maximum-fbits encoding computed its scale as `1u << 64` — was fixed in passing (it
+now uses `ldexp`).
+
+A prior investigation had concluded the corruption was an unreproducible
+"cross-region / region-structural" effect. It was not: both bugs are ordinary
+single-instruction miscompiles. An exhaustive `AdvSimdShiftByImm`
+JIT-vs-interpreter differential — every encoding × input × `{rd != rn, rd == rn}`,
+102,528 cases — pinned the lane-drop, and a high-register-pressure region fuzzer
+surfaced the in-place clobber. Both differentials ship as permanent regression
+tests. All three translation tiers are correct: the interpreter already looped
+every lane (only the UB scale was fixed there), the lite JIT is fixed here, and the
+heavy optimizer bails these instructions to the now-correct lite tier.
+
+## Housekeeping: region-marker hygiene
+
+Several Digitalis additions to shared, upstream-derived Berberis files were not
+wrapped in the `// region digitalis` markers that keep the Digitalis delta
+auditable and the upstream riscv64 build byte-for-byte unchanged. Authorship was
+reconciled with `git blame` and the missing markers were added — comment-only, no
+code changes — across the `kernel_api` guest `/proc/cpuinfo` path, the fork-safe
+code pool, the JNI host-VM helper, the native-bridge namespace logging, and the
+`arm64_to_x86_64` backend build modules.
+
+## Verification
+
+The Arm64 host test suite (**2534** tests), the rendering screenshot suite
+(**14/14**), and both `libberberis_arm64` and `libberberis_riscv64` build clean.
+On the emulator, Helium renders article text fully crisp, and the prebuilt-APK
+gate is green except for two documented non-translator issues (a WhatsApp
+app-level EULA lifecycle exception and a flaky Kuaishou media-player
+missing-`libgui.so` gap).
+
+---
+
 # Digitalis — On-Screen Rendering, New Samples & Binary Distribution (2026-06-21)
 
 This update adds a guest `libgui.so` stub that unblocks Google Filament's
