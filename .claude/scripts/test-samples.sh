@@ -174,6 +174,8 @@ declare -A MODULES=(
     ["hello-ffmpeg-kit"]="com.example.hellodigitalis.helloffmpegkit/com.example.helloffmpegkit.MainActivity"
     ["hello-ncnn"]="com.example.hellodigitalis.helloncnn/com.example.helloncnn.MainActivity"
     ["hello-aes"]="com.example.hellodigitalis.helloaes/com.example.helloaes.MainActivity"
+    ["hello-fdsweep"]="com.example.hellodigitalis.hellofdsweep/com.example.hellofdsweep.MainActivity"
+    ["hello-vktexture"]="com.example.hellodigitalis.hellovktexture/com.example.hellovktexture.MainActivity"
     ["hello-cntvct"]="com.example.hellodigitalis.hellocntvct/com.example.hellocntvct.MainActivity"
     ["hello-cronet"]="com.example.hellodigitalis.hellocronet/com.example.hellocronet.MainActivity"
     ["hello-ldxp"]="com.example.hellodigitalis.helloldxp/com.example.helloldxp.MainActivity"
@@ -290,10 +292,10 @@ MODULE_ORDER=(
     native-midi sensor-graph camera-basic camera-texture-view
     teapots-classic teapots-more teapots-textured endless-tunnel
     sanitizers unit-test vectorization orderfile
-    hello-gles1 hello-gles3 hello-msaa hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-tesseract hello-oboe hello-ffmpeg-kit hello-ncnn hello-lynx hello-aaudio hello-binder-ndk hello-jnihelp hello-webview-functor hello-nnapi
+    hello-gles1 hello-gles3 hello-msaa hello-vktexture hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-tesseract hello-oboe hello-ffmpeg-kit hello-ncnn hello-lynx hello-aaudio hello-binder-ndk hello-jnihelp hello-webview-functor hello-nnapi
     hello-fp-vector hello-neon hello-glyphblit hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
-    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp
+    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp hello-fdsweep
     hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
     hello-libyuv hello-secp256k1 hello-filament hello-gltfio hello-openblas hello-fftw hello-gsl hello-leptonica hello-box2d hello-filament-render
     hello-lua hello-mupdf hello-sentry-ndk hello-bullet
@@ -393,8 +395,11 @@ for mod in "${MODULE_ORDER[@]}"; do
     # Check process alive
     pid=$(adb shell pidof "$pkg" 2>/dev/null | tr -d '\r' || true)
 
-    # Check for fatal signals
-    crash_lines=$(adb logcat -d 2>/dev/null | grep -c "SIGSEGV\|SIGABRT\|SIGILL\|Fatal signal" || true)
+    # Check for fatal signals. Exclude the benign "libsigchain: Setting SIGSEGV
+    # to SIG_DFL" line: the translator's fork-child signal reset emits it in any
+    # app that forks (e.g. hello-fdsweep's pre-exec sweep child) while the app
+    # stays alive — matching its "SIGSEGV" substring is a false positive.
+    crash_lines=$(adb logcat -d 2>/dev/null | grep -v "libsigchain: Setting SIGSEGV to SIG_DFL" | grep -c "SIGSEGV\|SIGABRT\|SIGILL\|Fatal signal" || true)
 
     # Collect JIT breaks (|| true: grep returns 1 when a module emits no JIT-break
     # lines, e.g. pure-Java/EGL samples, which under set -o pipefail would abort).
@@ -414,7 +419,7 @@ for mod in "${MODULE_ORDER[@]}"; do
         crash=$((crash + 1))
         # Show crash signal (|| true: grep returns 1 if no match, which under
         # set -o pipefail would abort the script when logcat got pruned).
-        adb logcat -d 2>/dev/null | { grep -E "Fatal signal|SIGSEGV|SIGABRT|SIGILL" || true; } | tail -1 | sed 's/^/    /'
+        adb logcat -d 2>/dev/null | grep -v "libsigchain: Setting SIGSEGV to SIG_DFL" | { grep -E "Fatal signal|SIGSEGV|SIGABRT|SIGILL" || true; } | tail -1 | sed 's/^/    /'
         # Show JIT breaks
         if [[ -n "$jit_breaks" ]]; then
             echo "$jit_breaks" | sed 's/^/    /'

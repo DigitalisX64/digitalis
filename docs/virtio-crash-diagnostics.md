@@ -53,8 +53,39 @@ expose exactly this: if your `memory map (N entries)` is similarly ~5000 while
 `vm.max_map_count` is ~65530, the cause is one of the other two rows — report
 `RLIMIT_AS` and the overcommit fields so the real fix can be chosen.
 
+### Resolved: the reference crash was EBADF, not ENOMEM
+
+A second capture (all three ceilings verified innocent: `RLIMIT_AS` unlimited,
+`vm.overcommit_memory=1`, ~4.7k VMAs vs 65530) pinned the real cause. The
+crashing tombstones were **single-threaded fork children of the browser**
+(`pid == tid`, main thread named `Chrome_IOThread`): Chromium forks a child to
+spawn a subprocess, and the child closes every fd it doesn't recognize before
+exec (`CloseSuperfluousFds`). The translator's internal memfds carried no fdsan
+owner tag, so the guest close/close_range emulation raw-closed them; the
+child's subsequent `rt_sigaction` reset needed a fresh translation-cache child
+table, and the `mmap` on the swept memfd died with `EBADF`. The tombstone
+giveaway: the crashers' `open files:` list had lost every `(unowned)` fd while
+every fdsan-owned fd survived, and a control tombstone of the same app still
+held `fd N: /memfd:child (deleted)`.
+
+**Fix (translator):** Berberis now tags its internal fds as host-owned via
+fdsan so guest fd sweeps skip them, and `MmapImplOrDie` aborts with the mmap
+arguments and `strerror(errno)` instead of the opaque
+`CHECK failed: 0xff..ff != 0xff..ff` — a future capture names the failing
+call directly. The `hello-fdsweep` sample reproduces this scenario in the
+suite.
+
+Two residual notes for the reference virtio build: (1) the GPU problem below
+still applies; (2) its dmesg shows `binfmt_misc` registration failing at boot
+(`/proc/sys/fs/binfmt_misc/register: No such file or directory`) — the kernel
+lacks binfmt_misc, so while APKs run fine through the NativeBridge, a
+fork+exec of a standalone **arm64 ELF binary** cannot work; enable
+`CONFIG_BINFMT_MISC` (and mount it) if spawned arm64 helpers are needed.
+
 A **different** abort message means a **different** bug — in that case the
 tombstone backtrace + logcat localize it; add the translator trace (step 5).
+With the fix above, the abort line itself now includes `errno`; report it
+verbatim.
 
 ## Two independent problems
 
