@@ -121,7 +121,14 @@ for apk in "${APKS[@]}"; do
         sleep "${WATCH_SECONDS}"
 
         round_pid="$(adb shell pidof "${pkg}" 2>/dev/null | tr -d '\r')"
-        round_log="$(adb logcat -d 2>/dev/null | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b" | head -3 || true)"
+        # Also catch a crashed child/renderer process: a Chromium-based app runs
+        # the page in a sandboxed_process whose own crash handler intercepts the
+        # signal, so debuggerd's "Fatal signal" may not fire and the main pid
+        # stays alive — the reliable marker is ActivityManager scheduling a
+        # restart of the *crashed* sandboxed service (an "Aw, Snap!" renderer
+        # death the main-process check would otherwise miss). Generic over any
+        # Chromium-based prebuilt; no app names hard-coded.
+        round_log="$(adb logcat -d 2>/dev/null | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b|Scheduling restart of crashed service.*SandboxedProcessService" | head -3 || true)"
 
         if [ -n "${round_log}" ]; then
             round_fail_reason="round ${round_idx}: ${round_log:0:120}"

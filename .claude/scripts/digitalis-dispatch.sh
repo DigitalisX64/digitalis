@@ -40,6 +40,13 @@ RETRY_WAIT=${DIGITALIS_RETRY_WAIT:-300}
 MAX_BUDGET=${DIGITALIS_MAX_BUDGET:-40}
 MAX_CYCLES=${DIGITALIS_MAX_CYCLES:-200}
 MODEL=${DIGITALIS_MODEL:-opus}
+# Reboot the emulator every N cycles (0 disables). A very long run drifts into
+# the emulator-exhaustion flake (SystemUI ANR, low MemAvailable, spurious
+# SEGV_ACCERR on prebuilt apps) that a reboot clears; automating it keeps long
+# runs from silently producing false crash/regression signals. Also reboots on
+# a detected unhealthy emulator (no device, or MemAvailable below the floor).
+REBOOT_EVERY_CYCLES=${DIGITALIS_REBOOT_EVERY:-25}
+REBOOT_MEM_FLOOR_KB=${DIGITALIS_REBOOT_MEM_FLOOR_KB:-250000}
 
 mkdir -p "$LOG_DIR"
 
@@ -508,6 +515,7 @@ main() {
 
     while (( cycle < MAX_CYCLES )); do
         cycle=$((cycle + 1))
+        maybe_reboot_emulator "$cycle"
         local current
         current=$(find_latest_handoff)
         local next=$((current + 1))
@@ -569,8 +577,12 @@ main() {
         # something else entirely. The PRIMARY-TASK precedence in
         # build_prompt now keys off the handoff's STATUS line instead.
 
-        # Check for completion
-        if grep -q "STATUS: COMPLETE" "$output_file" 2>/dev/null; then
+        # Check for completion. Match ONLY a trailing "## STATUS: COMPLETE"
+        # status header (the documented convention), not any mid-body prose
+        # occurrence of the phrase — a forward-looking "when done, write
+        # STATUS: COMPLETE" instruction once tripped the naive substring grep
+        # and falsely ended the loop.
+        if grep -qE "^## STATUS: COMPLETE" "$output_file" 2>/dev/null; then
             echo ""
             echo "[$(date '+%H:%M:%S')] ★ Subagent reports STATUS: COMPLETE"
             echo ""
@@ -605,5 +617,58 @@ EOF
     echo "[$(date '+%H:%M:%S')] ERROR: Reached max cycles (${MAX_CYCLES}) without completion."
     exit 1
 }
+
+# region digitalis
+# Reboot the emulator on a fixed cadence or when it looks unhealthy, then wait
+# for boot and re-establish root/remount. Preserves the deployed translator
+# (the emulator runs -writable-system, so /system survives a reboot within the
+# session). No-op when no emulator is connected (host-only runs).
+reboot_emulator() {
+    echo "[$(date '+%H:%M:%S')] ⟳ Rebooting emulator (clearing exhaustion/ANR state)..."
+    adb reboot >/dev/null 2>&1 || return 0
+    sleep 5
+    local n=0
+    while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ] && [ $n -lt 180 ]; do
+        sleep 2; n=$((n + 1))
+    done
+    if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ]; then
+        echo "[$(date '+%H:%M:%S')] ⚠ Emulator did not finish booting after reboot; continuing anyway."
+        return 0
+    fi
+    adb root >/dev/null 2>&1 || true
+    sleep 2
+    adb wait-for-device >/dev/null 2>&1 || true
+    adb remount >/dev/null 2>&1 || true
+    # Let the framework settle so the first cycle's device gate isn't racy.
+    local m=0
+    while ! adb shell pm list packages >/dev/null 2>&1 && [ $m -lt 30 ]; do sleep 2; m=$((m + 1)); done
+    echo "[$(date '+%H:%M:%S')] ⟳ Emulator back up (root+remount done)."
+}
+
+maybe_reboot_emulator() {
+    local cycle=$1
+    # Skip if no emulator is connected (host-only work).
+    adb devices 2>/dev/null | grep -qE "emulator|device$" || return 0
+
+    # Health-triggered reboot: device unreachable for shell, or memory floored.
+    local avail
+    avail=$(adb shell cat /proc/meminfo 2>/dev/null | awk '/MemAvailable/{print $2}')
+    if [ -z "$avail" ]; then
+        echo "[$(date '+%H:%M:%S')] Emulator shell unreachable — health reboot."
+        reboot_emulator; return 0
+    fi
+    if [ "$avail" -lt "$REBOOT_MEM_FLOOR_KB" ]; then
+        echo "[$(date '+%H:%M:%S')] MemAvailable ${avail}kB < floor ${REBOOT_MEM_FLOOR_KB}kB — health reboot."
+        reboot_emulator; return 0
+    fi
+
+    # Cadence reboot: every REBOOT_EVERY_CYCLES cycles (not on the first).
+    if [ "$REBOOT_EVERY_CYCLES" -gt 0 ] && [ "$cycle" -gt 1 ] \
+       && [ $(( (cycle - 1) % REBOOT_EVERY_CYCLES )) -eq 0 ]; then
+        echo "[$(date '+%H:%M:%S')] Cadence reboot (cycle ${cycle}, every ${REBOOT_EVERY_CYCLES})."
+        reboot_emulator
+    fi
+}
+# endregion
 
 main "$@"
