@@ -309,6 +309,31 @@ m berberis_arm64_host_tests
 out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_tests --gtest_filter='Arm64*'
 ```
 
+### MANDATORY verification for any translator change (do NOT skip — these caught real ship-blockers)
+
+1. **Never trust a stale test binary.** ALWAYS rebuild the test binary in the
+   SAME `m` as the libs, then run it: `m libberberis_arm64 libberberis_riscv64
+   berberis_arm64_host_tests` and only then run
+   `berberis_arm64_host_tests`. Running the host tests WITHOUT rebuilding them
+   reports a stale PASS — a broken commit (unused-function build error, or a
+   miscompile) once landed this way with a fake "PASS". If the build fails
+   (e.g. `-Werror,-Wunused-function` on a helper whose test you forgot), FIX
+   it before committing; a green host run on a stale binary is not a pass.
+2. **Deploy to BOTH /system paths with an md5 check.** `adb push` the fresh
+   lib to `/system/lib64/libberberis_arm64.so` AND
+   `/system/lib64/arm64/libberberis_arm64.so`, then `adb shell md5sum` both and
+   confirm they equal the built file's md5. A running process keeps the old
+   inode mapped, so a stale deploy silently tests old code (a fix looked
+   "not working" this way).
+3. **Heavy-optimizer changes MUST pass the renderer gate.** A
+   `heavy_optimizer/` miscompile can pass every per-op host exec test and the
+   main-process prebuilt gate yet DETERMINISTICALLY crash a Chromium *renderer*
+   (an "Aw, Snap!" — the browser process stays alive so the old gate missed
+   it). After deploying, run `digitalis/scripts/test-renderer-heavy.sh` (heavy
+   tier on, md5-verified deploy, Helium ×3). A renderer crash = a real
+   regression: **bail the offending op to lite** (correct-but-slow) rather than
+   ship the miscompile, and add a region-level test before re-enabling it.
+
 ## Handoff Document Format
 
 Your output handoff document MUST follow this exact structure:
