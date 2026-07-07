@@ -125,6 +125,21 @@ Still **heavy-tier-only** (the heavy frontend bails; lite/interpreter handle the
 | Atomics | LSE: `CAS*`/`CASP*`/`SWP*`/`LDADD*`/`LDSET*`/… | Heavy bails; lite/interpreter handle them. |
 | Crypto | `AES*`, `SHA1*`/`SHA256*`/`SHA512*`, `SM3*`/`SM4*`, `EOR3`/`BCAX`/`RAX1`/`XAR` | Heavy bails (these are interpreter-only even at the lite tier — see §3). |
 
+### 3a.1 Permanently-deferred `.2D` / 64-bit-lane forms (hardware-conditional, not translator gaps)
+
+A distinct sub-class of the heavy bails above is **not** "not-yet-implemented" — it is **blocked by the host x86_64 baseline lacking AVX-512** (and, for a few, SSE4.1/4.2). SSE2-era x86 has no 64-bit-lane packed integer compare, min/max, or multiply, and no packed FP64↔int64 convert; those ops only exist in AVX-512F-VL / AVX-512DQ (or SSE4.1/4.2 for the equality/greater-than compares). The Digitalis host emulator baseline does not enable AVX-512, so these `.2D` (and the equivalent scalar-`D`/`.1D` packed) forms **bail to the lite tier / interpreter, which handle them correctly via 64-bit-GPR fallbacks — correct, only without the second-gear speedup.** This is a *hardware-conditional performance* characteristic, **not a translator gap and not a bug**, and it is expected to remain a heavy bail on any AVX-512-less host. A future sweep should **not** re-chase these as if they were unimplemented gaps.
+
+| `.2D` / 64-bit-lane family | Missing host op | Where it bails |
+|---|---|---|
+| Integer compare `CMEQ`/`CMGT`/`CMGE`/`CMHI`/`CMHS`/`CMTST` `.2D` | `PCMPEQQ` (SSE4.1) / `PCMPGTQ` (SSE4.2) for the 64-bit lane | `AdvSimdThreeSame` compare handlers (`frontend.h:~3006`, `~4404`, `~4455`) |
+| Signed/unsigned min/max `SMAX`/`SMIN`/`UMAX`/`UMIN` and pairwise `SMAXP`/`SMINP`/`UMAXP`/`UMINP` `.2D` | `PMAXSQ`/`PMINSQ`/`PMAXUQ`/`PMINUQ` (AVX-512F-VL) | min/max + pairwise handlers (`frontend.h:~3715`, `~4155`, `~4304`) |
+| Vector multiply `MUL` `.2D` | `VPMULLQ` (AVX-512DQ) — no SSE packed 64-bit multiply | `AdvSimdThreeSame` MUL (`frontend.h:~3387`) |
+| Packed FP64↔int64 vector converts `FCVTZS`/`FCVTZU`/`SCVTF`/`UCVTF` `.2D` | `CVTTPD2QQ`/`CVTUQQ2PD` (AVX-512DQ) — no SSE packed FP64↔int64 convert (the FP32 `.2S`/`.4S` forms use `CVTTPS2DQ`); the scalar-`D` forms *are* heavy-lowered via the GP recipe | vector two-reg-misc convert (`frontend.h:~6545`) |
+| Saturating add/sub `SQADD`/`UQADD`/`SQSUB`/`UQSUB` `.2D`; mixed-sign `SUQADD`/`USQADD` `.1D`/`.2D` | No SSE saturating 64-bit-lane add/sub; 65-bit saturation logic (see §3 — interpreter-only even at lite) | saturating handlers; `SUQADD`/`USQADD .1D/.2D` interpreter-only |
+| Narrowing `SQXTN`/`SQXTUN`/`SQXTN2`/`SQXTUN2` from `.2D` (`.2S`←`.2D` manual 64-bit saturation) | No SSE 64→32 saturating pack | narrow handler (`frontend.h:~4564`) |
+
+The signed arithmetic-shift `.2D` forms (`SSHR`/`SSRA`/`SRSHR`/`SRSRA`) are **not** in this list: the lite tier already lowers them unconditionally via a 64-bit-GPR `Sarq` fallback (see §3), so they do not depend on AVX-512 `VPSRAQ`.
+
 ---
 
 ## 4. Practical impact
@@ -139,7 +154,7 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 | **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
 | **Heavy-tier-only ops (§3a: `RBIT`, `DUP`-element, LSE atomics, …)** | Any app with a hot loop over one of these | **None–Low** — correct via lite/interpreter; the only cost is that such a hot region can't gear up to the heavy optimizer. |
 
-The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure). The remaining heavy-tier gaps (§3a) are purely a second-gear performance consideration, not a correctness gap.
+The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure). The remaining heavy-tier gaps (§3a) are purely a second-gear performance consideration, not a correctness gap. Within §3a, the `.2D` / 64-bit-lane forms of §3a.1 are **hardware-conditional** — they bail because the host emulator baseline lacks AVX-512 (a few need SSE4.1/4.2), not because the translator is missing an implementation; they are correct-and-slow via the lite/interpreter 64-bit-GPR fallbacks and are expected to stay heavy bails on any AVX-512-less host.
 
 ---
 
