@@ -48,6 +48,16 @@ MODEL=${DIGITALIS_MODEL:-opus}
 REBOOT_EVERY_CYCLES=${DIGITALIS_REBOOT_EVERY:-25}
 REBOOT_MEM_FLOOR_KB=${DIGITALIS_REBOOT_MEM_FLOOR_KB:-250000}
 
+# Auto-relaunch a DEAD emulator process. `adb reboot` only restarts the guest OS
+# inside a still-running qemu; if the qemu process itself exits (host OOM-kill,
+# crash, manual pkill), every subsequent device gate silently fails and the loop
+# stalls with no recovery path. When these paths are set and the qemu process is
+# gone, the loop relaunches the emulator via the same recipe used to start it.
+# Leave EMULATOR_BIN pointing at a non-existent path to disable (host-only runs).
+EMULATOR_BIN=${DIGITALIS_EMULATOR_BIN:-${WORK_DIR}/prebuilts/android-emulator/linux-x86_64/emulator}
+EMULATOR_PRODUCT_OUT=${DIGITALIS_PRODUCT_OUT:-${WORK_DIR}/out/target/product/emu64xa}
+EMULATOR_LOG=${DIGITALIS_EMULATOR_LOG:-${HOME}/emu_digitalis.log}
+
 mkdir -p "$LOG_DIR"
 
 # ──────────────────────────────────────────────
@@ -644,13 +654,69 @@ EOF
 }
 
 # region digitalis
+# True iff a qemu-system-x86_64 PROCESS is running. Uses `ps -eo comm` (exact
+# process name), NOT `pgrep -f qemu-system-x86_64` — the latter self-matches this
+# script's own command line and would report a phantom emulator.
+qemu_alive() {
+    ps -eo comm 2>/dev/null | grep -q '^qemu-system-x86'
+}
+
+# Relaunch the emulator from a dead process. Mirrors the proven interactive
+# recipe (background + absolute paths + $HOME log + ANDROID_PRODUCT_OUT for the
+# build-tree image), then waits for adb device + boot and re-establishes
+# root/remount. Returns non-zero only if the emulator binary is absent.
+launch_emulator() {
+    if [ ! -x "$EMULATOR_BIN" ]; then
+        echo "[$(date '+%H:%M:%S')] ⚠ No emulator binary at ${EMULATOR_BIN}; cannot auto-relaunch."
+        return 1
+    fi
+    echo "[$(date '+%H:%M:%S')] ⟳ qemu process is dead — relaunching emulator..."
+    ANDROID_BUILD_TOP="$WORK_DIR" \
+    ANDROID_PRODUCT_OUT="$EMULATOR_PRODUCT_OUT" \
+    ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-${HOME}/Android/Sdk}" \
+    DISPLAY="${DISPLAY:-:0}" \
+    nohup "$EMULATOR_BIN" -memory 4096 -writable-system -qemu -cpu host \
+        > "$EMULATOR_LOG" 2>&1 &
+    disown 2>/dev/null || true
+    local n=0
+    while ! adb devices 2>/dev/null | grep -qE "emulator-[0-9]+[[:space:]]+device" && [ $n -lt 90 ]; do
+        sleep 2; n=$((n + 1))
+    done
+    adb wait-for-device >/dev/null 2>&1 || true
+    n=0
+    while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ] && [ $n -lt 180 ]; do
+        sleep 2; n=$((n + 1))
+    done
+    adb root >/dev/null 2>&1 || true
+    sleep 2
+    adb wait-for-device >/dev/null 2>&1 || true
+    adb remount >/dev/null 2>&1 || true
+    local m=0
+    while ! adb shell pm list packages >/dev/null 2>&1 && [ $m -lt 30 ]; do sleep 2; m=$((m + 1)); done
+    if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+        echo "[$(date '+%H:%M:%S')] ⟳ Emulator relaunched and booted (root+remount done)."
+    else
+        echo "[$(date '+%H:%M:%S')] ⚠ Emulator relaunch did not confirm boot; continuing anyway."
+    fi
+}
+
 # Reboot the emulator on a fixed cadence or when it looks unhealthy, then wait
 # for boot and re-establish root/remount. Preserves the deployed translator
 # (the emulator runs -writable-system, so /system survives a reboot within the
 # session). No-op when no emulator is connected (host-only runs).
 reboot_emulator() {
+    # If the qemu process is gone, a guest-level `adb reboot` is impossible —
+    # relaunch the process instead.
+    if ! qemu_alive; then
+        launch_emulator
+        return 0
+    fi
     echo "[$(date '+%H:%M:%S')] ⟳ Rebooting emulator (clearing exhaustion/ANR state)..."
-    adb reboot >/dev/null 2>&1 || return 0
+    if ! adb reboot >/dev/null 2>&1; then
+        # adb reboot failed — the process likely just died. Try a full relaunch.
+        launch_emulator
+        return 0
+    fi
     sleep 5
     local n=0
     while [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" != "1" ] && [ $n -lt 180 ]; do
@@ -672,8 +738,16 @@ reboot_emulator() {
 
 maybe_reboot_emulator() {
     local cycle=$1
-    # Skip if no emulator is connected (host-only work).
-    adb devices 2>/dev/null | grep -qE "emulator|device$" || return 0
+    # No adb device? Distinguish "host-only run (no emulator by design)" from
+    # "the emulator process died mid-run." If we can auto-launch and the qemu
+    # process is gone, relaunch it; otherwise treat it as a host-only run.
+    if ! adb devices 2>/dev/null | grep -qE "emulator|device$"; then
+        if [ -x "$EMULATOR_BIN" ] && ! qemu_alive; then
+            echo "[$(date '+%H:%M:%S')] No adb device and qemu process is dead — relaunching emulator."
+            launch_emulator
+        fi
+        return 0
+    fi
 
     # Health-triggered reboot: device unreachable for shell, or memory floored.
     local avail
