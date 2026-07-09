@@ -1,3 +1,119 @@
+# Digitalis — App-Namespace Isolation Fix, Heavy-Tier NEON/FP Coverage & Golden-Checked ML Samples (2026-07-10)
+
+This update fixes a namespace-isolation bug that crashed a major Unity game
+under translation, broadens the heavy (second-gear) optimizer across a large
+swath of NEON/FP instructions so real apps' hot loops stay on the optimizing
+path, and hardens the machine-learning and framework samples into real workloads
+that assert an exact result — including ARM64 TensorFlow Lite, ONNX Runtime and
+PyTorch Mobile now running real fixed-weight inference on the x86_64 emulator,
+each verified **bit-exact** against a golden.
+
+## Fixed: app-namespace symbol interposition (Honkai: Star Rail)
+
+Isolated app classloader namespaces were given the guest `/system/lib64/arm64`
+search path, which — combined with the guest linker config's single flat
+`default` namespace — let an app load its own copies of non-public system
+libraries (`libutils`, `libc++`, `libandroid_runtime`, …) directly into its own
+scope. An app library's strong replaceable symbol then interposed for them —
+notably Unity's `GLOBAL operator new` in `libunity.so` — so a system library
+calling `operator new` was routed into the app's not-yet-initialized allocator
+and crashed. Honkai: Star Rail hit this as a SIGILL on libunity's encrypted
+lazy-init path.
+
+Real Android keeps app namespaces isolated: an app reaches the NDK public
+libraries through the framework's `linkNamespaces()` link to the system
+namespace (shared instances that keep their own symbol scope), never by loading
+system libraries into its own namespace. Digitalis now does the same — it no
+longer appends the guest system path to app namespaces for the arm64 guest,
+while proxy/public libs (`libandroid.so`, `libvulkan.so`, `libEGL.so`, …) still
+resolve through the existing link to the guest `default` namespace. The riscv64
+guest keeps its prior behaviour behind the guest-arch guard. Honkai: Star Rail
+now reaches its login screen instead of crashing.
+
+## Heavy optimizer: broad second-gear NEON/FP coverage
+
+The heavy (second-gear) optimizer gained a large batch of instruction lowerings
+so that hot regions in real apps engage the optimizing tier instead of silently
+bailing to the single-pass lite tier. A bail is correct-but-slow, and for common
+NEON/FP instructions it kept whole loops on the slow path. Newly lowered in the
+second gear:
+
+- **FP ↔ integer converts**: scalar and vector SCVTF / UCVTF / FCVTZS / FCVTZU,
+  the round-mode variants FCVTNS/NU/PS/PU/MS/MU and ties-away FCVTAS / FCVTAU,
+  across S and D forms.
+- **FP rounding & math**: FRINTN/M/P/Z/X/I/A (scalar and vector), FSQRT,
+  FMLA / FMLS, FMULX, and indexed (by-element) FMUL / FMLA / FMLS.
+- **Integer NEON**: SMAX/SMIN/UMAX/UMIN and pairwise SMAXP/SMINP/UMAXP/UMINP +
+  ADDP, halving add/sub (S/U/R HADD/HSUB), abs-diff/accumulate
+  (SABD/UABD/SABA/UABA), widening multiply/accumulate
+  (SMULL/UMULL/SMLAL/UMLAL/SMLSL/UMLSL, including by-element), BIC/ORN/CMTST.
+- **Saturating & polynomial**: SQDMULH/SQRDMULH, SQDMULL/SQDMLAL/SQDMLSL,
+  SQABS/SQNEG, SQXTN/UQXTN/SQXTUN, SUQADD/USQADD, and PMUL/PMULL/PMULL2.
+- **Shifts & pair loads**: byte-lane SHL/SSHR/USHR (.8B/.16B), and D/S-pair
+  LDP/STP — the last two now handled in both the lite and heavy tiers.
+
+A region-level heavy-vs-interpreter differential fuzzer was added to gate the
+expansion, and a backend codegen bug (a stale forwarded guest-context vreg
+surviving a redefine) was fixed along the way.
+
+## Real ML inference, verified bit-exact
+
+Three ML samples previously only loaded their runtime and round-tripped a tensor
+through the JNI bridge. They now build and run a real graph and check the output:
+
+- **hello-tflite** runs a Conv2D(3×3) → ReLU → Flatten → Dense graph — exercising
+  the TFLite convolution dot-product and fully-connected NEON kernels — and
+  asserts the output `[27, 8, 13]`, replacing the trivial `out = 3·in` placeholder.
+- **hello-onnxruntime** runs an ONNX `Gemm → ReLU → Gemm` graph via
+  `OrtSession.run` and asserts `[-7, 16, -1]`.
+- **hello-pytorch** runs a lite-interpreter TorchScript module
+  (`Linear → ReLU → Linear`) via `Module.forward` and asserts `[-7, 16, -1]`.
+
+Each model uses small-integer weights and inputs, so the float32 arithmetic is
+exact and order-independent — the result is bit-identical on the host (where the
+golden is computed) and on the device (where the translated kernels run). A
+translator miscompile in the conv/GEMM/ReLU path now changes the numbers and
+trips the golden instead of passing silently; on the emulator all three run with
+`maxErr = 0.0`.
+
+## Deeper self-checks across the suite
+
+Several other samples gained deterministic golden assertions in place of
+load-only smoke tests:
+
+- **hello-nnapi** builds, compiles and executes a real two-op NNAPI graph
+  (MUL then ADD with constant operands) and verifies the output tensor.
+- **hello-fbjni** drives fbjni's *hybrid dispatch* end to end — a C++
+  `HybridClass` peer created via `makeCxxInstance`, called through the generated
+  native-method thunk (the machinery React Native and PyTorch Mobile rely on) —
+  and asserts the returned value, not just that the library loaded.
+- **hello-aaudio / hello-oboe / native-audio** checksum a deterministic
+  synthesized PCM/DSP waveform and assert a golden, exercising the audio
+  generation path.
+- **hello-binder-ndk** marshals a typed payload through `AIBinder_transact` and
+  asserts the round-tripped value.
+
+## Reproducible model toolchain
+
+A new `sample/hellodigitalis/tools/` toolchain generates the ML models offline:
+
+- `setup-ml-generators.sh` bootstraps CPython 3.10 and three isolated,
+  version-pinned virtualenvs matched to the on-device runtime AAR versions
+  (torch 1.13.1, onnx 1.16.2 + onnxruntime 1.22.0, tensorflow-cpu 2.16.1).
+- Per-sample `gen_model.py` scripts build each fixed-weight network, print the
+  golden, and write the model straight into the sample's `assets/`.
+- `README-ml-models.md` documents the full install → generate → verify workflow.
+
+## Verification
+
+Both `libberberis_arm64` and `libberberis_riscv64` build clean; the Arm64 host
+test suite passes 3027/3027 (the heavy-tier lowerings ship with per-instruction
+and region-level differential tests); and the sample suite is 130 PASS / 0 CRASH.
+On the emulator, Honkai: Star Rail no longer hits the libunity operator-new
+SIGILL, and the deepened ML/framework samples pass the on-device status gate and
+are perturbation-proven (a wrong golden fails with the real translated value
+shown).
+
 # Digitalis — Crisp Web Text in Chromium Browsers (2026-06-30)
 
 This update fixes garbled, sheared web-page text in Chromium-based browsers under
