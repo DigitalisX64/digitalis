@@ -319,6 +319,8 @@ The ARM64 three-operand `ADD` becomes two x86_64 instructions because x86_64's `
 
 ### Going Deeper
 
+*This subsection is bit-level reference; skip it on a first read — the mental model above is all you need for the rest of the document.*
+
 #### ARM64 Encoding Anatomy
 
 Consider `ADD X1, X2, X3` — a 64-bit register add. It assembles to the single 32-bit word **`0x8B030041`** (stored little-endian in the `.text` section as the bytes `41 00 03 8B`). Laid out most-significant-bit first, with the decoder's fields underneath:
@@ -714,6 +716,8 @@ graph LR
 4. (For SUB/CMP: an additional **XORL** inverts the carry flag, since ARM64 uses an inverted borrow convention compared to x86_64)
 
 This is implemented in `EmitStoreArmNZCV()` in `lite_translator.h`.
+
+*(The trace below is bit-level reference — skip it on a first read; the summary above is all later sections rely on.)*
 
 **A concrete trace.** Take `SUBS X0, X5, X6` with `X5 = 10`, `X6 = 10` (mapped
 to `X5→RSI`, `X6→RDI`, `X0→RBX`). ARM64 defines the result flags as N=0, Z=1
