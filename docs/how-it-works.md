@@ -65,11 +65,25 @@ Digitalis solves this by translating ARM64 machine code to x86_64 machine code a
 
 Digitalis is built on top of [Berberis](https://android.googlesource.com/platform/frameworks/libs/binary_translation/), Google's open-source binary translator in the Android Open Source Project (AOSP). Berberis was originally designed for RISC-V-to-x86_64 translation and is already integrated with Android's NativeBridge system — the framework that Android uses to run apps built for a different CPU architecture. Digitalis adds the entire ARM64 backend: an ARM64 instruction decoder, a JIT compiler that generates x86_64 machine code, an interpreter for instructions the JIT can't handle, syscall translation, and proxy libraries that bridge ARM64 API calls to host libraries.
 
-The project includes 116 ARM64-only sample app modules under `sample/hellodigitalis/` — ports from Google's [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, LDXP/STXP, CNTVCT, sigaction/signal delivery, CRC32/CRC32C, SHA/AES crypto, and more), UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (ijkplayer, libVLC, FFmpegKit, Oboe, Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit, OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract, SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet, and the AndroidX native libraries sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, and Ink) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, NNAPI, and WebView hardware-accel support. All 116 run successfully on an x86_64 emulator through Digitalis translation (114 via `test-samples.sh`; `hello-qt` and `hello-realm` build standalone with pinned toolchains and verify by launch).
+The project includes 131 ARM64-only sample app modules under `sample/hellodigitalis/` — ports from Google's [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, LDXP/STXP, CNTVCT, sigaction/signal delivery, CRC32/CRC32C, SHA/AES crypto, and more), UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (ijkplayer, libVLC, FFmpegKit, Oboe, Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit, OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract, SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet, and the AndroidX native libraries sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, and Ink) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, NNAPI, and WebView hardware-accel support. All 131 run successfully on an x86_64 emulator through Digitalis translation (130 via `test-samples.sh`; `hello-qt` and `hello-realm` build standalone with pinned toolchains and verify by launch).
 
 ---
 
 ## 2. What Binary Translation Is
+
+### Vocabulary you'll need
+
+This guide leans on a handful of terms from CPU and systems programming. If you build web or mobile apps but have never worked with assembly, skim these once — everything else builds on them.
+
+- **Guest vs. host.** The *guest* is the world being emulated — here, ARM64: the app's code, its registers, its memory. The *host* is the real machine doing the work — here, x86_64. Think of a guest staying in someone's home: the guest (ARM64 app) is visiting; the host (x86_64 emulator) provides the environment.
+- **Register.** A tiny, ultra-fast storage slot built into the CPU that holds one number. All arithmetic happens on registers (more in [Section 3](#3-arm64-and-x86_64--two-different-worlds)).
+- **Program counter (PC).** A special register holding the address of the instruction the CPU is about to run. "Advancing the PC" means moving to the next instruction.
+- **Instruction / encoding.** One CPU operation (add, load, jump). Its *encoding* is the exact pattern of bytes that represents it — different on ARM64 vs. x86_64 even for the same operation.
+- **Immediate.** A constant value baked directly into an instruction, e.g. the `5` in "add 5 to this register."
+- **SIMD (NEON).** "Single Instruction, Multiple Data" — one instruction that does the same math on a whole vector of numbers at once (used heavily in graphics, audio, and ML). ARM64's SIMD unit is called **NEON**.
+- **Syscall (system call).** How a program asks the OS kernel to do something it can't do itself — open a file, allocate memory, start a thread.
+- **ABI / calling convention.** The contract for how functions pass arguments and return values (which register holds argument #1, and so on). ARM64 and x86_64 use different contracts.
+- **JIT.** "Just-in-time" translation: converting code to native machine code *as the program runs*, then caching the result — contrasted with AOT (ahead-of-time) below.
 
 Think of binary translation as a simultaneous interpreter — not for spoken languages, but for CPU instruction sets. ARM64 and x86_64 are two different "languages" that processors speak. Both can do the same things (arithmetic, memory access, branching, function calls), but they encode these operations completely differently. Binary translation reads instructions in one language and produces equivalent instructions in the other.
 
@@ -79,7 +93,7 @@ There are two main approaches to binary translation:
 
 **Ahead-of-time (AOT)** translation converts an entire program before it runs — like translating a book from one language to another. You do the work once and get a fully translated binary. The downside is that you need the complete program upfront, and the translation step can be slow.
 
-**Just-in-time (JIT)** translation converts code as the program runs — like a live interpreter at a conference. When the program reaches a new block of code, the translator converts it on the spot, caches the result, and runs it. The first execution of each block is slower (you pay the translation cost), but every subsequent execution runs the cached native code at near-native speed.
+**Just-in-time (JIT)** translation converts code as the program runs — like a live interpreter at a conference. When the program reaches a new block of code, the translator converts it on the spot, caches the result, and runs it. The translator works on one chunk of straight-line code at a time (Digitalis calls such a chunk a **region** — roughly, a run of instructions with no branch into the middle). It translates the whole region at once, caches it, and reuses the cache on every later visit. The first execution of each region is slower (you pay the translation cost), but every subsequent execution runs the cached native code at near-native speed. The cache is like a phrasebook you build as you go: the first time you hear a sentence you work out the translation and write it down; every time after, you just read your note instead of translating again.
 
 Digitalis uses JIT translation with an interpreter fallback.
 
@@ -91,6 +105,8 @@ An interpreter is the simplest way to run foreign code. It works in a loop:
 2. **Decode** it — figure out what operation it represents
 3. **Execute** it — simulate the effect on a virtual set of ARM64 registers and memory
 4. **Advance** to the next instruction
+
+In everyday terms: the interpreter is like cooking from a foreign-language recipe by translating it one line at a time, in your head, as you go — correct, works for any recipe, but slow. The JIT is like translating the whole recipe onto a card once, then cooking straight from the card every time after.
 
 This is straightforward to implement and can handle any instruction, but it's slow. Every single ARM64 instruction requires many x86_64 instructions of overhead just for the fetch-decode-execute loop itself. Typical overhead is 10-50x compared to native execution.
 
@@ -117,7 +133,7 @@ graph TD
     C --> D["Cache translated code"]
     D --> E["Execute at near-native speed"]
     B -->|"Unsupported instruction hit"| F["Mark address for interpreter"]
-    F --> G["Interpreter simulates instruction<br/><i>syscalls, complex SIMD</i>"]
+    F --> G["Interpreter simulates instruction<br/><i>complex SIMD, crypto</i>"]
     E --> H["Update guest state"]
     G --> H
     H --> I["Dispatch loop picks next PC"]
@@ -223,7 +239,7 @@ The register count mismatch (31 vs 16 for GP, 32 vs 16 for SIMD) is one of the b
 
 ### Common Operations: Same Intent, Different Encoding
 
-Here are some common operations and how each architecture expresses them. This shows what the translator must convert:
+Here are some common operations and how each architecture expresses them. (Reminder: an **immediate** is a constant value written directly into the instruction — the `#42` below — as opposed to a value read from a register.) This shows what the translator must convert:
 
 | Operation | ARM64 Assembly | x86_64 Assembly | Notes |
 |-----------|---------------|-----------------|-------|
@@ -354,7 +370,10 @@ Both architectures allow accessing different portions of the same register:
 ```
 X0  [████████████████████████████████████████████████████████████████]  64 bits
 W0  [                                ████████████████████████████████]  lower 32 bits
-    (writing W0 zero-extends to X0 — upper 32 bits become zero)
+    (writing W0 zero-extends to X0 — upper 32 bits become zero;
+     that is: writing the lower 32-bit half automatically fills the
+     upper 32 bits with zeros — a rule the translator must reproduce
+     exactly, or later 64-bit math would see leftover garbage on top)
 ```
 
 **x86_64 registers:**
@@ -402,6 +421,8 @@ However, ARM64 requires **aligned memory access** for certain instructions (e.g.
 ## 4. The Big Picture
 
 This diagram shows the complete path from an ARM64 app launching to code executing on the host CPU. Each box is a subsystem covered in detail later in this document.
+
+**How to read this diagram:** don't try to absorb every box. Each grey group is one subsystem (App Launch, Dispatch Loop, JIT Path, and so on), and each gets its own section later. Follow the arrows top-to-bottom: an app launches, Android hands it to Digitalis, and the *dispatch loop* becomes the heartbeat that decides — for each chunk of code — whether to run translated x86_64, interpret it, make a system call, or call a host library. Read the plain-English walkthrough just below first; come back to the diagram once the pieces have names.
 
 ```mermaid
 graph TD
@@ -478,7 +499,7 @@ graph TD
     subgraph ProxyLib["Proxy Libraries — API Calls"]
         GUEST_API["Guest calls API<br/><i>e.g. vkCreateInstance()</i>"]
         PROXY["Proxy library<br/><i>libberberis_proxy_libvulkan.so</i>"]
-        MARSHAL["Marshal ARM64 args → x86_64"]
+        MARSHAL["Convert ARM64 args → x86_64"]
         HOST_LIB["Host library"]
         GPU["GFXStream VkDecoder → Host GPU"]
         GUEST_API --> PROXY --> MARSHAL --> HOST_LIB --> GPU
@@ -508,7 +529,7 @@ graph TD
 
 When an ARM64 app launches on an x86_64 emulator, Android's runtime (ART) detects that the app's native libraries are ARM64-only. It loads Digitalis through the NativeBridge interface (`libberberis_arm64.so`). Digitalis's guest loader creates an ARM64 environment inside the x86_64 process: it loads the ARM64 dynamic linker, libc, and the app's shared libraries into a guest address space using a minimal ELF loader called TinyLoader.
 
-When Java code calls a native method, the NativeBridge creates a trampoline that converts the call from x86_64 to ARM64 calling conventions and enters the guest execution loop. The dispatch loop (`ExecuteGuest()`) reads the current program counter from the guest CPU state, looks up the address in the translation cache, and jumps to whatever code pointer it finds there — translated native code, an interpreter trampoline, or a not-yet-translated handler.
+When Java code calls a native method, the NativeBridge creates a *trampoline* — a small piece of generated glue code that catches a call on one side of the guest/host boundary and re-launches it on the other, converting the calling convention in between. The trampoline converts the call from x86_64 to ARM64 calling conventions and enters the guest execution loop. The dispatch loop (`ExecuteGuest()`) reads the current program counter from the guest CPU state, looks up the address in the translation cache, and jumps to whatever code pointer it finds there — translated native code, an interpreter trampoline, or a not-yet-translated handler.
 
 For untranslated code, the JIT compiler (Lite Translator) kicks in: it decodes ARM64 instructions, maps guest registers to host registers, and emits x86_64 machine code. The translated code is installed in the cache for reuse. For instructions the JIT can't handle (syscalls, complex SIMD), the interpreter takes over, simulating each instruction by directly updating the guest CPU state.
 
@@ -518,7 +539,7 @@ When guest code calls Android APIs (Vulkan, libc, etc.), proxy libraries interce
 
 Three key data structures appear throughout the system:
 
-**`ThreadState`** holds the complete guest CPU state: 32 general-purpose registers (X0-X30 plus SP), 32 SIMD registers (V0-V31), condition flags (NZCV), the program counter, thread-local storage, and a pending signal status flag. Every instruction — whether JIT-compiled or interpreted — reads from and writes to this structure.
+**`ThreadState`** holds the complete guest CPU state: 32 general-purpose registers (X0-X30 plus SP), 32 SIMD registers (V0-V31), condition flags (NZCV), the program counter, thread-local storage (per-thread private data — the ARM64 `TPIDR_EL0` register points to it), and a pending signal status flag. Every instruction — whether JIT-compiled or interpreted — reads from and writes to this structure.
 
 **`GuestAddr` / `ToHostAddr()` / `ToGuestAddr()`** are type-safety wrappers for address handling. `GuestAddr` is a `typedef` for `uintptr_t`, and the conversion functions are identity `reinterpret_cast`s — guest and host addresses are numerically the same. They exist to prevent accidentally mixing address types in C++ code, not to perform address translation.
 
@@ -528,7 +549,9 @@ Three key data structures appear throughout the system:
 
 ## 5. How an ARM64 App Starts
 
-This section covers **Path A** — the NativeBridge-driven launch flow used when an ARM64 APK is started by the Android framework. ARM64 guest code can also enter Digitalis a second way (kernel-level `binfmt_misc` dispatch of an ARM64 ELF invoked via `execve()`); see [§17](#17-binfmt_misc-running-guest-binaries-directly) for that path.
+Before any translation can happen, the ARM64 app has to be *loaded and started* inside an x86_64 process that was never designed to run it. This section walks through exactly how that bootstrap happens.
+
+This is **Path A** — the NativeBridge-driven launch flow used when an ARM64 APK is started by the Android framework. ARM64 guest code can also enter Digitalis a second way (kernel-level `binfmt_misc` dispatch of an ARM64 ELF invoked via `execve()`); see [§17](#17-binfmt_misc-running-guest-binaries-directly) for that path.
 
 ```mermaid
 sequenceDiagram
@@ -588,7 +611,7 @@ The `GuestLoader` class manages the guest runtime. Its `LinkerCallbacks` struct 
 
 ## 6. Three Execution Tiers: Lite JIT, Heavy Optimizer, and Interpreter
 
-When Digitalis encounters ARM64 code, it has two ways to run it.
+Digitalis has three ways to run ARM64 code, but they come in two families. The first family **runs the code by compiling it** — turning ARM64 into native x86_64 machine code (this is the JIT, and it has two gears: "lite" and "heavy"). The second family **runs the code by simulating it** one instruction at a time (this is the interpreter). This section introduces the two families first, because that split is the core idea; the heavy optimizer — the JIT's faster second gear — is covered at the end of the section once the basics are in place.
 
 The **JIT compiler** (called the "Lite Translator") takes a block of ARM64 instructions and compiles them into native x86_64 machine code. This compiled code runs directly on the host CPU at near-native speed. About 98% of instructions in a typical app go through this path.
 
@@ -642,7 +665,7 @@ A region has one entry point (the starting PC) and continues until the compiler 
 - **Unconditional branch or call**: the region ends because the target may not be compiled yet. (Conditional forward branches do *not* end the region — the JIT emits the taken-path exit and continues compiling the fall-through path.)
 - **Backward conditional branch**: ends the region to prevent infinite loops without signal checks
 - **Register pressure**: the register allocator is running low on available host registers (see `IsGpRegPoolLow()`)
-- **End of basic block**: any other termination condition
+- **Any other stopping point**: any remaining condition that ends a straight-line run of instructions
 
 Note: **SVC (system call)** ends the region but is *not* a bail. The lite translator lowers it inline (`LiteTranslator::Svc()` in `lite_translator.cc`): it flushes mapped guest registers back to `ThreadState`, mirrors the host MXCSR into the guest FPSR, emits a direct call to `RunGuestSyscall`, and direct-dispatches to `pc+4`. A syscall therefore stays inside JIT-compiled code and never round-trips through the interpreter. (Earlier versions *did* bail SVC via `success_ = false`; that marked the SVC's own PC `kInterpreted` so every syscall bounced through the interpreter — see [§14](#14-syscall-emulation).)
 
@@ -793,7 +816,7 @@ The problem: ARM64 has 31 general-purpose registers (X0-X30) plus SP. x86_64 has
 | RBP | Pointer to ThreadState struct |
 | RSP | Host stack pointer |
 
-That leaves **13 registers** available for mapping guest registers. The JIT must map the most-used ARM64 registers to these 13 host registers. When it needs more, it **spills** — saves a register's value to the `ThreadState` struct in memory, frees the slot, and reloads the value later when needed. Spilling is correct but slower.
+That leaves **13 registers** available for mapping guest registers. The JIT must map the most-used ARM64 registers to these 13 host registers. When it needs more, it **spills** — saves a register's value to the `ThreadState` struct in memory, frees the slot, and reloads the value later when needed. Think of the 13 registers as a small desk with room for 13 sheets of paper: when you need a 14th, you file one back in the drawer (memory), work on the new sheet, and pull the filed one back out when you need it again. Filing and retrieving costs time, so the translator avoids it when it can. Spilling is correct but slower.
 
 The register pool, in allocation order: **RBX, RCX, RSI, RDI, R8-R15, RDX**. The order is intentional: RCX is placed early so it gets permanent mappings (it needs save/restore around variable-shift instructions since x86_64 requires the shift count in CL). RDX is placed last so it's typically used as a temporary (easier to save/restore around DIV/MUL, which use RDX:RAX).
 
@@ -826,6 +849,8 @@ graph LR
     C --> D["LiteTranslator<br/>(JIT path)"]
     C --> E["Interpreter<br/>(fallback path)"]
 ```
+
+In plain terms: one decoder does the bit-parsing work, and a thin "player" layer hands the decoded result to whichever engine is running — the JIT or the interpreter. (The `Decoder<…>` notation below is C++ template syntax for wiring those two choices together at compile time; the shape of the names matters more than the syntax.)
 
 The architecture uses C++ templates to avoid runtime dispatch overhead. `Decoder<InsnConsumer>` is parameterized by its handler type. For JIT compilation, the chain is `Decoder<SemanticsPlayer<LiteTranslator>>`. For interpretation, it's `Decoder<SemanticsPlayer<Interpreter>>`. The SemanticsPlayer translates raw decoded fields into semantic operations (like "add these two registers" or "load from this address"), handling ARM64 quirks along the way.
 
@@ -896,6 +921,8 @@ graph TD
 
 The only explicit check in the loop is for `kEntryStop`, which breaks the loop when the guest thread exits. All other routing happens through the indirect call to the code pointer.
 
+Each guest address moves through a small life cycle in the cache. The diagram below reads left-to-right in time: an address starts *not translated*, gets compiled to native code the first time it runs, and — if it turns out to be a hot loop — is later re-compiled by the faster "heavy" optimizer.
+
 ```mermaid
 stateDiagram-v2
     [*] --> NotTranslated
@@ -922,7 +949,7 @@ The `TranslationCache` class uses **lock-free reads** (atomic pointer loads) for
 5. Call `berberis_RunGeneratedCode(state, AsHostCode(code))`
 6. Go to step 1
 
-**Host-code entry point addresses** are trampolines that handle special dispatch cases:
+**Host-code entry point addresses** are the internal "signpost" values the cache stores instead of real code when an address isn't ready to run yet — you can skim the table; only `kEntryStop` (thread is exiting) and `kEntryNotTranslated` (needs compiling) matter for the big picture:
 
 | Entry Point | Purpose |
 |-------------|---------|
@@ -957,7 +984,7 @@ Each entry also carries an `invocation_counter` — the hotness counter the two-
 
 ## 10. Signal Handling and Fault Recovery
 
-When translated code crashes — accesses invalid memory, divides by zero, or hits an illegal instruction — the host OS delivers a signal (SIGSEGV, SIGFPE, SIGILL). But the crash happened in *guest* code, so the signal must be delivered to the *guest's* signal handler, not the host's. This is one of the trickiest parts of binary translation.
+When translated code crashes — accesses invalid memory, divides by zero, or hits an illegal instruction — the host OS delivers a **signal** — an asynchronous "something went wrong" notification from the kernel (SIGSEGV = bad memory access, SIGFPE = bad arithmetic like divide-by-zero, SIGILL = illegal instruction). But the crash happened in *guest* code, so the signal must be delivered to the *guest's* signal handler, not the host's. This is one of the trickiest parts of binary translation.
 
 ### The Problem
 
@@ -1115,9 +1142,9 @@ The assembler handles all the complexity of x86_64 encoding: REX prefixes for 64
 
 ### Executable Memory: From Bytes to Runnable Code
 
-Generated bytes aren't useful unless the CPU can execute them. Modern operating systems enforce **W^X** ("write XOR execute") — memory pages can be either writable or executable, but not both simultaneously. This is a security feature that prevents code injection attacks.
+Generated bytes aren't useful unless the CPU can execute them — but for security, modern operating systems refuse to let the same memory be *written to* and *executed at* the same time. This rule is called **W^X** ("write XOR execute"): a memory page can be writable or executable, never both at once. It blocks a classic attack where malware writes code into memory and immediately runs it — and it equally blocks a well-behaved JIT, which needs to do exactly that.
 
-The **`exec_region/`** directory solves this with a **dual-mapping** technique: it creates a `memfd` (anonymous file in memory) and maps it into the process **twice** at different addresses — once as read+write (for the JIT to write generated code) and once as read+execute (for the CPU to run it). Both mappings see the same underlying memory, so writes through the R+W view are immediately visible through the R+X view.
+The **`exec_region/`** directory solves this with a **dual-mapping** technique: it creates a **`memfd`** — a block of memory the OS treats like a file, so it can be mapped into the process at more than one address at once — and maps it into the process **twice** at different addresses — once as read+write (for the JIT to write generated code) and once as read+execute (for the CPU to run it). Both mappings see the same underlying memory, so writes through the R+W view are immediately visible through the R+X view.
 
 ```mermaid
 graph TD
@@ -1147,7 +1174,7 @@ graph TD
 2. The assembler records this location and the label it refers to
 3. When the target label is later bound to a specific position, the assembler goes back and overwrites the placeholder with the correct relative offset
 
-This is called **backpatching** and is standard in assemblers and compilers.
+This is called **backpatching** and is standard in assemblers and compilers — the same idea as writing "see page ___" in a draft and filling in the blank once you know the final page number.
 
 ### The Code Generation Pipeline
 
@@ -1193,6 +1220,8 @@ Not all ARM64 instructions have hardware equivalents on x86_64. For example, the
 The **`intrinsics/`** directory (`arm64_to_all/`, `riscv64_to_all/`) provides architecture-specific intrinsic function implementations. For the ARM64 backend, this directory is currently minimal — most direct mappings live in the JIT itself.
 
 ### SSE and AVX Support
+
+**In short:** ARM64's NEON vectors are 128 bits wide, and x86_64's baseline SSE2 registers are also 128 bits wide, so there's a clean size match — Digitalis emits only SSE-family instructions today and leaves the wider AVX registers unused. The rest of this subsection is reference detail; skim or skip it on a first read.
 
 The x86_64 instruction set has several generations of SIMD extensions: SSE, SSE2, SSE3, SSSE3, SSE4.1, SSE4.2 (all using 128-bit XMM registers), AVX/AVX2 (256-bit YMM registers), and AVX-512 (512-bit ZMM registers). Digitalis uses these selectively:
 
@@ -1303,7 +1332,7 @@ graph TD
     G -->|"No"| H["Return entry point address"]
 ```
 
-TinyLoader is deliberately simple — it loads ELF segments into memory and can look up symbols by name, but it doesn't process relocations (patching code references to point to the right addresses). That's the job of the guest dynamic linker (`linker64`), which TinyLoader loads first.
+TinyLoader is deliberately simple — it loads ELF segments into memory and can look up symbols by name, but it doesn't process **relocations**. A shared library is compiled without knowing what address it will be loaded at, so it contains a list of spots ("relocations") that must be patched with real addresses once the load address is known — that patching is the job of the guest dynamic linker (`linker64`), which TinyLoader loads first.
 
 ### The Guest Address Space
 
@@ -1349,7 +1378,9 @@ When ARM64 guest code calls `vkCreateInstance()` (Vulkan) or `malloc()` (libc), 
 
 A **calling convention** (or ABI — Application Binary Interface) is a contract between caller and callee: where arguments go, where the return value comes back, and which registers the callee may modify. ARM64 and x86_64 have completely different contracts, so every call that crosses the translation boundary needs argument conversion.
 
-**Proxy libraries** bridge this gap. The word "proxy" here means the same thing as in everyday language: something that acts on behalf of something else. A proxy library **stands in for** a real system library. When ARM64 guest code calls `malloc()`, it doesn't call the real host `libc.so` (which is x86_64 and expects x86_64 arguments). Instead, it calls Digitalis's proxy `libberberis_proxy_libc.so`, which translates the call and forwards it to the real library.
+The most important thing to understand here is this: the translated app is ARM64 code, but every *library* it calls — Vulkan, libc, the graphics stack — exists on the device only as native x86_64 code. Something has to sit on the boundary and make an ARM64-style call look like an x86_64-style call. That something is a **proxy library**.
+
+**Proxy libraries** bridge this gap. The word "proxy" here means the same thing as in everyday language: something that acts on behalf of something else. A proxy library **stands in for** a real system library. When ARM64 guest code calls `malloc()`, it doesn't call the real host `libc.so` (which is x86_64 and expects x86_64 arguments). Instead, it calls Digitalis's proxy `libberberis_proxy_libc.so`, which translates the call and forwards it to the real library. A proxy is like a travel plug adapter: the electricity (your data) is the same on both sides, but the *shape of the plug* (which register holds each argument) differs between countries (architectures). The adapter reshapes the connection so a device from one country works in another's socket, without changing the electricity itself.
 
 For each Android system library, Digitalis provides a proxy — a host-architecture `.so` file named `libberberis_proxy_libXXX.so`. Here's how a single function call flows through the proxy:
 
@@ -1403,7 +1434,11 @@ From the guest code's perspective, it's calling a normal ARM64 library. The prox
 
 ### Going Deeper
 
+**Marshalling** means repackaging data so the other side can read it: moving arguments into the registers the target ABI uses, and — when a struct's fields are laid out differently on the two architectures — copying it field-by-field into the target layout. (For most Vulkan structs the layout is identical, so "marshalling" is just the register shuffle plus copying pointed-to data into host-visible memory.)
+
 **Argument marshalling** uses `GuestCall` and `VirtualGuestCallFrame` to convert between ABIs. For host-to-guest callbacks (e.g., when a Vulkan debug callback needs to call back into ARM64 code), `GuestCall::RunResInt64()` enters guest execution with the converted arguments.
+
+(**JNI**, the Java Native Interface, is how Java/Kotlin code calls into native `.so` code and back. A **`JNIEnv*`** is a per-thread handle the native code uses to call Java — it is itself a table of function pointers, which is why it can't simply be passed from guest to host unchanged: the guest's pointers point at *guest* ARM64 code.)
 
 **JNI trampolines** are a special case. `WrapGuestJNIFunction()` creates host-callable wrappers for guest JNI native methods. It uses **"shorty" strings** — Dalvik type abbreviation strings like `"VJI"` for `void(long, int)` — to know how many arguments to convert and what types they are (where `V`=void, `J`=long, `I`=int, `L`=object). The wrapper converts JNIEnv pointers, jobject handles, and primitive arguments between host and guest representations.
 
@@ -1465,7 +1500,10 @@ Whether a given symbol can be covered comes down to its signature:
   re-enters the translator through `RunGuestCall`. Because that path attaches a
   guest thread (with thread-local storage) to whatever host thread the callback
   arrives on — a binder thread, a looper thread — asynchronous callbacks are
-  safe.
+  safe. (**Binder** is Android's inter-process communication system; the
+  framework spawns pooled "binder threads" to service incoming calls. Those
+  threads are created by host code, so a guest callback can arrive on a thread
+  the translator has never seen — which is why the auto-attach matters.)
 - **Host-side `RegisterNatives` entry points** are the subtle case. A symbol like
   `android::RegisterDrawFunctor(JNIEnv*)` (the WebView hardware-accel
   registration that Douyin's Lynx UI calls) runs `jniRegisterNativeMethods` on
@@ -1492,8 +1530,9 @@ the upstream proxy omits entirely (libc fast-path helpers like the `*64`
 stat/mmap family, libm's `__*_finite` math entry points) through the same
 extras-registry — they never abort, they just fill a hole. And the **host-call
 redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
-bypasses the guest PLT and branches *directly into a host system library's
-x86_64 code*: the resulting non-executable-fault is caught by a `HandleNoExec`
+skips the normal symbol-lookup path (the linker's jump table, the PLT) and
+branches *directly into a host system library's x86_64 code* — bytes the guest
+CPU-under-translation was never meant to reach: the resulting non-executable-fault is caught by a `HandleNoExec`
 hook that re-resolves the same symbol in the **guest** copy of the library and
 redirects the guest PC there, so the call runs under translation instead of
 crashing.
@@ -1504,7 +1543,7 @@ crashing.
 
 When ARM64 code makes a system call (via the SVC instruction), it follows ARM64 Linux conventions: the syscall number goes in register X8, and arguments go in X0 through X5. The host Linux kernel, running on x86_64, expects something completely different: syscall number in RAX, arguments in RDI, RSI, RDX, R10, R8, R9.
 
-It gets worse. ARM64 and x86_64 don't just use different registers — they use **different syscall numbers** for the same operations. `write()` might be syscall 64 on ARM64 and syscall 1 on x86_64. And some kernel data structures, like `stat` (file information), have different field sizes and memory layouts between the two architectures.
+(You don't need to memorize those register lists; the point is only that *nothing* lines up automatically, so every syscall must be re-mapped.) It gets worse. ARM64 and x86_64 don't just use different registers — they use **different syscall numbers** for the same operations. `write()` might be syscall 64 on ARM64 and syscall 1 on x86_64. And some kernel data structures, like `stat` (file information), have different field sizes and memory layouts between the two architectures.
 
 Digitalis intercepts all guest system calls:
 
@@ -1531,6 +1570,8 @@ graph TD
 The syscall mapping is defined in an autogenerated header, `gen_syscall_emulation_arm64_to_x86_64-inl.h`, whose single `switch (guest_nr)` maps each ARM64 syscall number to its x86_64 `syscall(...)` (e.g. ARM64 `write` 64 → x86_64 1, `futex` 98 → 202). A few numbers route to custom handlers (`close`/`close_range`/`dup3`/`fcntl`/`mmap`/`rt_sigaction`). Struct conversion is handled case-by-case: the guest `stat` struct is unpacked from ARM64 layout and repacked into x86_64 layout before passing to the host kernel, and the reverse on return. Two vDSO calls (`clock_gettime`, `gettimeofday`) are serviced inline without entering the kernel, and `uname` is masqueraded to report `aarch64` so anti-emulator SDKs see a consistent machine string.
 
 Digitalis includes several hard-won fixes for subtle syscall issues:
+
+(A **futex** — "fast userspace mutex" — is the Linux primitive locks and thread-waits are built on: user code checks a value in shared memory and only calls into the kernel when it actually has to wait. The kernel compares the memory word against an expected value before putting the thread to sleep.)
 
 **Futex BSS workaround.** Android's Bionic libc uses 16-bit atomics in `.bss` sections for pthread mutexes. When a `.bss` partial page isn't properly zeroed after a file-backed mmap, the upper bytes of the futex word contain garbage. During `FUTEX_WAIT`, the kernel compares the *entire* word, not just the 16-bit atomic. Digitalis fixes this: if the lower 16 bits match the expected value but the upper bits differ, it substitutes the actual memory value for the kernel comparison.
 
@@ -1644,7 +1685,7 @@ The following diagram (from `art/libnativebridge/nb-diagram.png` in the AOSP sou
 The key flows are:
 
 **System Boot:**
-1. The `init` process starts Zygote
+1. The `init` process starts **Zygote** — the always-running template process that Android forks to create every app process (forking is faster than starting a fresh runtime each time, and lets apps share already-loaded framework code)
 2. Zygote starts the VM and calls `load native bridge` using the library name from `ro.dalvik.vm.native.bridge`
 3. ART uses `dlopen()` to load the library (e.g., `libberberis_arm64.so`) and `dlsym("NativeBridgeItf")` to find the callback struct
 4. If the bridge is available (NB:Available), the runtime continues; otherwise it runs without translation
@@ -1783,6 +1824,8 @@ The **`guest_state_accessor`** deserves a special mention: when an app crashes u
 
 ## 17. binfmt_misc: Running Guest Binaries Directly
 
+*This section covers a niche-but-real second way ARM64 code gets launched: not by tapping an app, but by running an ARM64 program straight from a shell or a test harness. You can skip it on a first read — it doesn't affect how apps run.*
+
 [Section 5](#5-how-an-arm64-app-starts) covered **Path A** — the NativeBridge-driven flow used when an ARM64 APK launches from the Android framework. This section covers **Path B** — the alternate launch route for ARM64 guest code that doesn't go through an app at all: **`binfmt_misc`**, the Linux kernel mechanism that auto-invokes a registered user-space interpreter when `execve()` sees a foreign-ABI ELF.
 
 Path B is used for:
@@ -1899,7 +1942,7 @@ When an ARM64 app crashes under Digitalis, the bug is almost always in the trans
 
 ### Reading the Crash
 
-Crashes show up in Android's logcat as signal names:
+Crashes show up in Android's logcat as Unix **signal** names (see [Section 10](#10-signal-handling-and-fault-recovery) for what signals are):
 
 | Signal | Meaning | Common Translation Cause |
 |--------|---------|------------------------|
@@ -1985,7 +2028,7 @@ This section traces a real app — `hello-vulkan`, the original Digitalis proof 
 
 ### What the App Does
 
-The app is a pure C++ NativeActivity with ~550 lines of code. It initializes Vulkan, creates a graphics pipeline with embedded SPIR-V shaders, and renders a triangle with red/green/blue vertices in a loop. The triangle's vertex positions and colors are hardcoded in the vertex shader — there's no vertex buffer, no uniform buffers, no textures. This makes it the simplest possible Vulkan app while still exercising the full translation pipeline.
+The app is a pure C++ NativeActivity with ~550 lines of code. It initializes Vulkan, creates a graphics pipeline with embedded **SPIR-V** shaders (SPIR-V is the compiled bytecode format Vulkan uses for GPU shader programs, the way a `.class` file is compiled Java), and renders a triangle with red/green/blue vertices in a loop. The triangle's vertex positions and colors are hardcoded in the vertex shader — there's no vertex buffer, no uniform buffers, no textures. This makes it the simplest possible Vulkan app while still exercising the full translation pipeline.
 
 ### Phase 1: App Launch and NativeBridge Interception
 
@@ -2010,7 +2053,7 @@ sequenceDiagram
     GL->>TL: Load ARM64 linker64
     TL-->>GL: Initial binaries loaded
     GL->>GL: Register proxy libraries at /system/lib64/arm64/
-    Note over Linker: Guest linker loads libc.so, app .so via dlopen_ext
+    Note over GL: Guest linker loads libc.so and the app .so via dlopen_ext
     GL-->>NB: Guest environment ready
     ART->>NB: Call ANativeActivity_onCreate
     NB->>NB: Create JNI trampoline<br/>(x86_64 ABI → ARM64 ABI)
@@ -2083,12 +2126,12 @@ graph TD
 
 The main loop involves all three execution paths:
 - **JIT path**: The loop control flow (comparisons, branches, pointer loads) is translated to native x86_64 and cached — this runs at near-native speed
-- **Syscall path**: `ALooper_pollOnce()` eventually calls `epoll_wait`, which triggers an ARM64 SVC instruction caught by the interpreter
+- **Syscall path**: `ALooper_pollOnce()` eventually issues an `epoll_wait` system call. The JIT emits this inline as a direct call into `RunGuestSyscall` (it does *not* fall back to the interpreter — see [Section 14](#14-syscall-emulation)), which translates the ARM64 syscall number and arguments to the host kernel's convention
 - **Proxy path**: Every `vk*` call goes through the Vulkan proxy library
 
 ### Phase 3: Vulkan Initialization — Proxy Libraries in Action
 
-When the app window becomes available, `vulkan_init()` runs. Here's the sequence of Vulkan calls and how each crosses the translation boundary:
+The event loop from the previous phase keeps polling until Android hands the app a drawable surface — it delivers an `APP_CMD_INIT_WINDOW` command. The first time that arrives, the app knows it finally has somewhere to draw, and runs `vulkan_init()`. Here's the sequence of Vulkan calls and how each crosses the translation boundary:
 
 ```mermaid
 sequenceDiagram
@@ -2201,8 +2244,8 @@ Not all code in the app takes the same path through Digitalis. Here's a breakdow
 | Vulkan API calls | `vkCmdDraw(...)` | **Proxy** — marshal args, call host | Small overhead |
 | libc calls | `malloc()`, `memcpy()` | **Proxy** — forward to host libc | Small overhead |
 | Logging | `__android_log_print()` | **Proxy** — forward to host logging | Small overhead |
-| System calls | `epoll_wait()` (via ALooper) | **Interpreter** — syscall emulation | Moderate overhead |
-| Memory barriers | `DMB ISH` | **Interpreter** — often no-op on x86 TSO | Negligible |
+| System calls | `epoll_wait()` (via ALooper) | **JIT inline call** — `RunGuestSyscall` translates number + args | Moderate overhead |
+| Memory barriers | `DMB ISH` | **JIT** — emits nothing; x86's memory model already provides the ordering | Negligible |
 
 The vast majority of instructions in the render loop are struct field writes and Vulkan API calls — both fast paths. System calls only happen during event polling, not during rendering.
 
@@ -2291,7 +2334,7 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Product Configuration.** `sdk_phone64_x86_64_digitalis.mk` — the emulator product definition that enables ARM64 translation, sets the NativeBridge system property, and includes all proxy libraries.
 
-**Sample Apps.** 116 ARM64-only sample app modules — ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media, imaging, vision/ML, crypto/DB/storage, and AndroidX-native) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio + Oboe), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, NNAPI, and WebView hardware-accel proxy coverage, plus targeted instruction-set probes (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, CRC32/CRC32C, SHA/AES crypto). The original `hello-vulkan` module was written specifically for the Digitalis project.
+**Sample Apps.** 131 ARM64-only sample app modules — ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media, imaging, vision/ML, crypto/DB/storage, and AndroidX-native) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio + Oboe), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, NNAPI, and WebView hardware-accel proxy coverage, plus targeted instruction-set probes (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, CRC32/CRC32C, SHA/AES crypto). The original `hello-vulkan` module was written specifically for the Digitalis project.
 
 **Distribution Artifact Allowlist.** `berberis_config.mk` defines `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` — the explicit list of files allowed in the Digitalis system image (used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST` in `enable_arm64_to_x86_64.mk`). Mirroring the upstream RISC-V coverage, it enumerates 74 paths in total: the 21 `libberberis_proxy_*.so` stubs, 43 guest ARM64 system libs under `system/lib64/arm64/` (libc, libm, libvulkan, libdl, libicu, libsqlite, libssl, libcrypto, libcompiler_rt, libnative_bridge_vdso, the guest-only `libgui.so` stub, …), `libberberis_arm64.so`, `libberberis_exec_region.so`, the ARM64 `app_process64` and `linker64`, the two binfmt_misc magic files (`arm64_exe`, `arm64_dyn`), the two ARM64 program-runner binaries (`berberis_program_runner_arm64`, `berberis_program_runner_binfmt_misc_arm64`), `system/etc/init/berberis.rc`, and `system/etc/ld.config.arm64.txt`. The complete list is what makes a Digitalis build pass the AOSP artifact-allowlist check (closes [DigitalisX64/digitalis#1](https://github.com/DigitalisX64/digitalis/issues/1)).
 
@@ -2475,7 +2518,7 @@ Key differences:
 
 | Feature | RISC-V Decoder | ARM64 Decoder |
 |---------|---------------|---------------|
-| File size | ~2,400 lines | ~3,500 lines |
+| File size | a few thousand lines | somewhat larger (SIMD/FP encodings dominate) |
 | Instruction sizes | 16-bit + 32-bit | 32-bit only |
 | Size detection | Check lowest 2 bits | Always 4 bytes |
 | Top-level dispatch | Opcode field (bits[6:0]) | op0 field (bits[28:25]) |
@@ -2504,7 +2547,7 @@ Both source architectures pass up to 8 integer and 8 floating-point arguments in
 Digitalis benefits enormously from the shared infrastructure that was built for RISC-V translation. The translation cache, dispatch loop, proxy libraries, assembler, and NativeBridge integration all work unchanged. What Digitalis adds is:
 
 1. **ARM64 decoder** — simpler than RISC-V's (no variable-length instructions) but with more encoding complexity (SIMD/FP)
-2. **ARM64 lite translator** — larger code generator (~84KB vs ~22KB) due to ARM64's wider instruction set, especially SIMD
+2. **ARM64 lite translator** — a code generator several times larger than the RISC-V one, due to ARM64's wider instruction set, especially SIMD
 3. **ARM64 interpreter** — full instruction semantics including NEON SIMD that the JIT doesn't cover
 4. **ARM64 heavy optimizer** — the second-gear optimizing backend (`heavy_optimizer/arm64/`) that re-translates hot regions with global register allocation and loop optimizations
 5. **ARM64 syscall emulation** — different syscall numbers and ABI from both RISC-V and x86_64
