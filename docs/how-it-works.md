@@ -321,7 +321,21 @@ The ARM64 three-operand `ADD` becomes two x86_64 instructions because x86_64's `
 
 #### ARM64 Encoding Anatomy
 
-Consider `ADD X1, X2, X3` — a 64-bit register add. As a 32-bit word, the bits break down as:
+Consider `ADD X1, X2, X3` — a 64-bit register add. It assembles to the single 32-bit word **`0x8B030041`** (stored little-endian in the `.text` section as the bytes `41 00 03 8B`). Laid out most-significant-bit first, with the decoder's fields underneath:
+
+```
+ bit: 31 30 29 │28 27 26 25 24│23 22│21│20 19 18 17 16│15 14 13 12 11 10│ 9  8  7  6  5│ 4  3  2  1  0
+ val:  1  0  0 │ 0  1  0  1  1│ 0  0│ 0│ 0  0  0  1  1│ 0  0  0  0  0  0│ 0  0  0  1  0│ 0  0  0  0  1
+       sf op S       01011      shift        Rm=00011(X3)      imm6=0         Rn=00010(X2)   Rd=00001(X1)
+```
+
+- `sf=1`  : 64-bit operation (0 → 32-bit W-register form)
+- `op=0`  : ADD (op=1 would be SUB)
+- `S=0`   : don't set flags (this is ADD, not ADDS)
+
+The top-level dispatch reads **bits[28:25] = `0101`** → the Data-Processing-Register group, then narrows within that group to the add/subtract-shifted-register handler. Notice there is no single contiguous "opcode" field; the operation is spread across `sf`, `op`, `S`, and the `01011` class bits.
+
+As a field table, the same word breaks down as:
 
 | Bits | Field | Value | Meaning |
 |------|-------|-------|---------|
@@ -701,6 +715,41 @@ graph LR
 
 This is implemented in `EmitStoreArmNZCV()` in `lite_translator.h`.
 
+**A concrete trace.** Take `SUBS X0, X5, X6` with `X5 = 10`, `X6 = 10` (mapped
+to `X5→RSI`, `X6→RDI`, `X0→RBX`). ARM64 defines the result flags as N=0, Z=1
+(the result is 0), **C=1** (a subtract sets Carry when there is *no* borrow),
+V=0. Here is how the JIT reproduces that:
+
+```
+  movq  rbx, rsi        ; copy X5 (=10) into X0's slot
+  subq  rbx, rdi        ; rbx = 10 - 10 = 0
+                        ;   x86 FLAGS now: ZF=1  SF=0  CF=0  OF=0
+                        ;   (x86 CF=1 means borrow; 10-10 has none -> CF=0)
+
+  lahf                  ; AH <- SF ZF  0 AF  0 PF  1 CF   (bit7..bit0)
+                        ;   AH = 0  1   0  0  0  0  1  0   = 0x42
+  seto  al              ; AL <- OF = 0
+
+  ; AH is the high byte of AX, so its bits land at AX bit15..bit8:
+  ;      SF(AH.7) -> bit15 = N
+  ;      ZF(AH.6) -> bit14 = Z
+  ;      CF(AH.0) -> bit8  = C
+  ;      OF(AL.0) -> bit0  = V   (via SETO)
+  andl  eax, 0xC101     ; keep only the N,Z,C,V bit positions
+                        ;   packed word so far = 0x4000  (only bit14=Z set)
+                        ;   -> N=0  Z=1  C=0  V=0
+  xorl  eax, 0x100      ; SUB/CMP only: invert bit8 (C), because ARM Carry is
+                        ;   the *inverse* of x86 borrow. bit8: 0 -> 1
+                        ;   final packed word = 0x4100
+                        ;   -> N=0  Z=1  C=1  V=0   -- matches ARM64
+  movw  [rbp+flags_off], ax    ; store into ThreadState.cpu.flags
+```
+
+The final packed value `0x4100` is exactly ARM64's NZCV for `10 - 10`: Zero
+set, Carry set (no borrow). The `xorl` step is the whole reason SUB/CMP need
+special handling — without it the translator would report C=0 and any later
+`B.CS`/`B.CC` (branch on carry) would take the wrong path.
+
 #### Code Generation Example
 
 Here's how the JIT translates `ADD X1, X2, #5` (add immediate 5 to X2, store in X1). The `AddSubImm` method in `lite_translator.h`:
@@ -756,6 +805,32 @@ graph TD
 **Why two gears.** The lite translator is the **first gear**: a single-pass translator that emits working x86_64 fast, but with only *local* (per-region) register allocation. For code that runs once or twice that is exactly right — spend as little time translating as possible. Code that runs *repeatedly* — the inner loops where a program spends most of its time — justifies more translation effort, which is what the heavy optimizer invests.
 
 **How gear-up is triggered.** When two-gear mode is active, the lite translator emits a small **self-profiling** counter at region entry (`enable_self_profiling = true`, `counter_location = &entry->invocation_counter`). Each execution increments it; when it crosses `kGearSwitchThreshold` (**1000**), the generated code calls back into `berberis_HandleLiteCounterThresholdReached`, which re-translates the region in second gear via `LockForGearUpTranslation` (the entry must still be `kLiteTranslated`). Gear-up is gated to regions of at least `kDefaultGearUpMinInsns` (**20** guest instructions, overridable via `BERBERIS_GEARUP_MIN_INSNS`) — tiny loops, where the optimization wouldn't recover its own cost, stay lite and are never regressed.
+
+**One region, geared up.** Concretely, suppose a 34-instruction loop body sits at guest PC `0x…a400`:
+
+```mermaid
+sequenceDiagram
+    participant D as Dispatch Loop
+    participant C as TranslationCache
+    participant L as Lite region code
+    participant H as Heavy Optimizer
+
+    Note over C: PC 0x…a400 — 34-instruction loop body
+    D->>C: lookup 0x…a400 → kEntryNotTranslated
+    C->>L: lite-translate (single pass, local reg-alloc)
+    Note over L: region entry emits invocation_counter++
+    loop iterations 1..999
+        D->>L: run region; counter++
+    end
+    Note over L: iteration 1000 — counter hits kGearSwitchThreshold (1000)
+    L->>H: berberis_HandleLiteCounterThresholdReached
+    Note over H: region is 34 insns ≥ 20 (gear-up min) → proceed
+    H->>C: install heavy region; kLiteTranslated → kHeavyOptimized
+    D->>C: next lookup 0x…a400 → heavy code
+    Note over D: all later runs execute globally-allocated x86_64
+```
+
+The first 1000 executions run the fast-to-emit lite version; the 1000th triggers a one-time re-translation into the heavy tier, and every execution after that runs the globally register-allocated version. Had the same loop been only 12 instructions (< 20), it would have stayed lite forever — the optimization couldn't recover its own translation cost — which is exactly the "never regressed" guarantee.
 
 **The heavy pipeline — an SSA machine IR.** Where the lite translator emits x86_64 bytes directly per instruction, the heavy optimizer lowers a whole region into a **guest-agnostic, SSA-form machine IR** (`x86_64::MachineIR`) and then runs an optimizing backend:
 
@@ -836,6 +911,59 @@ The `Allocator<RegType>` class manages register mappings. When `GetReg()` encoun
 
 **SIMD register allocation** uses a separate pool, mapping ARM64's V0-V31 (128-bit SIMD registers) to x86_64's XMM0-XMM15.
 
+#### A Worked Example
+
+Take a simple summation loop — add `n` 64-bit values from an array:
+
+```asm
+; int64_t sum(const int64_t* p, int64_t n)   X0=p, X1=n -> result in X0
+        MOV  X2, #0            ; X2 = running sum
+loop:
+        LDR  X3, [X0], #8      ; X3 = *p ; p += 8   (post-increment)
+        ADD  X2, X2, X3        ; sum += X3
+        SUBS X1, X1, #1        ; n-- , set NZCV
+        B.NE loop              ; backward conditional branch -> ends the region
+        MOV  X0, X2
+        RET
+```
+
+The loop body — from `loop:` to the backward `B.NE` — is one region (the branch
+target makes `loop:` a region start). It references four distinct guest
+registers. The allocator hands out host slots from the front of the pool **in
+the order each guest register is first touched**, so the region needs no spill
+at all:
+
+| Guest register | Role         | Host register | Pool slot |
+|----------------|--------------|---------------|-----------|
+| X0             | array ptr    | RBX           | 0         |
+| X3             | loaded value | RCX           | 1         |
+| X2             | running sum  | RSI           | 2         |
+| X1             | counter      | RDI           | 3         |
+
+Four guest registers, four host registers, **9 of the 13 pool slots left
+unused** — the common case. Every iteration runs entirely out of host
+registers; nothing touches `ThreadState` memory. (`X0`, `X1`, `X2` are read
+from / written back to `ThreadState` only at region entry and exit.)
+
+Spilling only begins when a region keeps **more than 13** guest registers live
+at once. The pool fills front-to-back:
+
+```
+slot:  0    1    2    3    4   5   6   7    8    9   10   11   12
+reg:  RBX  RCX  RSI  RDI  R8  R9  R10 R11  R12  R13  R14  R15  RDX
+       X0   X3   X2   X1  X4  X5   X6  X7   X8   X9  X10  X11  X12   <- 13 mapped
+                                                                     X13 -> no slot
+```
+
+The 14th distinct guest register (`X13` above) finds the permanent pool empty.
+The JIT does **not** cut the region — it falls back to a *temp-based access*:
+for each use of `X13` it allocates a scratch register and loads the value from
+`[rbp + offsetof(ThreadState, cpu.x[13])]` (or stores it back for a write).
+Only if even a temp can't be had does the region end early. This is why keeping
+hot values in the *first* few registers a function uses is what makes
+translated code fast: they win the permanent slots; late-referenced registers
+pay the memory round-trip.
+
 ---
 
 **Part III — Subsystem Deep Dives**
@@ -872,7 +1000,7 @@ The decoder routes instructions through a hierarchy of bit checks. The top-level
 | `x101` | Data Processing — Register |
 | `x111` | SIMD and Floating Point |
 
-Within each group, further bits narrow down the specific instruction. For example, bit 29 distinguishes different load/store types, and bit 24 distinguishes single-structure from multi-structure SIMD operations.
+Within each group, further bits narrow down the specific instruction. For example, bit 29 distinguishes different load/store types, and bit 24 distinguishes single-structure from multi-structure SIMD operations. (For a fully worked word — `ADD X1, X2, X3` = `0x8B030041` traced bit-by-bit into its Data-Processing-Register group — see [ARM64 Encoding Anatomy](#3-arm64-and-x86_64--two-different-worlds) in Section 3.)
 
 **Dispatch order matters.** Multiple instruction groups share encoding prefixes. Missing a distinguishing bit check routes instructions to the wrong handler *silently* — the decoder produces a valid-looking but semantically wrong result. No crash, just incorrect behavior that may not manifest until a memory boundary is hit. This has been a recurring source of bugs in Digitalis development.
 
@@ -1083,6 +1211,29 @@ After the fault is caught and the guest PC is identified, the signal must be del
 3. **Call guest handler synchronously**: `GuestCall::RunVoid` invokes the guest's registered signal handler with the signal number, siginfo, and context as arguments — this runs as normal translated ARM64 code
 4. **Restore guest CPU state**: when the handler returns, `GuestContext::Restore` restores the (possibly modified) CPU state from the context
 5. **Resume execution**: the dispatch loop continues from wherever the restored PC points
+
+#### Worked example: a guest bad-address load
+
+Guest ARM64 runs `LDR X1, [X0]` with `X0 = 0xDEAD` (an unmapped address):
+
+1. In the JIT region this is `mov rcx, [rsi]` (X0 mapped to RSI). RSI holds
+   `0xDEAD`, so the **host** CPU raises **SIGSEGV** at that host instruction.
+2. The translator's fault handler (installed for SIGSEGV/SIGBUS at startup)
+   looks up the faulting host address in the recovery map, finds the recovery
+   stub paired with this load, and redirects host execution to it.
+3. The stub has the **guest PC of the `LDR`** baked in: it sets the guest PC in
+   `ThreadState` to that instruction, queues the signal
+   (`pending_signals_status`), and exits generated code.
+4. Back in the dispatch loop, pending signals are processed:
+   - the guest CPU state is packaged into an ARM64-layout `ucontext`
+   - the host `siginfo_t` is converted to ARM64 layout with **`si_addr = 0xDEAD`**
+   - the guest's registered SIGSEGV handler runs *as translated ARM64 code*,
+     receiving `(signo=11, siginfo, ucontext)`
+5. If the guest handler returns, the (possibly modified) CPU state is restored
+   and dispatch resumes at the guest PC. If the app installed **no** handler,
+   the signal is re-raised with the default action; debuggerd then dumps a
+   tombstone showing the **guest** registers X0-X30 — with X0 = 0xDEAD — not
+   the host registers.
 
 ### Claiming the Host Fault Signals
 
@@ -1342,6 +1493,37 @@ TinyLoader is deliberately simple — it loads ELF segments into memory and can 
 
 Guest ARM64 code lives in the **same host address space** as everything else — there is no separate "guest memory." When TinyLoader `mmap`s a guest ELF segment, it gets a real host virtual address, and the guest code runs at that address. There's no remapping or translation of memory addresses.
 
+A concrete snapshot of that one shared address space (addresses illustrative —
+ASLR randomizes them every launch; ordering is not to scale):
+
+```mermaid
+graph TD
+    subgraph Map["One x86_64 process — everything lives here together"]
+        direction TB
+        STK["0x7ffd_0000  Guest ARM64 stack<br/><i>per guest thread; guest SP points in here</i>"]
+        VDSO["0x7fa0_0000  Guest vDSO (ARM64)<br/><i>handed to the guest linker via AT_SYSINFO_EHDR</i>"]
+        JITX["0x7f40_0000  JIT translation cache — R+X view (memfd)<br/><i>host CPU executes generated x86_64 from here</i>"]
+        JITW["0x7f30_0000  JIT translation cache — R+W alias (SAME memfd)<br/><i>JIT writes bytes here; W^X dual-mapping</i>"]
+        PROXY["0x7f00_0000  Proxy libs — libberberis_proxy_*.so (x86_64)<br/><i>real PROT_EXEC — run natively, not translated</i>"]
+        HOSTC["0x7e80_0000  libberberis_arm64.so + host libc.so (x86_64)<br/><i>the translator itself</i>"]
+        APPSO["0x7a00_0000  Guest app .so (ARM64)<br/><i>PROT_EXEC stripped → PROT_READ; runs under translation</i>"]
+        GLIB["0x7900_0000  Guest ARM64 system libs — libc.so, libm.so, libvulkan.so<br/><i>real ARM64 code, translated on demand</i>"]
+        LINK["0x7880_0000  Guest linker64 (ARM64)<br/><i>resolves relocations, drives dlopen_ext</i>"]
+        HEAP["0x5500_0000  App heap<br/><i>malloc() served by host libc via the libc proxy</i>"]
+        STK --- VDSO --- JITX --- JITW --- PROXY --- HOSTC --- APPSO --- GLIB --- LINK --- HEAP
+    end
+    SHADOW["GuestMapShadow (translator metadata)<br/><i>1 bit per guest page: is this page executable?</i>"]
+    Map -.tracks the X bit of every page.-> SHADOW
+```
+
+Two details this makes concrete: **guest code is mapped non-executable** (its
+PROT_EXEC is stripped to PROT_READ) so the host CPU can never run ARM64 bytes
+directly — only the translated x86_64 in the JIT cache is executable — and that
+**JIT cache is one memfd mapped twice** (R+W for the compiler, R+X for the
+CPU), the W^X trick from [Section 11](#11-machine-code-generation). Proxy
+libraries and the translator itself are ordinary native x86_64 mappings in the
+same space.
+
 ```mermaid
 graph TD
     subgraph Process["x86_64 Host Process Address Space"]
@@ -1568,6 +1750,57 @@ graph TD
 ```
 
 **The JIT lowers `SVC` inline.** It does *not* bail to the interpreter. `LiteTranslator::Svc()` flushes mapped guest registers back to `ThreadState` (so `RunGuestSyscall` reads them from memory), mirrors the host MXCSR into the guest FPSR, emits a direct `call RunGuestSyscall`, and direct-dispatches to `pc+4`. `RunGuestSyscall` reads the syscall number from `X8`, dispatches through the translation table, and writes the result (or `-errno`) back to `X0`. (The interpreter has its own `Svc()` that calls the same `RunGuestSyscall`, used when a region is running interpreted.)
+
+#### Worked example: `write(1, buf, 3)`
+
+An ARM64 app writing 3 bytes to stdout traps like this, and Digitalis routes it
+register-by-register:
+
+```
+; ARM64 guest — just before the trap
+mov  x0, #1        ; fd    = 1 (stdout)
+adr  x1, buf       ; buf   -> a pointer into guest memory
+mov  x2, #3        ; count = 3
+mov  x8, #64       ; __NR_write on ARM64 (asm-generic numbering)
+svc  #0
+```
+
+`RunGuestSyscall` (`kernel_api/arm64/syscall_emulation.cc`) then does:
+
+```
+guest_nr = state->cpu.x[8]  = 64                  // syscall number comes from X8
+args     = state->cpu.x[0..5] = { 1, buf, 3, … }  // ARM64 args live in X0-X5
+
+switch (guest_nr) -> case 64:  syscall(1, x[0], x[1], x[2])
+                                   ^ ARM64 64 -> x86_64 __NR_write = 1
+
+  the host syscall() places these into the x86_64 KERNEL ABI:
+     RAX = 1      x86_64 __NR_write   (number value differs: 64 -> 1)
+     RDI = 1      fd                  (from guest X0)
+     RSI = buf    buffer pointer      (from guest X1 — passed through UNCHANGED:
+                                       guest and host share one flat address
+                                       space, so no pointer translation)
+     RDX = 3      count               (from guest X2)
+
+  -> host kernel runs write(), returns 3 in RAX
+
+state->cpu.x[0] = 3           // result (or -errno on failure) written back to X0
+```
+
+Four things had to change and one deliberately did not:
+
+| Aspect | ARM64 (guest) | x86_64 (host kernel) |
+|---|---|---|
+| Syscall-number register | `X8` | `RAX` |
+| Syscall-number **value** | `64` | `1` |
+| Argument registers | `X0, X1, X2, …` | `RDI, RSI, RDX, R10, R8, R9` |
+| Return register | `X0` | `RAX` |
+| The `buf` **pointer** | *(same 64-bit address — never translated)* | |
+
+The pointer pass-through is the payoff of the shared address space from
+[Section 12](#12-elf-loading-and-the-guest-address-space): because guest memory
+*is* host memory, a syscall's buffer argument needs no relocation — only the
+register it sits in changes.
 
 ### Going Deeper
 
