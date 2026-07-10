@@ -1,5 +1,7 @@
 # ARM64 Opcode Support Gaps
 
+> **Status re-verified 2026-07-10** against the current decoder, lite translator (`.inc` split), and heavy optimizer (`frontend.cc`). §2 (SVE/SME/FP8 absent), §3 (interpreter-only crypto/IEEE-CRC32), and §3a.1 (hardware-conditional `.2D`) are unchanged; §3a (heavy-tier coverage) was substantially expanded — most scalar FP, the broad NEON compute surface, and several LSE atomics now lower in the second gear.
+
 Four kinds of gap exist in the Digitalis ARM64 backend:
 
 1. **Exception-generating instructions.** How `SVC`/`BRK`/`HLT`/`HVC`/`SMC`/`DCPS` are decoded and turned into guest signals. None abort the translator. Section 1 below.
@@ -29,9 +31,9 @@ The decoder has no case for these — the instruction bits hit a high-level catc
 
 | Extension | ARM rev | Representative instructions | Where it lands |
 |---|---|---|---|
-| **SVE** (Scalable Vector Extension) | ARMv8.2 / v9 | All Z-register ops: predicated arithmetic, gather/scatter, FFR, reductions, permute (`SPLICE/COMPACT/REV/UZP/ZIP/TRN`), `PTRUE`, `WHILELT`, … | top-level `default: Undefined()` (`DecodeInstruction`, `decoder.h:1982`, `op0 ∈ {0001,0010,0011}`) |
-| **SVE2** | ARMv9 | Multiply, bitwise, bit-permute, FP, crypto-helper SVE2 instructions | same — `decoder.h:1982` |
-| **SME** (Scalable Matrix Extension) | ARMv9.2 | `ZA` tile access, `MOVA`, `ADDHA/ADDVA`, `SMOPA/UMOPA/…`, SME load/store, streaming-mode entry/exit | same — `decoder.h:1982` |
+| **SVE** (Scalable Vector Extension) | ARMv8.2 / v9 | All Z-register ops: predicated arithmetic, gather/scatter, FFR, reductions, permute (`SPLICE/COMPACT/REV/UZP/ZIP/TRN`), `PTRUE`, `WHILELT`, … | top-level `default: Undefined()` (`DecodeInstruction`, `decoder.h:1985`, `op0 ∈ {0001,0010,0011}`) |
+| **SVE2** | ARMv9 | Multiply, bitwise, bit-permute, FP, crypto-helper SVE2 instructions | same — `decoder.h:1985` |
+| **SME** (Scalable Matrix Extension) | ARMv9.2 | `ZA` tile access, `MOVA`, `ADDHA/ADDVA`, `SMOPA/UMOPA/…`, SME load/store, streaming-mode entry/exit | same — `decoder.h:1985` |
 | **FP8 / FAMINMAX / LUT** | ARMv9.x | FP8 convert/dot, `FAMAX/FAMIN`, `LUTI2/LUTI4` | no dedicated dispatch — these are SIMD&FP encodings (`op0 = x111`) that enter `DecodeSimdFp()` (`decoder.h:3045+`) and bottom out in one of its `Undefined()` paths |
 
 **Deliberately deferred:** SVE/SVE2/SME/FP8 are a from-scratch undertaking (new Z/P register state, a separate decode tree, gather/scatter) and **no Android device exposes them to user code**, so they remain documented gaps rather than committed work — per the project plan's beyond-manual tier.
@@ -98,14 +100,21 @@ A heavy bail is mechanical: the frontend callback calls `UndefinedReturningVoid(
 The heavy optimizer **now translates** (current `frontend.{h,cc}` coverage). The first gear's whole "common integer + branch + load/store" core is mirrored here, plus several recent SIMD/FP/atomic additions:
 
 - **Integer ALU (immediate & register):** `ADD`/`SUB`/`ADDS`/`SUBS`/`CMP`/`CMN`, `AND`/`ORR`/`EOR`/`ANDS`/`TST`/`BIC`/`ORN`/`EON` (shifted register), extended-register add/sub, `MOVZ`/`MOVN`/`MOVK`.
-- **Bitfield & extract:** full `SBFM`/`UBFM`/`BFM` (LSL/LSR/ASR, UXTB/UXTH/SXTB/SXTH/SXTW, `UBFX`/`SBFX`/`UBFIZ`/`SBFIZ`/`BFI`/`BFXIL`/`BFC`); `EXTR` 32-bit (64-bit non-zero-lsb still bails).
+- **Bitfield & extract:** full `SBFM`/`UBFM`/`BFM` (LSL/LSR/ASR, UXTB/UXTH/SXTB/SXTH/SXTW, `UBFX`/`SBFX`/`UBFIZ`/`SBFIZ`/`BFI`/`BFXIL`/`BFC`); `EXTR` (32-bit and 64-bit, including non-zero lsb).
 - **Multiply / divide / shifts:** `MADD`/`MSUB`/`SMADDL`/`UMADDL`/`SMULL`/`UMULL`/`SMULH`/`UMULH`, `UDIV`/`SDIV`, variable shifts `LSLV`/`LSRV`/`ASRV`/`RORV`.
-- **Bit ops:** `REV`/`REV16`/`REV32`; `CLZ`/`CLS` (host-LZCNT-gated).
+- **Bit ops:** `REV`/`REV16`/`REV32`, `RBIT` (SWAR bit-reverse); `CLZ`/`CLS` (host-LZCNT-gated).
+- **Add/sub with carry:** `ADC`/`SBC`/`ADCS`/`SBCS`.
 - **PC-relative / system:** `ADRP`/`ADR`, `MRS TPIDR_EL0`.
 - **Branches & conditionals:** `B`/`BL`/`BR`/`BLR`/`RET`, `B.cond` (all conditions), `CBZ`/`CBNZ`, `TBZ`/`TBNZ`, `CSEL`/`CSINC`/`CSINV`/`CSNEG`, `CCMP`/`CCMN`.
 - **Loads / stores:** integer `LDR`/`STR` all sizes (signed & unsigned), register-offset forms, `LDP`/`STP`/`LDPSW`, pre/post-index writeback — all with TBI masking and fault recovery.
-- **Scalar FP (via the intrinsic layer):** `FADD`/`FSUB`/`FMUL`/`FDIV` (S/D), `FMOV` (register & immediate), `FABS`, `FNEG`.
-- **NEON integer three-same:** `ADD`/`SUB`/`MUL` (supported element sizes) and `AND`/`ORR`/`EOR` (incl. the `ORR rn==rm` MOV-vector alias).
+- **Scalar FP (S/D; FP16 still bails):** `FADD`/`FSUB`/`FMUL`/`FDIV`/`FNMUL`, `FMAX`/`FMIN`/`FMAXNM`/`FMINNM`, `FMOV` (register & immediate), `FABS`, `FNEG`, `FSQRT`, `FRINT{N,M,P,Z,X,I,A}`, `FCMP`/`FCMPE`, `FCCMP`/`FCCMPE`, `FMADD`/`FMSUB`/`FNMADD`/`FNMSUB` (host-FMA3-gated), `FCVT` single↔double, and the FP↔int / FP↔fixed-point conversions `SCVTF`/`UCVTF`/`FCVTZS`/`FCVTZU`/`FCVTNS`/`FCVTPS`/`FCVTMS` (+ unsigned) and FP32 `FCVTAS`/`FCVTAU`. (`FCSEL` deliberately still bails — a region-level miscompile; FP64 `FCVTAS/AU`, `FCVT`-to-half, and `BFCVT` bail.)
+- **NEON three-same (8/16/32-bit lanes; `.2D` integer & FP16 bail):** `ADD`/`SUB` (incl. `.2D`), `MUL`/`MLA`/`MLS` (16/32-bit), `PMUL` (byte), `AND`/`ORR`/`EOR`/`BIC`/`ORN`, `BSL`/`BIT`/`BIF`, `CMEQ`/`CMGT`/`CMGE`/`CMHI`/`CMHS`/`CMTST`, `SMAX`/`SMIN`/`UMAX`/`UMIN` (+ pairwise), `SABD`/`UABD`/`SABA`/`UABA`, `SHADD`/`UHADD`/`SRHADD`/`URHADD`, `ADDP`, `SQADD`/`UQADD`/`SQSUB`/`UQSUB`, `SQDMULH`/`SQRDMULH`, and the FP forms `FADD`/`FSUB`/`FMUL`/`FDIV`/`FMLA`/`FMLS` (`.2S`/`.4S`/`.2D`), `FMAX`/`FMIN`/`FMAXNM`/`FMINNM`, `FCMEQ`/`FCMGE`/`FCMGT`, `FABD`.
+- **NEON three-different (widening/narrowing):** `S/U ADDL`/`SUBL`/`ADDW`/`SUBW`, `S/U ABDL`/`ABAL`, `ADDHN`/`SUBHN`/`RADDHN`/`RSUBHN`, `S/U MULL`/`MLAL`/`MLSL`, `SQDMULL`/`SQDMLAL`/`SQDMLSL`, `PMULL`/`PMULL2` (byte→halfword, dword→qword).
+- **NEON two-reg-misc (FP32 for the FP forms; `.2D` converts & FP16 bail):** `REV16`/`REV32`/`REV64`, `CNT`, `NOT`, `NEG`, `ABS`, compare-against-zero (`CMEQ/CMGT/…#0`, `FCM…#0`), `XTN`/`SQXTN`/`UQXTN`/`SQXTUN`, `SHLL`, `SUQADD`/`USQADD`, `CLZ`/`CLS`, across-lanes `ADDV`/`S U ADDLV`/`S U MAXV`/`MINV`/`F MAXV`/`MINV`/`MAXNMV`/`MINNMV`, `S/U ADDLP`/`ADALP`, and the FP32 converts `FCVTZS`/`FCVTZU`/`FCVTNS`/`FCVTPS`/`FCVTMS`(+U)/`FCVTAS`/`FCVTAU`/`SCVTF`/`UCVTF`, `FRINT*_V`.
+- **NEON shift-by-immediate (16/32/64-bit; byte-lane, signed `.2D`, and vector fixed-point converts bail):** `USHLL`/`SSHLL` (`UXTL`/`SXTL`), `SHL`, `USHR`/`SSHR`, `SSRA`/`USRA`, `S/U RSHR`/`RSRA`, `SLI`/`SRI`, `SQSHL`/`UQSHL`/`SQSHLU`, `SHRN`/`RSHRN`, `SQSHRN`/`UQSHRN`/`SQSHRUN`/`SQRSHRN`/`UQRSHRN`/`SQRSHRUN`.
+- **NEON by-element (vector):** `MUL`/`MLA`/`MLS`, `S/U MULL`/`MLAL`/`MLSL`, `SQDMULL`/`SQDMLAL`/`SQDMLSL`, and the FP `FMUL`/`FMULX`/`FMLA`/`FMLS` (FP32 `.2S`/`.4S` and FP64 `.2D`; FP16 bails). (Scalar by-element still bails.)
+- **NEON permute / copy / table:** `EXT`, `ZIP1`/`ZIP2`/`UZP1`/`UZP2`/`TRN1`/`TRN2`, `TBL`/`TBX`, `INS` (general & element), `SMOV`/`UMOV`, `DUP` (general register & element). (`DUP` scalar bails.)
+- **NEON structured load/store:** `LD1`-`LD4`/`ST1`-`ST4` (multi-structure de-interleave/interleave), `LD1R`, and the single-structure `LD1`/`ST1` forms.
 - **AdvSIMD modified-immediate:** `MOVI`/`MVNI`/`FMOV` (vector) / `ORR`/`BIC` (vector immediate), and `DUP` (general register).
 - **SIMD&FP load/store:** `LDR`/`STR` (Q/D/S) and `LDP`/`STP` (Q pair).
 - **Load/store-exclusive:** `LDXR`/`LDAXR`/`STXR`/`STLXR` (sized `LOCK CMPXCHG`), `LDAR`/`STLR`.
@@ -116,13 +125,13 @@ Still **heavy-tier-only** (the heavy frontend bails; lite/interpreter handle the
 
 | Family | Bails on | Notes |
 |---|---|---|
-| Integer | `ADC`/`SBC` (add/sub with carry), `RBIT`, `EXTR` 64-bit non-zero-lsb | No host carry-chain / bit-reverse / 64-bit `SHRD` IR op. |
+| Integer | *(none remaining — `ADC`/`SBC`, `RBIT`, and 64-bit `EXTR` now lower)* | The integer core is fully heavy-lowered. |
 | System | `MRS` (any sysreg ≠ `TPIDR_EL0`), `MSR`, `IC IVAU`, `SVC`, `BRK` | Side-effecting / runtime-handled; heavy declines. |
 | MTE | `ADDG`/`SUBG`, `IRG`/`GMI`/`SUBP`, `LDG`/`STG`/… | `MteDataProc`/`MteLoadStore` bail. |
-| Scalar FP (beyond the 6 above) | `FMAX`/`FMIN`/`FMAXNM`/`FMINNM`/`FNMUL`, `FCMP`/`FCMPE`, `FCCMP`, `FCSEL`, `FSQRT`, `FRINT*`, `FCVT`(precision)/`BFCVT`, all FP16, `FMADD`/`FMSUB`/`FNMADD`/`FNMSUB`, fixed-point & int conversions (`SCVTF`/`UCVTF`/`FCVTZS`/`FCVTZU`) | Only the four basic binops + FMOV/FABS/FNEG are heavy-lowered. |
-| NEON (most) | three-same beyond `ADD`/`SUB`/`MUL`/`AND`/`ORR`/`EOR` (incl. `CMEQ`/`CMGT`/saturating/shifts/pairwise/FP-three-same); the unsupported `ADD`/`SUB`/`MUL` element sizes (8-/64-bit); `AdvSimdThreeDiff` (widening/narrowing); two-reg-misc; shift-by-imm; indexed-element; `EXT`/permute/`TBL`; multi-struct & single-struct; SIMD register-offset & literal load/store; SIMD&FP B/H `LDR`/`STR` and D/S pairs; `DUP`(element)/`INS`/`SMOV`/`UMOV` | The bulk of Advanced SIMD is still lite/interpreter-only at the heavy tier. |
-| SIMD extensions | `FCADD`/`FCMLA` (FCMA), `BFDOT`/`BFMMLA` (BF16), `SDOT`/`UDOT`/`USDOT` (DotProduct), `SMMLA`/`UMMLA`/`USMMLA` (I8MM) | Heavy bails; lite JIT-lowers most of these. |
-| Atomics | LSE: `CAS*`/`CASP*`/`SWP*`/`LDADD*`/`LDSET*`/… | Heavy bails; lite/interpreter handle them. |
+| Scalar FP | `FCSEL`; all FP16 forms; `FCVT`-to-half & `BFCVT`; FP64 `FCVTAS`/`FCVTAU`; the `rmode=01` top-half `FMOV V.D[1]` | Most scalar FP now lowers (see the list above). `FCSEL` is a *deliberate* bail (a region-level miscompile), not a missing implementation. |
+| NEON (residual) | all `.2D`/64-bit-lane integer forms (§3a.1, hardware-conditional); all FP16 vector forms; byte-lane (`MUL`/`MLA`/`MLS` 8-bit, byte-lane shifts); the vector FP-misc ops `FABS`/`FNEG`/`FSQRT`/`FRECPE`/`FRSQRTE`/`URECPE`/`URSQRTE`/`SQABS`/`SQNEG` and vector `FCVTL`/`FCVTN`/`FCVTXN`; `FACGE`/`FACGT`; scalar three-same (beyond scalar `SQDMULH`/`SQRDMULH`); scalar-pairwise; scalar by-element; scalar D-width saturating narrows | The broad NEON compute surface now lowers (three-same, three-diff, two-reg-misc, shifts, indexed, permute/copy/TBL, structured load/store — see the list above); this is the genuine remainder. |
+| SIMD extensions | `FCADD`/`FCMLA` (FCMA), `BFDOT`/`BFMMLA` (BF16), `SDOT`/`UDOT`/`USDOT` (DotProduct), `SMMLA`/`UMMLA`/`USMMLA` (I8MM) | Still heavy-bails; lite JIT-lowers most of these. |
+| Atomics (LSE) | `LDCLR*`/`LDSET*`/`LDEOR*`, `LDSMAX*`/`LDSMIN*`/`LDUMAX*`/`LDUMIN*`, `CASP*`, `LDXP`/`STXP` | `LDAR`/`STLR`, `LDXR`/`STXR`, `CAS*`, `SWP*`, and `LDADD*` now lower; the listed variants still bail (lite/interpreter handle them). |
 | Crypto | `AES*`, `SHA1*`/`SHA256*`/`SHA512*`, `SM3*`/`SM4*`, `EOR3`/`BCAX`/`RAX1`/`XAR` | Heavy bails (these are interpreter-only even at the lite tier — see §3). |
 
 ### 3a.1 Permanently-deferred `.2D` / 64-bit-lane forms (hardware-conditional, not translator gaps)
@@ -152,7 +161,7 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
 | **`SUQADD/USQADD .1D/.2D`, MTE, non-modelled MRS/MSR (perf)** | Vanishingly rare | **None–Low** — correct, interpreter-speed; not on real hot paths. |
 | **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
-| **Heavy-tier-only ops (§3a: `RBIT`, `DUP`-element, LSE atomics, …)** | Any app with a hot loop over one of these | **None–Low** — correct via lite/interpreter; the only cost is that such a hot region can't gear up to the heavy optimizer. |
+| **Heavy-tier-only ops (§3a: `FCSEL`, remaining LSE atomics, `.2D`/FP16 vector, FCMA/BF16/dot-product/I8MM, crypto)** | Any app with a hot loop over one of these | **None–Low** — correct via lite/interpreter; the only cost is that such a hot region can't gear up to the heavy optimizer. |
 
 The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure). The remaining heavy-tier gaps (§3a) are purely a second-gear performance consideration, not a correctness gap. Within §3a, the `.2D` / 64-bit-lane forms of §3a.1 are **hardware-conditional** — they bail because the host emulator baseline lacks AVX-512 (a few need SSE4.1/4.2), not because the translator is missing an implementation; they are correct-and-slow via the lite/interpreter 64-bit-GPR fallbacks and are expected to stay heavy bails on any AVX-512-less host.
 

@@ -1,5 +1,7 @@
 # Proxy-library symbol coverage gaps (`DoBadTrampoline`)
 
+> **Status re-verified 2026-07-10.** Counts and covered-symbol claims still match the tree (all six `digitalis_extra_*_trampolines.cc` present; upstream arm64 `DoBadTrampoline` counts unchanged — e.g. libnativehelper 31, libwebviewchromium_plat_support 18). No proxy-coverage change since; the 31 remaining gaps are each not-NDK-stable or un-marshalable, as documented below.
+
 A proxy library forwards each guest `lib*.so` symbol to the host. The trampoline
 table (`native_bridge_support/android_api/<lib>/proxy/trampolines_arm64_to_x86_64-inl.h`,
 generated, read-only) marks a symbol `DoBadTrampoline` when the auto-generator
