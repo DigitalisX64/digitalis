@@ -4,6 +4,8 @@
 
 A guide to the ARM64-to-x86_64 binary translator — from first principles to implementation details.
 
+**How to read this document:** if binary translation is new to you, read Parts I and II in order — they build the mental model everything else hangs off (start with the "Vocabulary you'll need" box in Section 2). Part III's deep dives and the appendices are reference material: dip into whichever subsystem you care about. Part V's worked example (a Vulkan triangle, end to end) is the best payoff chapter once Parts I–II have settled in.
+
 ## Table of Contents
 
 **Part I — Orientation**
@@ -93,7 +95,9 @@ There are two main approaches to binary translation:
 
 **Ahead-of-time (AOT)** translation converts an entire program before it runs — like translating a book from one language to another. You do the work once and get a fully translated binary. The downside is that you need the complete program upfront, and the translation step can be slow.
 
-**Just-in-time (JIT)** translation converts code as the program runs — like a live interpreter at a conference. When the program reaches a new block of code, the translator converts it on the spot, caches the result, and runs it. The translator works on one chunk of straight-line code at a time (Digitalis calls such a chunk a **region** — roughly, a run of instructions with no branch into the middle). It translates the whole region at once, caches it, and reuses the cache on every later visit. The first execution of each region is slower (you pay the translation cost), but every subsequent execution runs the cached native code at near-native speed. The cache is like a phrasebook you build as you go: the first time you hear a sentence you work out the translation and write it down; every time after, you just read your note instead of translating again.
+**Just-in-time (JIT)** translation converts code as the program runs — like a live interpreter at a conference. When the program reaches a new block of code, the translator converts it on the spot, caches the result, and runs it. The translator works on one chunk of straight-line code at a time — Digitalis calls such a chunk a **region** (roughly, a run of instructions with no branch into the middle). It translates the whole region at once and caches the result.
+
+The first execution of each region is slower (you pay the translation cost), but every subsequent execution runs the cached native code at near-native speed. The cache is like a phrasebook you build as you go: the first time you hear a sentence you work out the translation and write it down; every time after, you just read your note instead of translating again.
 
 Digitalis uses JIT translation with an interpreter fallback.
 
@@ -1661,7 +1665,7 @@ graph TD
 
 ### "Guest" and "Host": The Key Terminology
 
-Throughout the NativeBridge and Digitalis codebase, two terms appear constantly:
+(These terms were introduced in the [vocabulary box in Section 2](#2-what-binary-translation-is); this is where they come from in the codebase.) Throughout the NativeBridge and Digitalis codebase, two terms appear constantly:
 
 - **Guest** = the foreign architecture being translated. In Digitalis, the guest is **ARM64** — the architecture the app was compiled for. Guest code, guest registers, guest address space, guest loader — all refer to the ARM64 side.
 - **Host** = the native architecture the device actually runs. In Digitalis, the host is **x86_64** — the real CPU executing the translated code.
@@ -1728,7 +1732,7 @@ stateDiagram-v2
 
 ### The NativeBridge Callback Interface (v8)
 
-The NativeBridge implementation exports a single C symbol — `NativeBridgeItf` — which is a struct of function pointers. ART calls these functions to interact with the translator. The interface has evolved over 8 versions:
+The NativeBridge implementation exports a single C symbol — `NativeBridgeItf` — which is a struct of function pointers. ART calls these functions to interact with the translator. The interface has evolved over 8 versions (the table below is history — the one takeaway is that Digitalis implements the newest version, v8, and stays compatible back to v2):
 
 | Version | Key Additions |
 |---------|--------------|
