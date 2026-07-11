@@ -1,4 +1,18 @@
-# Proxy-library symbol coverage gaps (`DoBadTrampoline`)
+# Proxy-library symbol coverage (`DoBadTrampoline`)
+
+> **No-crash guarantee (2026-07-12).** No app can hit a `Bad '<sym>' call` SIGABRT from
+> any remaining `DoBadTrampoline` symbol. Every one is now either **covered** (upstream or
+> Digitalis trampoline), **contract-stubbed** (the three reachable NDK-stable terminals —
+> `AIBinder_toPlatformBinder` → null `sp<>`, `glGetVkProcAddrNV` → NULL,
+> `ANativeWindow_setPerformInterceptor` → no-op), or handled by the loud arm64-only
+> `DoGracefulBadTrampoline` **net** (`proxy_loader/proxy_library_builder.cc`): an uncovered
+> bad symbol degrades to a greppable `BAD-TRAMPOLINE` trace + zeroed x0 instead of aborting
+> (riscv64/arm keep the fatal path). The claim is proven by
+> `digitalis/scripts/enumerate-proxy-bad-symbols.py` — it classifies every `DoBadTrampoline`
+> symbol and exits non-zero if any unmangled-C symbol is neither covered nor an explicitly
+> reasoned non-NDK allowlist entry (`digitalis/docs/proxy-bad-symbol-allowlist.txt`); the
+> generated audit is `digitalis/docs/proxy-bad-symbol-audit.md` (currently **0 uncovered**).
+> The "remaining gap" nature notes below are retained as the *why* behind each disposition.
 
 > **Status re-verified 2026-07-11.** Counts and covered-symbol claims still match the tree
 > (all six `digitalis_extra_*_trampolines.cc` present; upstream arm64 `DoBadTrampoline` counts
@@ -46,27 +60,30 @@ below is from `grep -c DoBadTrampoline` on each upstream
 
 | Library | upstream arm64 `DoBadTrampoline` | Digitalis covers | remaining | nature of the remaining gap |
 |---|---:|---:|---:|---|
-| libEGL | 8 | 0 | 8 | internal C++ (`egl_display_t::*`, `egl_get_connection`, `setGlThreadSpecific`) |
-| libGLESv2 | 1 | 0 | 1 | platform-blocked — `glGetVkProcAddrNV` (GFXStream lacks the NV extension) |
-| libGLESv3 | 1 | 0 | 1 | platform-blocked — `glGetVkProcAddrNV` (GFXStream lacks the NV extension) |
-| libnativewindow | 1 | 0 | 1 | hard — `ANativeWindow_setPerformInterceptor` (va_list callback, private) |
+| libEGL | 8 | 0 | 8 | internal C++ (`egl_display_t::*`, `egl_get_connection`, `setGlThreadSpecific`) — mangled, unreachable-by-app, net |
+| libGLESv2 | 1 | 1 | 0 | contract-stubbed — `glGetVkProcAddrNV` → NULL (GFXStream lacks the NV extension) |
+| libGLESv3 | 1 | 1 | 0 | contract-stubbed — `glGetVkProcAddrNV` → NULL (GFXStream lacks the NV extension) |
+| libnativewindow | 1 | 1 | 0 | contract-stubbed — `ANativeWindow_setPerformInterceptor` → no-op (va_list callback, private) |
 | libandroid | 0 | 0 | 0 | — (public C API fully marshaled upstream) |
-| libbinder_ndk | 3 | 2 | 1 | hard — `AIBinder_toPlatformBinder` (by-value `sp<>`) |
+| libbinder_ndk | 3 | 3 | 0 | contract-stubbed — `AIBinder_toPlatformBinder` → null `sp<>` (by-value C++ return) |
 | libcamera2ndk | 2 | 2 | 0 | covered — shared-camera V2 `…startStreaming` callback-struct trampolines; per-field `WrapGuestFunction` marshalling verified against the NDK header by a host test (end-to-end is untestable on the emulator, but that is not required to verify the marshalling) |
-| libnativehelper | 31 | 13 | 18 | ~15 `JniConstants_*` + `JniInvocation*`/`EnsureInitialized` |
-| libwebviewchromium_plat_support | 18 | 17 | 1 | hard/deferred — `JNI_OnLoad` |
-| libandroid_runtime | 1135 | 0 | 1135 | ~all framework-internal (not NDK-stable) |
+| libnativehelper | 31 | 13 | 18 | ~15 `JniConstants_*` + `JniInvocation*`/`EnsureInitialized` — internal/launcher, net |
+| libwebviewchromium_plat_support | 18 | 17 | 1 | `JNI_OnLoad` — load-time entry, net |
+| libandroid_runtime | 1135 | 0 | 1135 | not app-reachable (not public LL-NDK) → mangled/allowlisted net |
 
-Excluding `libandroid_runtime` (entirely framework-internal C++), the app-facing
-libraries above carry **65** arm64 `DoBadTrampoline` entries; Digitalis covers
-**34** of them (2 binder_ndk + 2 camera2ndk + 13 nativehelper + 17 webview), and
-the **31** remaining are each either not NDK-stable or un-marshalable (below).
+Excluding `libandroid_runtime` (not in the app-accessible NDK namespace; every
+entry is unreachable-by-app and rides the net), the app-facing libraries above
+carry **65** arm64 `DoBadTrampoline` entries; Digitalis covers **38** of them
+(3 binder_ndk + 2 camera2ndk + 2 GLESv2/v3 + 1 nativewindow + 13 nativehelper +
+17 webview). The **27** remaining (8 libEGL mangled-internal + 18 nativehelper
+launcher/cache + 1 webview `JNI_OnLoad`) are each not NDK-stable / not
+app-reachable, so they ride the loud `DoGracefulBadTrampoline` net rather than
+aborting — see the no-crash-guarantee note at the top and `proxy-bad-symbol-audit.md`.
 
-Each uncovered symbol is either **not NDK-stable** (an internal C++ /
-launcher / loader symbol, never reached from guest app code) or **NDK-stable but
-un-marshalable** (its correct marshalling cannot be expressed in a trampoline
-without guessed or unverifiable behavior). None are covered with guessed
-marshalling.
+Each still-uncovered symbol is **not NDK-stable** (an internal C++ / launcher /
+loader symbol, never reached from guest app code) — its correct marshalling
+cannot be expressed without guessed behavior, so none are covered with guessed
+marshalling; the net keeps a stray call crash-free.
 
 ## 1. Internal C++ symbols — NOT NDK-stable, out of scope (do not cover)
 
@@ -78,7 +95,7 @@ coverable and are not listed here (e.g. `libwebviewchromium_plat_support`'s
 `GraphicBufferImpl::*`, now covered; see the technique reference below). The
 entries below are the ones that remain genuinely out of scope.
 - **libEGL (8):** `android::egl_display_t::{makeCurrent,loseCurrent,loseCurrentImpl,addObject,removeObject,getObject}`, `android::egl_get_connection`, `android::setGlThreadSpecific`. The public EGL C API (`eglMakeCurrent`, …) is already covered upstream.
-- **libbinder_ndk (1 of 3):** `_Z25AIBinder_toPlatformBinderP8AIBinder` — `AIBinder_toPlatformBinder(AIBinder*)` returns a C++ `android::sp<IBinder>` by value (no resolvable NDK-stable C signature); NDK↔platform-binder interop, not plain NDK. The other 2 (`AServiceManager_NotificationRegistration_delete`, `AServiceManager_registerForServiceNotifications`) are **covered** — see §2-covered below.
+- **libbinder_ndk — all 3 covered.** `_Z25AIBinder_toPlatformBinderP8AIBinder` — `AIBinder_toPlatformBinder(AIBinder*)` returns a C++ `android::sp<IBinder>` by value (AAPCS64 sret via x8); a guest cannot use a host `sp<IBinder>`, so it is **contract-stubbed** to an empty (null) sp written into the sret buffer instead of aborting (`DoStub_AIBinder_toPlatformBinder`, §2-covered). The other 2 (`AServiceManager_NotificationRegistration_delete`, `AServiceManager_registerForServiceNotifications`) are also covered — see §2-covered below.
 - **libnativehelper (~17 of 31):** `JniConstants_*` (the ~15 class/field-id caches for FileDescriptor/NIOAccess/NioBuffer), `JniInvocationCreate/Destroy/Init` (JNI-invocation interface for runtime launchers like `app_process`, not NDK apps), `EnsureInitialized`. Exported but not in `<nativehelper/JNIHelp.h>`; NDK apps never call them directly.
 - **libandroid_runtime (~all 1135):** framework runtime internals; not NDK-stable. The only NDK-stable public API in the table — `AFileDescriptor_{create,getFd,setFd}` (`<android/file_descriptor_jni.h>`, `__INTRODUCED_IN(31)`) — is a red herring: `libandroid_runtime.so` is not app-`dlopen`-able, and the guest also exports the trio from the app-reachable `libnativehelper.so`, where the **upstream** proxy already covers it correctly (`DoCustomTrampoline_AFileDescriptor_*`). So an app resolves the trio via libnativehelper (covered upstream); the `libandroid_runtime` `DoBadTrampoline` copies are unreachable duplicates, not a gap Digitalis needs to close.
 
@@ -99,8 +116,8 @@ fixed-signature callbacks is not un-marshalable — each callback is
 NDK header by a host test, without needing to open a shared session on the
 emulator. Being un-runnable end-to-end on the emulator is a *testability* limit
 on the API, not an *expressibility* limit on the trampoline.)
-- **libGLESv2 / libGLESv3 — `glGetVkProcAddrNV` (platform-blocked, not ABI-blocked):** it *returns* a function pointer the guest then calls. Unlike the other two §2 entries this is NOT an ABI wall — the return set is bounded and enumerable (the `GL_NV_draw_vulkan_image` interop registry), so a per-name synthesized guest-callable thunk is conceptually expressible. The real blocker is platform: GFXStream does not implement `GL_NV_draw_vulkan_image`, so host `glGetVkProcAddrNV` returns NULL and there is nothing to wrap. Re-open only if the emulator GL backend ever exposes the extension AND a real app calls it.
-- **libnativewindow:** `ANativeWindow_setPerformInterceptor` — interceptor callback `int(*)(ANativeWindow*, int op, va_list, ...)`; the `va_list` contents depend on `op` and need per-op interpretation plus arm64→x86_64 va_list re-packing. Private (system) debug/interception hook.
+- **libGLESv2 / libGLESv3 — `glGetVkProcAddrNV` (CONTRACT-STUBBED → NULL):** it *returns* a function pointer the guest then calls. The return set is bounded/enumerable (the `GL_NV_draw_vulkan_image` interop registry), but GFXStream does not implement the extension, so host `glGetVkProcAddrNV` returns NULL and there is nothing to wrap. The stub returns NULL (the documented "unavailable" contract) instead of aborting — see `DoStub_glGetVkProcAddrNV` in `digitalis_extra_stubs.h`. Revisit for a real thunk only if the emulator GL backend ever exposes the extension AND a real app calls it.
+- **libnativewindow — `ANativeWindow_setPerformInterceptor` (CONTRACT-STUBBED → no-op):** interceptor callback `int(*)(ANativeWindow*, int op, va_list, ...)`; the `va_list` contents depend on `op` and need per-op interpretation plus arm64→x86_64 va_list re-packing. Private (system) debug/interception hook no known app calls. The stub is a crash-free no-op (install no interceptor); a full per-op va_list dispatcher is a future follow-up only if a real app needs live interception. See `DoStub_ANativeWindow_setPerformInterceptor`.
 - **libwebviewchromium_plat_support:** `JNI_OnLoad(JavaVM*, void*)` — the proxy lib's own load-time entry, with dedicated native-bridge handling. `JavaVM*` is translatable in-surface (`ToHostJavaVM`), but as the standard JNI load-time entry point it is the special native-bridge case rather than an app-called symbol; the observed path is apps calling the individual `Register*` symbols directly (now covered, see below), so this one is left deferred. The other 17 of this library's 18 symbols are covered in `digitalis_extra_libwebviewchromium_plat_support_trampolines.cc`.
 
 ## 2-covered. What Digitalis already covers in-surface
