@@ -1,0 +1,66 @@
+# Allowlist of unmangled-C DoBadTrampoline proxy symbols that are verified NOT
+# app-reachable-and-NDK-stable, and therefore ride the arm64 DoGracefulBadTrampoline
+# net (loud trace + return 0) rather than needing a contract stub. Consumed by
+# digitalis/scripts/enumerate-proxy-bad-symbols.py. Each entry (or prefix, lines
+# ending in '_') must carry a verified reason. NEVER allowlist a symbol that is
+# actually app-reachable AND NDK-stable — cover or contract-stub it instead.
+#
+# '#' begins a comment; blank lines ignored. A line ending in '_' is a prefix.
+
+# ---------------------------------------------------------------------------
+# libandroid_runtime is NOT in the app-accessible NDK namespace (it is not a
+# public LL-NDK library), so no NDK app can dlopen it or resolve any symbol from
+# its proxy table. Every unmangled-C DoBadTrampoline entry below is therefore
+# unreachable-by-app; the net covers the theoretical case. The names also fall
+# into these self-evidently non-NDK-app-facing groups:
+
+# aconfig feature-flag getters (generated bool accessors) — framework-internal.
+android_os_
+
+# bionic async-safe logging/format internals — not NDK-stable.
+async_safe_
+
+# libstatssocket NDK API (<stats_event.h>); apps use libstatssocket.so, not the
+# unreachable libandroid_runtime duplicate. Net keeps a stray call crash-free.
+AStatsEvent_
+AStatsSocket_close
+
+# JNI invocation API for runtime launchers (app_process/zygote), never NDK app
+# code. Also duplicated in libnativehelper's table (same disposition).
+JNI_CreateJavaVM
+JNI_GetCreatedJavaVMs
+JNI_GetDefaultJavaVMInitArgs
+AndroidRuntimeGetJavaVM
+JniInvocationCreate
+JniInvocationDestroy
+JniInvocationInit
+JniInvocationGetLibrary
+
+# libandroid_runtime framework internals — not NDK-stable public C API.
+crypto_scrypt
+get_genfs_labels_version
+jniUninitializeConstants
+registerFrameworkNatives
+PreventLibnativehelperLazyLoadingForTests
+PreventLibstatssocketLazyLoadingForTests
+
+# NDK-stable AFileDescriptor_{create,getFd,setFd} exist here too, but the
+# app-reachable copy is in libnativehelper.so where the UPSTREAM proxy already
+# covers them (DoCustomTrampoline_AFileDescriptor_*). The libandroid_runtime
+# copies are unreachable duplicates. See digitalis/docs/proxy-coverage-gaps.md.
+AFileDescriptor_create
+AFileDescriptor_getFd
+AFileDescriptor_setFd
+
+# ---------------------------------------------------------------------------
+# libnativehelper: launcher/cache internals, not in <nativehelper/JNIHelp.h>;
+# NDK apps never call them directly (the app-facing jni* helpers ARE covered in
+# digitalis_extra_libnativehelper_trampolines.cc).
+JniConstants_
+EnsureInitialized
+
+# ---------------------------------------------------------------------------
+# libwebviewchromium_plat_support: JNI_OnLoad is the proxy lib's own load-time
+# entry with dedicated native-bridge handling, not an app-called symbol. The
+# app-called Register* symbols ARE covered. See proxy-coverage-gaps.md §2.
+JNI_OnLoad
