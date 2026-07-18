@@ -129,7 +129,8 @@ TB=$(ls "$OUT"/tombstones/* 2>/dev/null; ls "$OUT"/tombstones/*/* 2>/dev/null)
   echo "       -> strict overcommit refused the mapping (raise CommitLimit / ratio,"
   echo "          or add swap; not a translator bug)."
   echo "  A DIFFERENT abort message => a different bug: send tombstone + logcat, and"
-  echo "  optionally the berberis trace (see virtio-crash-diagnostics.md, step 5)."
+  echo "  optionally the berberis trace: setenforce 0, setprop berberis.tracing"
+  echo "  '<pkg>=digitalis-trace.log', relaunch, pull it from /data/user/0/<pkg>/."
   echo "================================================================"
 } > "$OUT/SUMMARY.txt" 2>&1
 cat "$OUT/SUMMARY.txt"

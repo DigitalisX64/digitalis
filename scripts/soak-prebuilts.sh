@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# soak-prebuilts.sh — T0.3 reproduction + instrumentation driver for the
-# "emulator-exhaustion flaky SIGSEGV" (plan3 Tier 0, item T0.3).
+# soak-prebuilts.sh — reproduction + instrumentation driver for the
+# "emulator-exhaustion flaky SIGSEGV".
 #
-# Symptom being chased (see digitalis/docs/emulator-exhaustion-flaky-sigsegv.md):
+# Symptom being chased:
 # after a long test session, a *different* prebuilt app dies each run with
 #   Fatal signal 11 (SIGSEGV), code 2 (SEGV_ACCERR), fault addr 0x76....fff0
 # — the SAME high host address every time, near a page boundary; each app
