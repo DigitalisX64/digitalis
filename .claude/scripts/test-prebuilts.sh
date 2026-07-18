@@ -139,26 +139,25 @@ for apk in "${APKS[@]}"; do
         # Setting SIGSEGV to SIG_DFL" on a Chromium child's normal handler
         # uninstall), which the bare "SIG…SEGV" alternation would otherwise match
         # as a false-positive crash. Generic over every multi-process prebuilt.
-        native_crash="$(adb logcat -d 2>/dev/null | grep -v "libsigchain:" | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b" | head -3 || true)"
-        if [ -n "${native_crash}" ]; then
-            round_fail_reason="round ${round_idx}: ${native_crash:0:120}"
+        # Native crash signatures + a crashed Chromium sandboxed/privileged child.
+        # A genuine translator/guest fault always leaves a native signature
+        # (SIGILL->"Undefined arm64 instruction", SIGSEGV->"Fatal signal"/
+        # tombstone, SIGSYS->seccomp, Java->"FATAL EXCEPTION"); a crashed
+        # renderer/GPU child whose own handler swallows the debuggerd tombstone
+        # still shows up as ActivityManager scheduling a restart of the crashed
+        # SandboxedProcessService (the "Aw Snap" the main-pid check would miss),
+        # AND that restart is a real symptom: e.g. helium's GPU process repeatedly
+        # SIGSEGVs in the host ANGLE->Vulkan path, so the browser eventually
+        # aborts with "Timed out waiting for GPU channel". So a service restart
+        # IS a FAIL. Drop ART's libsigchain handler-management lines first — they
+        # print the signal *name* ("Setting SIGSEGV to SIG_DFL" on a child's
+        # normal exit) but are not crash reports (debuggerd's "Fatal signal" is),
+        # so the bare "SIG…SEGV" alternation would otherwise false-positive.
+        round_log="$(adb logcat -d 2>/dev/null | grep -v "libsigchain:" | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b|Scheduling restart of crashed service.*SandboxedProcessService" | head -3 || true)"
+        if [ -n "${round_log}" ]; then
+            round_fail_reason="round ${round_idx}: ${round_log:0:120}"
             round_fail=$((round_fail+1))
             round_outcomes+=( "R${round_idx}=FATAL" )
-            continue
-        fi
-        # A Chromium sandboxed/privileged child (renderer/GPU/utility) being
-        # restarted is only a regression when it actually *crashed*. Under the
-        # emulator's software GPU the Chromium GPU process routinely exits
-        # CLEANLY (it logs "GPU process exited unexpectedly: exit_code=0" after
-        # Landlock ENOSYS etc.) and is reinitialized with the browser still
-        # working — process churn, not a translator fault, and it carries no
-        # native crash signature. So a service restart is FATAL only when a
-        # native crash signature co-occurs (caught above); an uncorroborated
-        # restart is a WARN, not a gate FAIL. Generic over any Chromium prebuilt.
-        svc_restart="$(adb logcat -d 2>/dev/null | grep -E "Scheduling restart of crashed service.*SandboxedProcessService" | head -1 || true)"
-        if [ -n "${svc_restart}" ]; then
-            round_pass=$((round_pass+1))
-            round_outcomes+=( "R${round_idx}=Warn(svc-restart)" )
             continue
         fi
         if [ -z "${round_pid}" ]; then
