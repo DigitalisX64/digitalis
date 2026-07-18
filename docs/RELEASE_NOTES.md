@@ -1,4 +1,4 @@
-# Digitalis — JIT Coverage Parity: AES, LSE Atomics, Dot-Product & Complex-FP in the Second Gear (2026-07-14)
+# Digitalis — JIT Coverage Parity: AES, LSE Atomics, Dot-Product & Complex-FP in the Second Gear; ANGLE Extension-Proc Fix (2026-07-14 – 2026-07-18)
 
 This update closes the JIT-lowering gaps where an instruction ran correctly in
 the interpreter (or one JIT tier) but a hotter tier bailed — bringing the lite
@@ -6,7 +6,50 @@ and heavy tiers to parity with, and in places ahead of, Google's shipped Berberi
 16.0.0 (Android 17's `libndk_translation.so`). Nine changes landed, each with
 per-tier exec tests, the full `Arm64*` host suite green (3246 → 3288), both the
 arm64 and riscv64 translators building clean, and an on-device sample +
-bail-heavy-app gate with zero translator faults.
+bail-heavy-app gate with zero translator faults. A follow-up fixed the
+proxy-layer gap that crash-looped the Chromium GPU process (the Helium browser
+dying on any content-rich page) — `eglGetProcAddress` now honors the
+*advertised-implies-non-NULL* contract for ANGLE extension procs.
+
+## Fixed: eglGetProcAddress NULLed advertised ANGLE extension procs (Chromium GPU-process crash loop)
+
+ANGLE as the host GLES driver returns a non-NULL dispatch stub from
+`eglGetProcAddress` for every proc it knows, and advertises the matching
+extensions in `GL_EXTENSIONS`. The upstream libEGL proxy trampoline NULLs the
+guest return whenever its generated wrap table cannot marshal a proc. Callers
+that gate on the extension *string* rather than the probed pointer then call
+NULL: a Chromium 149 GPU process saw `GL_ANGLE_robust_client_memory`
+advertised, called the NULLed `glGetIntegervRobustANGLE` at context init,
+jumped to guest PC 0 (`berberis_HandleNoExec` SIGSEGV, crashpad-swallowed), and
+crash-looped until the browser aborted with "Timed out waiting for GPU
+channel". Pinned via `berberis.tracing` ("Trying to execute non-executable code
+at 0x0"), disassembly of the extension-flag-gated call site, and a
+`--disable-gl-extensions` falsification run.
+
+The fix stays entirely in `binary_translation/`:
+
+- **`proxy_loader`:** new `ProxyLibraryBuilder::RegisterExtraTrampolineOverrides`
+  — a Digitalis extra trampoline can now override a symbol whose primary
+  trampoline is *working* but incomplete. `InterceptSymbol` installs the
+  override with a `ChainedTrampoline{primary_marshal, primary_thunk}` callee so
+  it runs the upstream behavior first and only post-processes guest state
+  (chain slots dedupe across per-namespace re-interception; arm64-only, riscv64
+  byte-identical).
+- **`digitalis_extra_proxy`:** a libEGL `eglGetProcAddress` override that chains
+  to the upstream trampoline (its full core-GL wrap table intact) and, when
+  upstream returned NULL for a host-present proc, wraps it from a demand-driven
+  table of ~80 ANGLE/CHROMIUM procs: the full `GL_ANGLE_robust_client_memory`
+  set, `get_tex_level_parameter`, `multi_draw`, `polygon_mode`,
+  `request_extension`, `shader_pixel_local_storage`, `CHROMIUM_copy_texture`,
+  `CHROMIUM_bind_uniform_location`, `memory_object_flags`, `vulkan_image`, the
+  blob-cache and EGL-debug callback procs (guest callbacks wrapped with
+  `WrapGuestFunction`), and the sync-control queries. Procs of extensions ANGLE
+  never advertises on Android (D3D streams, Metal shared events, macOS GPU
+  power) deliberately stay NULL.
+
+The Chromium-based Helium browser now renders content-rich pages on the default
+GPU path with zero GPU-process crashes (previously a crash every ~500 ms) and
+passes the prebuilt gate.
 
 ## Crypto: AES now runs on host AES-NI (lite + heavy)
 
@@ -58,16 +101,28 @@ a silently-logged line.
 - **`hello-fcma`** — FCADD/FCMLA, all four rotations, ×4000 each.
 - **`hello-lseatomics`** — LDSET/LDCLR/LDEOR, LDSMAX/LDSMIN/LDUMAX/LDUMIN, CASP,
   ×4000 each, with signed-vs-unsigned min/max distinguishing cases.
+- **`hello-eglext`** — the eglGetProcAddress extension-proc contract. Creates a
+  real ES2 pbuffer context, enforces *advertised-implies-non-NULL* for every
+  covered extension the driver reports (the exact landmine behind the Chromium
+  GPU-process crash aborts the sample), then calls the wrapped procs: robust
+  getters cross-checked bit-exact against the core `glGet*` API ×100,
+  `glGetShaderivRobustANGLE` compile-status, `glGetTexLevelParameterivANGLE` on
+  a known-size texture, `glPolygonModeANGLE` error-free, and
+  `eglDebugMessageControlKHR` guest-callback register/unregister returning
+  `EGL_SUCCESS` (exercising the host→guest callback wrapping).
 
 ## Verification
 
 Full `Arm64*` host suite: 3288 pass. Both `libberberis_arm64` and
 `libberberis_riscv64` build clean. Fresh full `m` image booted with the lib baked
-in (md5-verified, no hot-push staleness); sample suite and the 15 prebuilt APKs
-(`test-prebuilts.sh`) show no new crash and zero translator signatures — the
-residual prebuilt FAILs (helium's Chromium sandbox child, WhatsApp's Voltron
-assertion, the broken Honkai APK) reproduce with all JIT tiers disabled, so they
-are pre-existing/environmental, not from these changes.
+in (md5-verified, no hot-push staleness); sample suite 133/133 PASS (including
+the three new samples) and the prebuilt gate is 14 PASS / 1 FAIL. Of the three
+prebuilt FAILs seen at the start of this cycle: helium was root-caused to the
+eglGetProcAddress gap above and now passes; the Honkai install-conflict was a
+gate artifact (the already-installed original-signature copy is now reused and
+launch-tested); WhatsApp's failure is its own in-app main-thread assertion
+during EULA teardown (a pure Java stack with no translator frame) and remains
+the one correctly-reported FAIL.
 
 ---
 

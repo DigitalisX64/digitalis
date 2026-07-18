@@ -1714,11 +1714,25 @@ with many callbacks that can't be verified, and a library's internal C++
 what's covered and what's deferred, with the reason for each — lives in
 [`proxy-coverage-gaps.md`](./proxy-coverage-gaps.md).
 
-Two sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
+Three sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
 are *not* `DoBadTrampoline` stories. **Missing-symbol additions** supply symbols
 the upstream proxy omits entirely (libc fast-path helpers like the `*64`
 stat/mmap family, libm's `__*_finite` math entry points) through the same
-extras-registry — they never abort, they just fill a hole. And the **host-call
+extras-registry — they never abort, they just fill a hole. **Overrides of a
+working-but-incomplete primary trampoline**
+(`ProxyLibraryBuilder::RegisterExtraTrampolineOverrides`) replace an upstream
+custom trampoline while keeping it callable: the override receives the
+primary's resolved `{marshal, thunk}` pair as a chained callee, runs the
+upstream behavior first, and only post-processes the result. The motivating
+case is libEGL's `eglGetProcAddress`: the upstream trampoline NULLs the guest
+return for any proc its generated wrap table can't marshal, but ANGLE — the
+host GLES driver — *advertises* the matching extensions, and real engines
+(Chromium's GL bindings) gate calls on the extension string rather than the
+probed pointer, so an advertised-but-NULLed proc means the app jumps to guest
+PC 0 and dies. The Digitalis override chains to the upstream trampoline (its
+several-hundred-entry core-GL wrap table intact) and wraps the ~80
+ANGLE/CHROMIUM extension procs it couldn't — which is what stopped the
+Chromium GPU process from crash-looping under translation. And the **host-call
 redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
 skips the normal symbol-lookup path (the linker's jump table, the PLT) and
 branches *directly into a host system library's x86_64 code* — bytes the guest
