@@ -1,3 +1,76 @@
+# Digitalis — JIT Coverage Parity: AES, LSE Atomics, Dot-Product & Complex-FP in the Second Gear (2026-07-14)
+
+This update closes the JIT-lowering gaps where an instruction ran correctly in
+the interpreter (or one JIT tier) but a hotter tier bailed — bringing the lite
+and heavy tiers to parity with, and in places ahead of, Google's shipped Berberis
+16.0.0 (Android 17's `libndk_translation.so`). Nine changes landed, each with
+per-tier exec tests, the full `Arm64*` host suite green (3246 → 3288), both the
+arm64 and riscv64 translators building clean, and an on-device sample +
+bail-heavy-app gate with zero translator faults.
+
+## Crypto: AES now runs on host AES-NI (lite + heavy)
+
+`AESE`/`AESD`/`AESMC`/`AESIMC` were interpreter-only in both JITs. They now lower
+to host AES-NI (bit-exact, gated on `kHasAES`): `AESE` = `PXOR`+`AESENCLAST`,
+`AESD` = `PXOR`+`AESDECLAST`, and `AESIMC` = `AESIMC`. x86 has no standalone
+MixColumns, but `AESMC(x) = AESENC(AESDECLAST(x,0),0)` — the `AESDECLAST`
+InvSubBytes/InvShiftRows exactly cancel the `AESENC` SubBytes/ShiftRows, leaving
+MixColumns. Validated against the interpreter's from-scratch FIPS-197 vectors.
+(SHA/SM3/SM4 stay interpreter-only.)
+
+## LSE atomics: the heavy tier's first internal loop
+
+The heavy optimizer had no fast path for the LSE read-modify-write atomics that
+`std::atomic` fetch_or/and/xor and lock-free containers emit everywhere. It now
+lowers `LDCLR`/`LDSET`/`LDEOR`, `LDSMAX`/`LDSMIN`/`LDUMAX`/`LDUMIN` (32/64-bit)
+and the 32-bit `CASP` pair. Since x86 has no single fetch-and-bitwise, these use a
+`LOCK CMPXCHG` retry loop — the heavy frontend's **first internal back-edge
+loop**. The key that made it tractable: re-read `[mem]` fresh each iteration, so
+no value is carried across the loop back-edge (only the loop-invariant mask
+enters), which the linear-scan register allocator handles cleanly. The lite tier
+also gained `LDXP`/`STXP` pair-exclusive.
+
+## Dot-product, complex arithmetic, CRC32C in the second gear
+
+- `SDOT`/`UDOT` (vector + by-element, incl. I8MM `USDOT`/`SUDOT`) now lower in
+  the heavy tier (`PMOVSXBW`/`PMOVZXBW` widen → `PMADDWD` → `PHADDD`), so hot
+  quantized-ML kernels gear up.
+- FP32 `FCADD` (±90°) and `FCMLA` (rotations 0/90/180/270) now lower in the heavy
+  tier for FFT/DSP loops.
+- `CRC32C` (Castagnoli) now lowers in the heavy tier via SSE4.2 `crc32` (it was
+  lite-only).
+
+## Correctness: scalar by-element SQDMULH/SQRDMULH/SQDMULL
+
+The scalar by-element `SQDMULH`/`SQRDMULH`/`SQDMULL` encodings were routed to
+`Undefined()` → guest `SIGILL` for well-formed user-space instructions. The
+interpreter now implements them (signed-saturating doubling-multiply: high-half
+for SQDMULH/SQRDMULH, widening for SQDMULL); the JITs bail to it.
+
+## New heavy-tier validation samples
+
+Two samples exercise the new lowerings on-device and regression-protect them,
+distinct from the existing liveness probes: they run each op in a hot loop
+(past the gear-up threshold, so the heavy tier is exercised) and **`abort()` on
+any golden-value mismatch**, so a heavy-tier miscompile surfaces as a crash, not
+a silently-logged line.
+
+- **`hello-fcma`** — FCADD/FCMLA, all four rotations, ×4000 each.
+- **`hello-lseatomics`** — LDSET/LDCLR/LDEOR, LDSMAX/LDSMIN/LDUMAX/LDUMIN, CASP,
+  ×4000 each, with signed-vs-unsigned min/max distinguishing cases.
+
+## Verification
+
+Full `Arm64*` host suite: 3288 pass. Both `libberberis_arm64` and
+`libberberis_riscv64` build clean. Fresh full `m` image booted with the lib baked
+in (md5-verified, no hot-push staleness); sample suite and the 15 prebuilt APKs
+(`test-prebuilts.sh`) show no new crash and zero translator signatures — the
+residual prebuilt FAILs (helium's Chromium sandbox child, WhatsApp's Voltron
+assertion, the broken Honkai APK) reproduce with all JIT tiers disabled, so they
+are pre-existing/environmental, not from these changes.
+
+---
+
 # Digitalis — App-Namespace Isolation Fix, Heavy-Tier NEON/FP Coverage & Golden-Checked ML Samples (2026-07-10)
 
 This update fixes a namespace-isolation bug that crashed a major Unity game

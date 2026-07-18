@@ -1,6 +1,6 @@
 # ARM64 Opcode Support Gaps
 
-> **Status re-verified 2026-07-10** against the current decoder, lite translator (`.inc` split), and heavy optimizer (`frontend.cc`). §2 (SVE/SME/FP8 absent), §3 (interpreter-only crypto/IEEE-CRC32), and §3a.1 (hardware-conditional `.2D`) are unchanged; §3a (heavy-tier coverage) was substantially expanded — most scalar FP, the broad NEON compute surface, and several LSE atomics now lower in the second gear.
+> **Status re-verified 2026-07-14** against the current decoder, lite translator (`.inc` split), and heavy optimizer (`frontend.cc`). §2 (SVE/SME/FP8 absent) is unchanged. §3 changed: **AES (`AESE/AESD/AESMC/AESIMC`) is now JIT-lowered via AES-NI** (lite + heavy) — only SHA/SM3/SM4 and IEEE-CRC32 remain interpreter-only crypto; scalar by-element `SQDMULH`/`SQRDMULH`/`SQDMULL` (previously `Undefined()`→`SIGILL`) are now implemented. §3a (heavy-tier coverage) was expanded again — the LSE bitwise + min/max atomics + `CASP` 32-bit pair, `CRC32C`, `SDOT`/`UDOT`, and FP32 `FCADD`/`FCMLA` now lower in the second gear (the heavy frontend gained its first internal `CMPXCHG` back-edge loop). §3a.1 (hardware-conditional `.2D`) is unchanged.
 
 Four kinds of gap exist in the Digitalis ARM64 backend:
 
@@ -56,7 +56,7 @@ These run correctly but force the dispatcher out of the JIT. The lite translator
 | Instructions | Why interpreter-only |
 |---|---|
 | `CRC32B/H/W/X` (IEEE only) | The IEEE 802.3 polynomial (0x04C11DB7) differs from the host SSE4.2 `crc32` (Castagnoli) instruction. A `PCLMULQDQ` reflected-Barrett lowering is possible but needs per-size folding constants (the reduction exponent is `x^{8·nbytes}`, differing for B/H/W/X); deferred as high-effort/low-value since the interpreter is correct and zlib on Android uses its own software tables rather than the ARM CRC32 intrinsic. The Castagnoli `CRC32C*` group **is** JIT-lowered (host `crc32`). |
-| `AESE/AESD/AESMC/AESIMC`, `SHA1*`, `SHA256*`, `SHA512*`, `SM3*`, `SM4*` | JIT bails in the crypto handlers; interpreter executes. The ARM and x86 AES/SHA instruction sets decompose rounds differently (non-isomorphic), so a correct AES-NI/SHA-NI mapping is high-effort; deferred as low-value (Android crypto routes through host BoringSSL/Conscrypt, rarely executing these guest instructions). `PMULL/PMULL2` (`.1Q` via `PCLMULQDQ`, `.8H` via per-bit widening) **is** JIT-lowered. |
+| `SHA1*`, `SHA256*`, `SHA512*`, `SM3*`, `SM4*` | JIT bails in the crypto handlers; interpreter executes. The ARM and x86 SHA instruction sets decompose rounds differently (non-isomorphic), so a correct SHA-NI mapping is high-effort; deferred as low-value (Android crypto routes through host BoringSSL/Conscrypt, rarely executing these guest instructions). `PMULL/PMULL2` (`.1Q` via `PCLMULQDQ`, `.8H` via per-bit widening) **is** JIT-lowered. `AESE/AESD/AESMC/AESIMC` are **now** JIT-lowered in both the lite and heavy tiers via host AES-NI (gated on `kHasAES`): `AESE`=`PXOR`+`AESENCLAST`, `AESD`=`PXOR`+`AESDECLAST`, `AESMC`=`AESENC(AESDECLAST(x,0),0)` (the standalone-MixColumns identity), `AESIMC`=`AESIMC`. |
 
 ### Scalar system
 | Family | Instructions | Notes |
@@ -82,10 +82,12 @@ The interpreter is ~10–100× slower per instruction than JIT-translated code, 
 | Promotion target | Status |
 |---|---|
 | IEEE `CRC32*` | Deferred — `PCLMULQDQ` per-size reflected-Barrett; zlib on Android uses software tables, not the intrinsic |
-| `AES*` / `SHA1*` / `SHA256*` | Deferred — non-isomorphic AES-NI/SHA-NI mapping; crypto routes through host BoringSSL |
+| `SHA1*` / `SHA256*` | Deferred — non-isomorphic SHA-NI mapping; crypto routes through host BoringSSL. (`AES*` is now JIT-lowered via AES-NI, above.) |
 | `SUQADD/USQADD .1D/.2D` | Deferred — 64-bit-element 65-bit saturation; vanishingly rare |
 
-Recently promoted to the JIT (no longer interpreter-only): vector `FCVTN`/`FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE`/`URSQRTE`, the I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family, `.2S<-.2D` `ADDHN/SUBHN/RADDHN/RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and `PMULL`. The `ORR/BIC #imm` vector forms were also corrected to read-modify-write (they previously replaced `Vd`).
+Recently promoted to the JIT (no longer interpreter-only): the AES crypto instructions (`AESE/AESD/AESMC/AESIMC` via AES-NI, lite + heavy); vector `FCVTN`/`FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE`/`URSQRTE`, the I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family, `.2S<-.2D` `ADDHN/SUBHN/RADDHN/RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and `PMULL`. The `ORR/BIC #imm` vector forms were also corrected to read-modify-write (they previously replaced `Vd`).
+
+Correctness fix (was `Undefined()`→`SIGILL`, now implemented in the interpreter with the JITs bailing to it): **scalar by-element `SQDMULH`/`SQRDMULH`/`SQDMULL`** (`AdvSimdScalarXIndexedElement`, opcodes 1100/1101/1011). These well-formed user-space encodings previously raised a guest `SIGILL`; the interpreter now computes the signed-saturating doubling-multiply (high-half for SQDMULH/SQRDMULH, widening for SQDMULL). The lite tier also gained native **`LDXP`/`STXP`** pair-exclusive lowering (via `CMPXCHG16B`).
 
 AdvSIMD modified-immediate correctness fix: **`FMOV` (vector, immediate)** (`cmode=0b1111`) was unimplemented in `ExpandSimdModifiedImm` (interpreter) and its JIT mirror — it byte-replicated `imm8` instead of running `VFPExpandImm`, so `fmov v.4s, #1.0` (`imm8=0x70`) yielded `0x70707070` (≈2.97e29f) per lane instead of `0x3F800000`. This corrupted any NEON `floorf()`/area computation that materialises a float constant via FMOV immediate — Unity 6 (Crossy Road, Temple Run 2) computed a garbage allocation size (`-N<<32`) and self-aborted with `raise(SIGTRAP)`. Now implements `VFPExpandImm` for single- and double-precision FMOV vector immediates in both backends (`op=1/cmode=0b1111`, `fmov v.2d`, was also mis-routed to MVNI). Covered by `FmovImm4S`/`FmovImm2D` exec tests.
 
@@ -117,7 +119,10 @@ The heavy optimizer **now translates** (current `frontend.{h,cc}` coverage). The
 - **NEON structured load/store:** `LD1`-`LD4`/`ST1`-`ST4` (multi-structure de-interleave/interleave), `LD1R`, and the single-structure `LD1`/`ST1` forms.
 - **AdvSIMD modified-immediate:** `MOVI`/`MVNI`/`FMOV` (vector) / `ORR`/`BIC` (vector immediate), and `DUP` (general register).
 - **SIMD&FP load/store:** `LDR`/`STR` (Q/D/S) and `LDP`/`STP` (Q pair).
-- **Load/store-exclusive:** `LDXR`/`LDAXR`/`STXR`/`STLXR` (sized `LOCK CMPXCHG`), `LDAR`/`STLR`.
+- **Load/store-exclusive & LSE atomics:** `LDXR`/`LDAXR`/`STXR`/`STLXR` (sized `LOCK CMPXCHG`), `LDAR`/`STLR`, `CAS*`, `SWP*`, `LDADD*`, and now the bitwise `LDCLR*`/`LDSET*`/`LDEOR*` and min/max `LDSMAX*`/`LDSMIN*`/`LDUMAX*`/`LDUMIN*` (32/64-bit, via a `CMPXCHG` retry loop — the heavy frontend's first internal back-edge loop) plus `CASP` 32-bit pair (packed `CMPXCHG`).
+- **CRC32C (Castagnoli):** `CRC32CB/CH/CW/CX` via host SSE4.2 `crc32` (gated on `kHasSSE4_2`; IEEE `CRC32*` stays interpreter-only).
+- **Dot product:** `SDOT`/`UDOT` (vector + by-element, incl. I8MM `USDOT`/`SUDOT`) via `PMOVSXBW/PMOVZXBW`+`PMADDWD`+`PHADDD`.
+- **Complex arithmetic (FP32):** `FCADD` (±90°) and `FCMLA` (rotations 0/90/180/270), `.2s`/`.4s`. (FP16, FP64, and the indexed `FCMLA` still bail.)
 
 Promoting `ADRP`, `MRS TPIDR_EL0`, and `SBFX` in particular mattered: these appear in nearly every real-app region, so heavy bailing on them previously kept the second gear from ever engaging on real workloads.
 
@@ -131,7 +136,7 @@ Still **heavy-tier-only** (the heavy frontend bails; lite/interpreter handle the
 | Scalar FP | `FCSEL`; all FP16 forms; `FCVT`-to-half & `BFCVT`; FP64 `FCVTAS`/`FCVTAU`; the `rmode=01` top-half `FMOV V.D[1]` | Most scalar FP now lowers (see the list above). `FCSEL` is a *deliberate* bail (a region-level miscompile), not a missing implementation. |
 | NEON (residual) | all `.2D`/64-bit-lane integer forms (§3a.1, hardware-conditional); all FP16 vector forms; byte-lane (`MUL`/`MLA`/`MLS` 8-bit, byte-lane shifts); the vector FP-misc ops `FABS`/`FNEG`/`FSQRT`/`FRECPE`/`FRSQRTE`/`URECPE`/`URSQRTE`/`SQABS`/`SQNEG` and vector `FCVTL`/`FCVTN`/`FCVTXN`; `FACGE`/`FACGT`; scalar three-same (beyond scalar `SQDMULH`/`SQRDMULH`); scalar-pairwise; scalar by-element; scalar D-width saturating narrows | The broad NEON compute surface now lowers (three-same, three-diff, two-reg-misc, shifts, indexed, permute/copy/TBL, structured load/store — see the list above); this is the genuine remainder. |
 | SIMD extensions | `FCADD`/`FCMLA` (FCMA), `BFDOT`/`BFMMLA` (BF16), `SDOT`/`UDOT`/`USDOT` (DotProduct), `SMMLA`/`UMMLA`/`USMMLA` (I8MM) | Still heavy-bails; lite JIT-lowers most of these. |
-| Atomics (LSE) | `LDCLR*`/`LDSET*`/`LDEOR*`, `LDSMAX*`/`LDSMIN*`/`LDUMAX*`/`LDUMIN*`, `CASP*`, `LDXP`/`STXP` | `LDAR`/`STLR`, `LDXR`/`STXR`, `CAS*`, `SWP*`, and `LDADD*` now lower; the listed variants still bail (lite/interpreter handle them). |
+| Atomics (LSE) | `CASP` 128-bit pair (`.2D`), `LDXP`/`STXP` pair-exclusive | `LDAR`/`STLR`, `LDXR`/`STXR`, `CAS*`, `SWP*`, `LDADD*`, and now the **bitwise `LDCLR*`/`LDSET*`/`LDEOR*` and min/max `LDSMAX*`/`LDSMIN*`/`LDUMAX*`/`LDUMIN*` (32/64-bit) plus `CASP` 32-bit pair** all lower in the second gear (a `CMPXCHG` retry loop that re-reads memory each iteration, so nothing is carried across the loop back-edge — the heavy frontend's first internal loop). The 128-bit `CASP` (`CMPXCHG16B`, no simple machine-IR op) and the `LDXP`/`STXP` pair forms still bail (lite/interpreter handle them). Byte/halfword bitwise/min-max forms also bail (no zero-extending sized-load IR op). |
 | Crypto | `AES*`, `SHA1*`/`SHA256*`/`SHA512*`, `SM3*`/`SM4*`, `EOR3`/`BCAX`/`RAX1`/`XAR` | Heavy bails (these are interpreter-only even at the lite tier — see §3). |
 
 ### 3a.1 Permanently-deferred `.2D` / 64-bit-lane forms (hardware-conditional, not translator gaps)
@@ -161,7 +166,7 @@ What matters in practice for ARM64-only Android apps on the Digitalis emulator:
 | **SHA / AES (perf)** | TLS, content hashing | **Low–Medium** — correct, interpreter-speed; most TLS goes through host BoringSSL/Conscrypt anyway. |
 | **`SUQADD/USQADD .1D/.2D`, MTE, non-modelled MRS/MSR (perf)** | Vanishingly rare | **None–Low** — correct, interpreter-speed; not on real hot paths. |
 | **SVE / SVE2 / SME / FP8** | Effectively no shipping Android apps (no Android device exposes them to user code yet) | **None** — documented deferred gap. |
-| **Heavy-tier-only ops (§3a: `FCSEL`, remaining LSE atomics, `.2D`/FP16 vector, FCMA/BF16/dot-product/I8MM, crypto)** | Any app with a hot loop over one of these | **None–Low** — correct via lite/interpreter; the only cost is that such a hot region can't gear up to the heavy optimizer. |
+| **Heavy-tier-only ops (§3a: `FCSEL`, 128-bit `CASP`/`LDXP`/`STXP`, `.2D`/FP16 vector, FP16/FP64 FCMA, BF16/I8MM-matmul, SHA/SM3/SM4)** | Any app with a hot loop over one of these | **None–Low** — correct via lite/interpreter; the only cost is that such a hot region can't gear up to the heavy optimizer. (AES, the 32/64-bit LSE bitwise/min-max atomics + `CASP`-32, `CRC32C`, `SDOT`/`UDOT`, and FP32 `FCADD`/`FCMLA` now gear up.) |
 
 The only remaining decoder gaps are the SVE/SME/FP8 scalable/matrix extensions (no Android user-space exposure). The remaining heavy-tier gaps (§3a) are purely a second-gear performance consideration, not a correctness gap. Within §3a, the `.2D` / 64-bit-lane forms of §3a.1 are **hardware-conditional** — they bail because the host emulator baseline lacks AVX-512 (a few need SSE4.1/4.2), not because the translator is missing an implementation; they are correct-and-slow via the lite/interpreter 64-bit-GPR fallbacks and are expected to stay heavy bails on any AVX-512-less host.
 
