@@ -47,7 +47,7 @@ PreventLibstatssocketLazyLoadingForTests
 # NDK-stable AFileDescriptor_{create,getFd,setFd} exist here too, but the
 # app-reachable copy is in libnativehelper.so where the UPSTREAM proxy already
 # covers them (DoCustomTrampoline_AFileDescriptor_*). The libandroid_runtime
-# copies are unreachable duplicates. See digitalis/docs/proxy-coverage-gaps.md.
+# copies are unreachable duplicates. See the coverage inventory in digitalis/docs/how-it-works.md §13.
 AFileDescriptor_create
 AFileDescriptor_getFd
 AFileDescriptor_setFd
@@ -62,5 +62,5 @@ EnsureInitialized
 # ---------------------------------------------------------------------------
 # libwebviewchromium_plat_support: JNI_OnLoad is the proxy lib's own load-time
 # entry with dedicated native-bridge handling, not an app-called symbol. The
-# app-called Register* symbols ARE covered. See proxy-coverage-gaps.md §2.
+# app-called Register* symbols ARE covered. See the coverage inventory in how-it-works.md §13.
 JNI_OnLoad

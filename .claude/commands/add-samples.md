@@ -77,7 +77,7 @@ Do this **serially, one sample at a time** (the build/deploy/test gate is the sl
 
 4. **If the sample surfaces a translator bug** (`Undefined arm64 instruction`, SIG11/SIG4/SIG6, a proxy `Bad '<sym>' call`, a wrong-output `CHECK` failure): **fix the root cause in `frameworks/libs/binary_translation/`, never in the sample.** This is binding:
    - Missing instruction → add it to the decoder + interpreter (+ lite JIT, + heavy optimizer where reachable). For a *common* instruction, cover **all three tiers** and add a per-tier test.
-   - Proxy gap (`DoBadTrampoline`) → cover it in-surface under `android_api/digitalis_extra_proxy/` (see `proxy-coverage-gaps.md`), never edit `native_bridge_support/`.
+   - Proxy gap (`DoBadTrampoline`) → cover it in-surface under `android_api/digitalis_extra_proxy/` (see the §13 coverage inventory in `how-it-works.md`), never edit `native_bridge_support/`.
    - Syscall/struct/signal issue → `kernel_api/` or `guest_os_primitives/`.
    - Prefer a trace (`berberis.tracing`) over a static audit to localize the offending guest PC. Strip any temporary debug logging before committing.
 

@@ -1710,9 +1710,39 @@ Some symbols genuinely can't be expressed as a correct trampoline and are left
 to abort cleanly rather than be covered with guesswork: variadic functions, a
 function that *returns* a function pointer of unknown signature, structs packed
 with many callbacks that can't be verified, and a library's internal C++
-(`_ZN7android…`) symbols that NDK apps never call. The current inventory —
-what's covered and what's deferred, with the reason for each — lives in
-[`proxy-coverage-gaps.md`](./proxy-coverage-gaps.md).
+(`_ZN7android…`) symbols that NDK apps never call. (Two refinements: a *mangled*
+symbol with a flat C-ABI signature that an app actually calls forwards like any
+pointer/int symbol — only non-flat mangled symbols, by-value `sp<>`, C++ ABI
+types are truly out; and a printf-style `fmt, ...` symbol that consumes its own
+format string IS coverable by walking the guest variadic tail per AAPCS64 and
+formatting host-side. A struct of fixed-signature callbacks is coverable too —
+wrap each field, pin the layout with `static_assert(offsetof/sizeof)`, and
+verify the per-field marshalling with a host recorder test even when the API
+can't run end-to-end on the emulator.)
+
+**Coverage inventory.** No app can hit a `Bad '<sym>' call` abort from a
+remaining `DoBadTrampoline` symbol: every one is covered, contract-stubbed
+(`AIBinder_toPlatformBinder` → null `sp<>`, `glGetVkProcAddrNV` → NULL,
+`ANativeWindow_setPerformInterceptor` → no-op), or caught by the loud arm64-only
+`DoGracefulBadTrampoline` net (greppable `BAD-TRAMPOLINE` trace + zeroed x0
+instead of an abort). The claim is machine-checked:
+`digitalis/scripts/enumerate-proxy-bad-symbols.py` classifies every
+`DoBadTrampoline` symbol against `proxy-bad-symbol-allowlist.txt` (each
+allowlist entry carries its own reasoned disposition) and fails if any
+unmangled-C symbol is neither covered nor allowlisted; it regenerates
+`proxy-bad-symbol-audit.md` (currently **0 uncovered**). Per-library arm64
+counts: the app-facing libraries carry 65 `DoBadTrampoline` entries, 38 covered
+in `digitalis_extra_proxy/` (13 libnativehelper JNI helpers incl. the varargs
+`jniThrowExceptionFmt`, 17 libwebviewchromium `Register*`/`GraphicBufferImpl`
+symbols, 3 libbinder_ndk, 2 libcamera2ndk callback-struct trampolines, 2
+`glGetVkProcAddrNV` stubs, 1 libnativewindow stub); the 27 remaining (8 libEGL
+mangled-internal, 18 libnativehelper launcher/cache internals, 1 webview
+`JNI_OnLoad`) are not NDK-stable / not app-reachable and ride the net.
+`libandroid_runtime`'s 1135 entries are unreachable duplicates (apps resolve
+the only NDK-stable trio via `libnativehelper.so`, covered upstream). One
+GetProcAddress-contract rule bears repeating: an API like `eglGetProcAddress`
+must keep *advertised-implies-non-NULL* — returning NULL for a proc whose
+extension the driver advertises sends string-gated callers to guest PC 0.
 
 Three sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
 are *not* `DoBadTrampoline` stories. **Missing-symbol additions** supply symbols
