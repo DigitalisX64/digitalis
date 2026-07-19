@@ -1,3 +1,77 @@
+# Digitalis — Residual Sweep: FP16 FMA, IEEE CRC32, FCVTXN & Correctness Fixes for FP16 Converts and the ±0 Tie (2026-07-19)
+
+The final coverage sweep over the "hard" residue — several items of which turned
+out to be **correctness bugs, not missing performance**. `Arm64*` host suite
+3517 → 3560 (+43, zero failures); both guest translators build clean; sample
+suite 138/138; prebuilt gate 14 PASS / 1 FAIL (the known app-internal WhatsApp
+assertion).
+
+## Corrected — these were wrong, not just slow
+
+- **FP16 scalar↔integer conversions** (FCVTZS/ZU/NS/…/AS/AU, SCVTF/UCVTF, incl.
+  fixed-point) hit `Undefined()` or mis-scaled the fixed-point factor as FP64 in
+  the interpreter — so they were *wrong everywhere* (the JITs bail to the
+  interpreter). Now widen fp16→FP32 exactly and reuse the FP32 convert with the
+  scale in the FP32 domain, then narrow RNE. The `FpSingleToHalfRN` helper was
+  rewritten and verified bit-exact against hardware F16C over the full 2³²
+  float space (0 non-NaN mismatches).
+- **FP16 FMAX/FMAXNM *and* FMINNM ±0 tie:** returned −0h where ARM specifies
+  max(+0,−0)=+0. Fixed in the lite and heavy tiers (the FP32/FP64 paths were
+  already correct).
+
+## FP16 FMA — the "must bail" verdict was wrong
+
+The earlier note that FP16 fused multiply-add can't be JIT-lowered (double
+rounding) was mistaken. The interpreter and lite tier already compute it
+correctly by fusing in **FP64** — FP64's 53-bit mantissa ≥ 2·11+2, so
+FP64-fuse-then-RNE-narrow-to-FP16 is correctly *single*-rounded — and only the
+heavy tier bailed. Heavy now mirrors that FP64-fusion path (scalar
+FMADD/FMSUB/FNMADD/FNMSUB + vector FMLA/FMLS `.4h`/`.8h`). A round-to-odd
+approach was evaluated and rejected (it would diverge from the interpreter).
+
+## Newly lowered
+
+- **IEEE-802.3 CRC32B/H/W/X** (lite + heavy) via PCLMULQDQ reflected-Barrett
+  reduction (gated `kHasCLMUL`, bit-exact against the interpreter, constants
+  cross-checked against zlib's tables) — the "low-value, interpreter-only" item,
+  now geared up. (Castagnoli CRC32C* was already lowered.)
+- **FCVTXN/FCVTXN2** (`.2s←.2d` round-to-odd), heavy, via a **pure-SSE** recipe
+  (round-trip inexact detection + LSB force — no MXCSR global-state hazard),
+  verified bit-exact vs the interpreter over 20M fuzz doubles. This resolves the
+  "needs MXCSR the heavy IR can't expose" deferral without any MXCSR.
+- **FP16 FMULX** (0·∞→±2.0) and the **FP16 pairwise** family (FADDP/FMAXP/FMINP/
+  FMAXNMP/FMINNMP), scalar + vector.
+
+## Verified complete — nothing to implement
+
+The **proxy surface** is confirmed clean: the bad-symbol enumerator reports
+**0 uncovered** NDK-stable symbols (42 Digitalis-covered, exit 0); the
+`eglGetProcAddress` failed-wrap log remains the standing watch signal for new
+host-driver extensions.
+
+## Documented deferrals (correct fallback in place)
+
+Two items stay bailing by choice — both route to a correct fallback, both are
+rare, both are high-risk to JIT-lower: scalar saturating shifts
+SQSHL/UQSHL/SQRSHL/UQRSHL in heavy (a deeply branchy per-lane saturation
+sequence; routes to lite) and the fp16-int-convert JIT fast path (routes to the
+now-correct interpreter). And three remain blocked by disproportionate
+infrastructure or lack of a host primitive, documented in
+`unsupported-opcodes.md`: the `.2D`/64-bit-lane AVX-512 forms (need an EVEX
+assembler backend + CPUID plumbing built first), SHA/SM3/SM4 (the assembler has
+no SHA-NI ops and the ARM↔x86 rounds are non-isomorphic — hash-corrupting if
+wrong; SM3/SM4/SHA512 have no x86 primitive), and SVE/SME/FP8 (a from-scratch
+scalable-vector decode tree + Z/P register file; no Android user-space exposure).
+
+## Samples
+
+`hello-fp16arith` gains FP16-FMA (against an FP64-fusion oracle on a
+non-exactly-representable case), FMULX, and the fp16↔int converts;
+`hello-neonmisc` gains FCVTXN round-to-odd and IEEE CRC32 — all golden-checked,
+verified on device.
+
+---
+
 # Digitalis — JIT Coverage Parity & the Second-Gear Sweeps: AES, Full LSE Atomics, FCSEL, FP16, I8MM/BF16, the NEON Residue & the ANGLE Extension-Proc Fix (2026-07-14 – 2026-07-19)
 
 This update closes the JIT-lowering gaps where an instruction ran correctly in
