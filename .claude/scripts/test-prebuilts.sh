@@ -50,6 +50,22 @@ shopt -s nullglob
 # Non-recursive on purpose: top-apps/ and top-games/ (fetch-prebuilt-apks.py
 # staging) are excluded from this gate.
 APKS=( "${PREBUILTS_DIR}"/*.apk )
+# A split app (one whose store install is base.apk + config/asset splits, e.g. a
+# game shipped as an apkm/xapk) cannot be represented as one installable *.apk —
+# merging the splits into a single APK forces a re-sign, which trips signature
+# anti-tamper and also collides with an already-installed genuine copy. Such an
+# app is dropped in as an immediate SUBDIRECTORY holding its split *.apk files;
+# it is installed with `adb install-multiple`, preserving the original
+# signature. Generic over any split app dropped in this way — no app names are
+# hard-coded. top-apps/ and top-games/ stay excluded (they are fetch staging,
+# not split-app groups).
+for d in "${PREBUILTS_DIR}"/*/; do
+    dname="$(basename "${d}")"
+    [ "${dname}" = "top-apps" ] && continue
+    [ "${dname}" = "top-games" ] && continue
+    dsplits=( "${d}"*.apk )
+    [ ${#dsplits[@]} -gt 0 ] && APKS+=( "${d%/}" )
+done
 shopt -u nullglob
 
 if [ ${#APKS[@]} -eq 0 ]; then
@@ -78,15 +94,36 @@ fail=0
 declare -a RESULTS
 
 for apk in "${APKS[@]}"; do
-    base="$(basename "${apk}")"
+    # A target is either a single *.apk file or a split-app subdirectory. The
+    # per-target body below (force-stop, launch, watch, content check) is
+    # identical for both; only the package-name source and the install command
+    # differ.
+    install_ok=0
+    if [ -d "${apk}" ]; then
+        base="$(basename "${apk}")/ (split)"
+        shopt -s nullglob
+        splits=( "${apk}"/*.apk )
+        shopt -u nullglob
+        # The base split (no config/asset suffix) carries the package name;
+        # `base.apk` if present, else the first split.
+        base_apk="${splits[0]}"
+        for s in "${splits[@]}"; do
+            [ "$(basename "${s}")" = "base.apk" ] && base_apk="${s}"
+        done
+        pkg="$("${AAPT2}" dump packagename "${base_apk}" 2>/dev/null | head -1)"
+        adb install-multiple -r -g "${splits[@]}" >/dev/null 2>&1 && install_ok=1
+    else
+        base="$(basename "${apk}")"
+        pkg="$("${AAPT2}" dump packagename "${apk}" 2>/dev/null | head -1)"
+        adb install -r -g "${apk}" >/dev/null 2>&1 && install_ok=1
+    fi
 
-    pkg="$("${AAPT2}" dump packagename "${apk}" 2>/dev/null | head -1)"
     if [ -z "${pkg}" ]; then
         RESULTS+=( "SKIP  ${base}  (no package name)" )
         continue
     fi
 
-    adb install -r -g "${apk}" >/dev/null 2>&1 || {
+    if [ ${install_ok} -eq 0 ]; then
         # Install can fail because a differently-signed copy of the same package
         # is already installed (INSTALL_FAILED_UPDATE_INCOMPATIBLE) — e.g. a
         # genuine store/apkm build vs a re-signed drop-in whose signature the
@@ -100,7 +137,7 @@ for apk in "${APKS[@]}"; do
             fail=$((fail+1))
             continue
         fi
-    }
+    fi
 
     adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
     adb logcat -c >/dev/null 2>&1 || true
