@@ -175,6 +175,11 @@ declare -A MODULES=(
     ["hello-ncnn"]="com.example.hellodigitalis.helloncnn/com.example.helloncnn.MainActivity"
     ["hello-aes"]="com.example.hellodigitalis.helloaes/com.example.helloaes.MainActivity"
     ["hello-eglext"]="com.example.hellodigitalis.helloeglext/com.example.helloeglext.MainActivity"
+    ["hello-fcsel"]="com.example.hellodigitalis.hellofcsel/com.example.hellofcsel.MainActivity"
+    ["hello-fp16arith"]="com.example.hellodigitalis.hellofp16arith/com.example.hellofp16arith.MainActivity"
+    ["hello-i8mm-bf16"]="com.example.hellodigitalis.helloi8mmbf16/com.example.helloi8mmbf16.MainActivity"
+    ["hello-lsepair"]="com.example.hellodigitalis.hellolsepair/com.example.hellolsepair.MainActivity"
+    ["hello-neonmisc"]="com.example.hellodigitalis.helloneonmisc/com.example.helloneonmisc.MainActivity"
     ["hello-fcma"]="com.example.hellodigitalis.hellofcma/com.example.hellofcma.MainActivity"
     ["hello-lseatomics"]="com.example.hellodigitalis.hellolseatomics/com.example.hellolseatomics.MainActivity"
     ["hello-fdsweep"]="com.example.hellodigitalis.hellofdsweep/com.example.hellofdsweep.MainActivity"
@@ -298,7 +303,7 @@ MODULE_ORDER=(
     hello-gles1 hello-gles3 hello-msaa hello-vktexture hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-tesseract hello-oboe hello-ffmpeg-kit hello-ncnn hello-lynx hello-aaudio hello-binder-ndk hello-jnihelp hello-webview-functor hello-nnapi
     hello-fp-vector hello-neon hello-glyphblit hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
-    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-eglext hello-fcma hello-lseatomics hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp hello-fdsweep
+    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-eglext hello-fcma hello-fcsel hello-fp16arith hello-i8mm-bf16 hello-lseatomics hello-lsepair hello-neonmisc hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp hello-fdsweep
     hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
     hello-libyuv hello-secp256k1 hello-filament hello-gltfio hello-openblas hello-fftw hello-gsl hello-leptonica hello-box2d hello-filament-render
     hello-lua hello-mupdf hello-sentry-ndk hello-bullet

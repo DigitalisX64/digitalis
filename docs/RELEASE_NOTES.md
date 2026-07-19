@@ -62,6 +62,29 @@ converts). What remains heavy-tier-only is documented in
 `unsupported-opcodes.md` §3a — chiefly the FP16 vector forms, the
 hardware-conditional `.2D` integer forms, and the crypto families.
 
+## Five new on-device golden probes
+
+Each new instruction group gets a sample module in the established
+abort-on-mismatch pattern — a hot loop past the gear-up threshold so the heavy
+tier compiles the region, with any wrong value crashing the sample so the
+suite flags it (138 modules now exercised by the suite):
+
+- **`hello-fcsel`** — FCSEL S/D in the region shapes that once miscompiled:
+  a not-taken select followed by a re-read of the true-side source, flags kept
+  live across the select for a later consumer, and multiple selects per region.
+- **`hello-fp16arith`** — the scalar FP16 surface, checked against hardcoded
+  FP16 bit patterns and a widen-compute-narrow reference on a different
+  instruction path for the rounding-boundary cases.
+- **`hello-i8mm-bf16`** — SMMLA/UMMLA/USMMLA, BFDOT/BFMMLA/BFMLALB/T and
+  indexed FCMLA with hand-computed exact goldens.
+- **`hello-lsepair`** — byte/halfword LSE fetch-and-ops with
+  signed-vs-unsigned distinguishing values and zero-extension checks, CASP-64
+  match/mismatch, and LDXP/STXP read-modify-write loops in both pair widths.
+- **`hello-neonmisc`** — vector FP-misc, FCVTL/FCVTN, the FRECPE/FRSQRTE
+  estimates (checked against the architected error bound), SQABS/SQNEG
+  saturation corners, byte-lane multiplies/shifts, scalar pairwise and scalar
+  by-element FP.
+
 ---
 
 # Digitalis — JIT Coverage Parity: AES, LSE Atomics, Dot-Product & Complex-FP in the Second Gear; ANGLE Extension-Proc Fix (2026-07-14 – 2026-07-18)

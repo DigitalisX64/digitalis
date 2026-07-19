@@ -6,7 +6,7 @@ ARM64-to-x86_64 binary translation for Android, built on AOSP's Berberis NativeB
 
 This is an AOSP (Android Open Source Project) source tree with modifications to the Berberis binary translator to support ARM64-to-x86_64 translation. Berberis originally supported only RISC-V-to-x86_64; Digitalis adds the ARM64 backend.
 
-The `sample/hellodigitalis/` project contains 131 ARM64-only sample app modules that serve as the integration test suite: ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-lib smoke tests, ARM-extension/ABI probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media: ijkplayer, libVLC, FFmpegKit, Oboe; imaging: Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit; vision/ML: OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract; crypto/DB/storage: SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet; AndroidX-native: sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, Ink). These cover Vulkan, OpenGL ES (1.x & 2/3), JNI, audio (OpenSLES & AAudio), camera, MIDI, sensors, SIMD, NDK binder, and NNAPI — all running on an x86_64 emulator via NativeBridge translation. 130 are exercised by `test-samples.sh`; `hello-qt` and `hello-realm` build standalone (toolchain pinning) and are verified by launch.
+The `sample/hellodigitalis/` project contains 140 ARM64-only sample app modules that serve as the integration test suite: ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-lib smoke tests, ARM-extension/ABI probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media: ijkplayer, libVLC, FFmpegKit, Oboe; imaging: Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit; vision/ML: OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract; crypto/DB/storage: SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet; AndroidX-native: sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, Ink). These cover Vulkan, OpenGL ES (1.x & 2/3), JNI, audio (OpenSLES & AAudio), camera, MIDI, sensors, SIMD, NDK binder, and NNAPI — all running on an x86_64 emulator via NativeBridge translation. 138 are exercised by `test-samples.sh`; `hello-qt` and `hello-realm` build standalone (toolchain pinning) and are verified by launch.
 
 ## Architecture
 
@@ -41,7 +41,7 @@ All paths relative to repo root.
 | `frameworks/libs/binary_translation/prebuilt/` | Prebuilt configs including `ld.config.arm64.txt` |
 | `device/generic/goldfish/` | Emulator (goldfish) product definitions |
 | `device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_digitalis.mk` | Digitalis product config |
-| `sample/hellodigitalis/` | 131 ARM64-only sample app modules (Vulkan, GLES 1/2/3, JNI, OpenSLES + AAudio, camera, MIDI, SIMD, NDK binder, NNAPI, UI engines, third-party native libraries, etc.) |
+| `sample/hellodigitalis/` | 140 ARM64-only sample app modules (Vulkan, GLES 1/2/3, JNI, OpenSLES + AAudio, camera, MIDI, SIMD, NDK binder, NNAPI, UI engines, third-party native libraries, etc.) |
 
 ## Build
 
@@ -124,7 +124,7 @@ These are the most-modified files and the ones you'll touch most often:
 - **`kernel_api/arm64/syscall_emulation.cc`** — Syscall forwarding, futex workarounds, errno/struct-layout translation.
 - **`kernel_api/sys_mman_emulation.cc`** — BSS partial-page zeroing after file-backed mmaps.
 - **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
-- **`sample/hellodigitalis/`** — 131 ARM64-only sample app modules: android/ndk-samples ports, 4 Digitalis proxy-lib smoke tests (hello-gles1, hello-aaudio, hello-binder-ndk, hello-nnapi), ARM-extension probes, UI-engine samples, and third-party native-library integration samples. Use `/test-samples` to test on the emulator.
+- **`sample/hellodigitalis/`** — 140 ARM64-only sample app modules: android/ndk-samples ports, 4 Digitalis proxy-lib smoke tests (hello-gles1, hello-aaudio, hello-binder-ndk, hello-nnapi), ARM-extension probes, UI-engine samples, and third-party native-library integration samples. Use `/test-samples` to test on the emulator.
 
 ## Modification Surface (binding)
 
