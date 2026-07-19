@@ -213,473 +213,129 @@ the one correctly-reported FAIL.
 
 This update fixes a namespace-isolation bug that crashed a major Unity game
 under translation, broadens the heavy (second-gear) optimizer across a large
-swath of NEON/FP instructions so real apps' hot loops stay on the optimizing
-path, and hardens the machine-learning and framework samples into real workloads
-that assert an exact result — including ARM64 TensorFlow Lite, ONNX Runtime and
-PyTorch Mobile now running real fixed-weight inference on the x86_64 emulator,
-each verified **bit-exact** against a golden.
+swath of NEON/FP instructions, and hardens the ML and framework samples into
+real workloads asserting exact results.
 
-## Fixed: app-namespace symbol interposition (Honkai: Star Rail)
+- **Fixed: app-namespace symbol interposition.** Isolated app namespaces were
+  given the guest system search path, letting an app's strong replaceable
+  symbol (Unity's global `operator new` in `libunity.so`) interpose over
+  non-public system libraries and crash (a SIGILL on libunity's encrypted
+  lazy-init path). Digitalis now matches real Android: app namespaces stay
+  isolated and reach public libraries only through `linkNamespaces()`; the
+  game boots to its login screen.
+- **Heavy optimizer: broad NEON/FP coverage.** Newly lowered in the second
+  gear: the FP↔integer convert families (SCVTF/UCVTF/FCVTZS/FCVTZU, round-mode
+  variants, ties-away), FRINT*, FSQRT, FMLA/FMLS/FMULX (incl. by-element),
+  integer NEON min/max/pairwise/halving/abs-diff/widening-multiply families,
+  saturating + polynomial multiplies, byte-lane SHL/SSHR/USHR, and D/S-pair
+  LDP/STP in both JIT tiers. A region-level heavy-vs-interpreter differential
+  fuzzer gates the expansion; a stale-forwarded-vreg backend bug was fixed.
+- **Real ML inference, verified bit-exact.** hello-tflite (Conv2D→ReLU→Dense),
+  hello-onnxruntime (Gemm→ReLU→Gemm) and hello-pytorch (Module.forward) now run
+  real fixed-weight graphs asserting exact goldens (small-integer weights make
+  float32 exact); a reproducible offline model toolchain
+  (`sample/hellodigitalis/tools/`) generates the models. hello-nnapi,
+  hello-fbjni, the audio samples and hello-binder-ndk gained golden asserts.
+- **Verification:** host suite 3027/3027; both translators build; samples
+  130 PASS / 0 CRASH.
 
-Isolated app classloader namespaces were given the guest `/system/lib64/arm64`
-search path, which — combined with the guest linker config's single flat
-`default` namespace — let an app load its own copies of non-public system
-libraries (`libutils`, `libc++`, `libandroid_runtime`, …) directly into its own
-scope. An app library's strong replaceable symbol then interposed for them —
-notably Unity's `GLOBAL operator new` in `libunity.so` — so a system library
-calling `operator new` was routed into the app's not-yet-initialized allocator
-and crashed. Honkai: Star Rail hit this as a SIGILL on libunity's encrypted
-lazy-init path.
-
-Real Android keeps app namespaces isolated: an app reaches the NDK public
-libraries through the framework's `linkNamespaces()` link to the system
-namespace (shared instances that keep their own symbol scope), never by loading
-system libraries into its own namespace. Digitalis now does the same — it no
-longer appends the guest system path to app namespaces for the arm64 guest,
-while proxy/public libs (`libandroid.so`, `libvulkan.so`, `libEGL.so`, …) still
-resolve through the existing link to the guest `default` namespace. The riscv64
-guest keeps its prior behaviour behind the guest-arch guard. Honkai: Star Rail
-now reaches its login screen instead of crashing.
-
-## Heavy optimizer: broad second-gear NEON/FP coverage
-
-The heavy (second-gear) optimizer gained a large batch of instruction lowerings
-so that hot regions in real apps engage the optimizing tier instead of silently
-bailing to the single-pass lite tier. A bail is correct-but-slow, and for common
-NEON/FP instructions it kept whole loops on the slow path. Newly lowered in the
-second gear:
-
-- **FP ↔ integer converts**: scalar and vector SCVTF / UCVTF / FCVTZS / FCVTZU,
-  the round-mode variants FCVTNS/NU/PS/PU/MS/MU and ties-away FCVTAS / FCVTAU,
-  across S and D forms.
-- **FP rounding & math**: FRINTN/M/P/Z/X/I/A (scalar and vector), FSQRT,
-  FMLA / FMLS, FMULX, and indexed (by-element) FMUL / FMLA / FMLS.
-- **Integer NEON**: SMAX/SMIN/UMAX/UMIN and pairwise SMAXP/SMINP/UMAXP/UMINP +
-  ADDP, halving add/sub (S/U/R HADD/HSUB), abs-diff/accumulate
-  (SABD/UABD/SABA/UABA), widening multiply/accumulate
-  (SMULL/UMULL/SMLAL/UMLAL/SMLSL/UMLSL, including by-element), BIC/ORN/CMTST.
-- **Saturating & polynomial**: SQDMULH/SQRDMULH, SQDMULL/SQDMLAL/SQDMLSL,
-  SQABS/SQNEG, SQXTN/UQXTN/SQXTUN, SUQADD/USQADD, and PMUL/PMULL/PMULL2.
-- **Shifts & pair loads**: byte-lane SHL/SSHR/USHR (.8B/.16B), and D/S-pair
-  LDP/STP — the last two now handled in both the lite and heavy tiers.
-
-A region-level heavy-vs-interpreter differential fuzzer was added to gate the
-expansion, and a backend codegen bug (a stale forwarded guest-context vreg
-surviving a redefine) was fixed along the way.
-
-## Real ML inference, verified bit-exact
-
-Three ML samples previously only loaded their runtime and round-tripped a tensor
-through the JNI bridge. They now build and run a real graph and check the output:
-
-- **hello-tflite** runs a Conv2D(3×3) → ReLU → Flatten → Dense graph — exercising
-  the TFLite convolution dot-product and fully-connected NEON kernels — and
-  asserts the output `[27, 8, 13]`, replacing the trivial `out = 3·in` placeholder.
-- **hello-onnxruntime** runs an ONNX `Gemm → ReLU → Gemm` graph via
-  `OrtSession.run` and asserts `[-7, 16, -1]`.
-- **hello-pytorch** runs a lite-interpreter TorchScript module
-  (`Linear → ReLU → Linear`) via `Module.forward` and asserts `[-7, 16, -1]`.
-
-Each model uses small-integer weights and inputs, so the float32 arithmetic is
-exact and order-independent — the result is bit-identical on the host (where the
-golden is computed) and on the device (where the translated kernels run). A
-translator miscompile in the conv/GEMM/ReLU path now changes the numbers and
-trips the golden instead of passing silently; on the emulator all three run with
-`maxErr = 0.0`.
-
-## Deeper self-checks across the suite
-
-Several other samples gained deterministic golden assertions in place of
-load-only smoke tests:
-
-- **hello-nnapi** builds, compiles and executes a real two-op NNAPI graph
-  (MUL then ADD with constant operands) and verifies the output tensor.
-- **hello-fbjni** drives fbjni's *hybrid dispatch* end to end — a C++
-  `HybridClass` peer created via `makeCxxInstance`, called through the generated
-  native-method thunk (the machinery React Native and PyTorch Mobile rely on) —
-  and asserts the returned value, not just that the library loaded.
-- **hello-aaudio / hello-oboe / native-audio** checksum a deterministic
-  synthesized PCM/DSP waveform and assert a golden, exercising the audio
-  generation path.
-- **hello-binder-ndk** marshals a typed payload through `AIBinder_transact` and
-  asserts the round-tripped value.
-
-## Reproducible model toolchain
-
-A new `sample/hellodigitalis/tools/` toolchain generates the ML models offline:
-
-- `setup-ml-generators.sh` bootstraps CPython 3.10 and three isolated,
-  version-pinned virtualenvs matched to the on-device runtime AAR versions
-  (torch 1.13.1, onnx 1.16.2 + onnxruntime 1.22.0, tensorflow-cpu 2.16.1).
-- Per-sample `gen_model.py` scripts build each fixed-weight network, print the
-  golden, and write the model straight into the sample's `assets/`.
-- `README-ml-models.md` documents the full install → generate → verify workflow.
-
-## Verification
-
-Both `libberberis_arm64` and `libberberis_riscv64` build clean; the Arm64 host
-test suite passes 3027/3027 (the heavy-tier lowerings ship with per-instruction
-and region-level differential tests); and the sample suite is 130 PASS / 0 CRASH.
-On the emulator, Honkai: Star Rail no longer hits the libunity operator-new
-SIGILL, and the deepened ML/framework samples pass the on-device status gate and
-are perturbation-proven (a wrong golden fails with the real translated value
-shown).
+---
 
 # Digitalis — Crisp Web Text in Chromium Browsers (2026-06-30)
 
-This update fixes garbled, sheared web-page text in Chromium-based browsers under
-translation — the long-standing glyph-rendering issue. Helium (Chromium 149) now
-renders article text **fully crisp**, matching the interpreter. The root cause was
-two single-region lite-JIT codegen bugs in the ARM64 vector fixed-point conversion
-instructions, both found with exhaustive host JIT-vs-interpreter differentials.
+Fixes the long-standing garbled/sheared web-page text in Chromium-based
+browsers under translation; article text now renders fully crisp, matching the
+interpreter.
 
-## Fixed: garbled web-text glyphs in Chromium / Skia
-
-Chromium rasterizes glyph coordinates and coverage through the ARM64 vector
-fixed-point conversions SCVTF / UCVTF / FCVTZS / FCVTZU (the `AdvSimdShiftByImm`
-opcodes `0b11100` / `0b11111`). Two lite-JIT codegen bugs in those handlers
-corrupted the converted values, so the renderer's web-content text — but not the
-host-rendered browser chrome — came out sheared and fragmented, with some glyphs
-missing entirely:
-
-- **Only lane 0 was converted.** The handlers emitted scalar codegen (convert
-  `Vn` lane 0, zero the rest of `Vd`) that the vector `.2S` / `.4S` / `.2D` forms
-  also reached, so half — or three-quarters — of every converted vector came out
-  zero. That sheared the rasterized text.
-- **In-place conversions clobbered their source.** The per-lane fix initially
-  zeroed `Vd` up front, which destroys `Vn` for the very common in-place forms
-  (`ucvtf v0, v0` / `fcvtzs v0, v0`, which Skia applies to coordinate vectors),
-  zeroing the result and blanking specific diagonal-stroke glyphs (w, v, k, A, T).
-  The shipped fix writes each lane before reading the next and zeroes only the
-  unused high bytes after the loop, so `rd == rn` is safe.
-
-A latent interpreter undefined-behaviour bug in the same instructions — the `.2D`
-maximum-fbits encoding computed its scale as `1u << 64` — was fixed in passing (it
-now uses `ldexp`).
-
-A prior investigation had concluded the corruption was an unreproducible
-"cross-region / region-structural" effect. It was not: both bugs are ordinary
-single-instruction miscompiles. An exhaustive `AdvSimdShiftByImm`
-JIT-vs-interpreter differential — every encoding × input × `{rd != rn, rd == rn}`,
-102,528 cases — pinned the lane-drop, and a high-register-pressure region fuzzer
-surfaced the in-place clobber. Both differentials ship as permanent regression
-tests. All three translation tiers are correct: the interpreter already looped
-every lane (only the UB scale was fixed there), the lite JIT is fixed here, and the
-heavy optimizer bails these instructions to the now-correct lite tier.
-
-## Housekeeping: region-marker hygiene
-
-Several Digitalis additions to shared, upstream-derived Berberis files were not
-wrapped in the `// region digitalis` markers that keep the Digitalis delta
-auditable and the upstream riscv64 build byte-for-byte unchanged. Authorship was
-reconciled with `git blame` and the missing markers were added — comment-only, no
-code changes — across the `kernel_api` guest `/proc/cpuinfo` path, the fork-safe
-code pool, the JNI host-VM helper, the native-bridge namespace logging, and the
-`arm64_to_x86_64` backend build modules.
-
-## Verification
-
-The Arm64 host test suite (**2534** tests), the rendering screenshot suite
-(**14/14**), and both `libberberis_arm64` and `libberberis_riscv64` build clean.
-On the emulator, Helium renders article text fully crisp, and the prebuilt-APK
-gate is green except for two documented non-translator issues (a WhatsApp
-app-level EULA lifecycle exception and a flaky Kuaishou media-player
-missing-`libgui.so` gap).
+- **Root cause:** two single-region lite-JIT codegen bugs in the ARM64 vector
+  fixed-point conversions SCVTF/UCVTF/FCVTZS/FCVTZU (which Skia uses for glyph
+  coordinates/coverage): the vector forms emitted scalar codegen (only lane 0
+  converted), and the first fix's up-front destination zeroing clobbered the
+  source for in-place `rd == rn` forms. The shipped lowering converts per lane
+  and zeroes only the unused high bytes afterwards. A latent interpreter UB
+  (`1u << 64` scale at max fbits) was fixed in passing.
+- **Method:** an exhaustive JIT-vs-interpreter differential (every
+  `AdvSimdShiftByImm` encoding × input × `{rd != rn, rd == rn}`, 102,528
+  cases) plus a high-register-pressure region fuzzer; both ship as permanent
+  regression tests. A prior "region-structural, unreproducible" conclusion was
+  wrong — both were ordinary single-instruction miscompiles.
+- Region-marker hygiene was reconciled across shared upstream-derived files
+  (comment-only).
+- **Verification:** host suite 2534; screenshot suite 14/14; both translators
+  build; Helium renders crisp on the emulator.
 
 ---
 
 # Digitalis — On-Screen Rendering, New Samples & Binary Distribution (2026-06-21)
 
-This update adds a guest `libgui.so` stub that unblocks Google Filament's
-on-screen render path under translation, grows the always-green sample suite to
-**116 ARM64-only modules** with 11 more third-party native-library samples, and
-ships Docker-based tooling to distribute Digitalis as binaries only.
-
-## New: guest `libgui.so` stub — on-screen Filament rendering
-
-Google Filament's Android platform layer `dlopen`s `libgui.so` and calls
-`android::Surface::hook_perform` on its SwapChain present path. Digitalis ships no
-guest `libgui.so` — surface/buffer management is proxied to the host GPU stack,
-which is exactly why `hello-vulkan` renders on screen without any guest libgui — so
-that `dlopen` returned NULL and the guest then executed a host address →
-`berberis_HandleNoExec` SIGSEGV.
-
-A *full* guest `libgui.so` is the wrong fix: it would run its own guest-side
-BufferQueue/SurfaceFlinger client and fight the host-proxied present path. Instead
-Digitalis now ships a minimal **guest-only `libgui.so` stub**
-(`frameworks/libs/binary_translation/android_api/digitalis_libgui_stub`, installed
-as `/system/lib64/arm64/libgui.so`) that exports `hook_perform` as a benign no-op
-(the real `NATIVE_WINDOW_SET_*` operations belong to the host), so the
-`dlopen`/`dlsym` succeed and the present path stays on the proxied route. The stub
-is built in-tree as a native-bridge guest library and added to the distribution
-set; the upstream riscv64 build is unaffected (arm64-only product wiring).
-
-## New samples (sample suite → 116)
-
-11 more third-party native-library samples now run under translation as part of the
-always-green suite:
-
-- **3D rendering:** Google Filament's physically-based renderer
-  (`hello-filament`, a headless GPU-resource smoke test) and its native glTF loader
-  gltfio (`hello-gltfio`). **`hello-filament-render`** draws a lit glTF cube on
-  screen via Filament's Vulkan backend — a deterministic screenshot sample, enabled
-  by the `libgui.so` stub above.
-- **Numeric / scientific:** OpenBLAS (`hello-openblas`), FFTW (`hello-fftw`), the
-  GNU Scientific Library (`hello-gsl`).
-- **Physics:** Box2D 2D physics (`hello-box2d`).
-- **Imaging / OCR pre-processing:** libyuv color conversion (`hello-libyuv`),
-  Leptonica image processing (`hello-leptonica`).
-- **Compression:** Snappy (`hello-snappy`).
-- **Crypto:** secp256k1 Bitcoin-curve ECDSA (`hello-secp256k1`).
-
-All run on the x86_64 emulator via NativeBridge translation; the full sample suite,
-the host unit tests (2460 `Arm64*`), the screenshot tests, and the prebuilt-app gate
-are green.
-
-## Binary-only distribution (Docker)
-
-New tooling under `digitalis/docker/` and `digitalis/scripts/` packages the
-translator as **binaries only** for other AOSP x86_64 products to drop in: the
-74-artifact distribution set defined in `berberis_config.mk`
-(`libberberis_arm64.so`, the proxy libraries, program runners, the ARM64 guest
-libraries, and configs), plus a generated consumer `.mk` and an integration README.
-A reproducible `digitalis-build` Docker container reuses the host `out/` tree (bind-
-mounted at the same path) so neither the container nor a normal host developer has
-to rebuild the project. See `digitalis/docker/README.md`.
+- **Guest `libgui.so` stub.** A rendering engine's Android layer `dlopen`s
+  `libgui.so` and calls `android::Surface::hook_perform` on its present path;
+  with no guest copy the call jumped to a host address (`berberis_HandleNoExec`
+  SIGSEGV). A minimal guest-only stub (`digitalis_libgui_stub`, installed at
+  `/system/lib64/arm64/libgui.so`) exports the hook as a no-op so the present
+  path stays on the host-proxied route — a full guest libgui would fight the
+  proxied path and is deliberately not shipped.
+- **Sample suite → 116 modules:** Filament (+ gltfio and an on-screen
+  `hello-filament-render` cube via the stub above), OpenBLAS, FFTW, GSL, Box2D,
+  libyuv, Leptonica, Snappy, secp256k1.
+- **Binary-only distribution:** Docker tooling (`digitalis/docker/`,
+  `digitalis/scripts/`) packages the 74-artifact distribution set from
+  `berberis_config.mk` with a generated consumer `.mk`; the `digitalis-build`
+  container bind-mounts the host `out/` at the same path so nothing rebuilds.
+- **Verification:** host suite 2460; sample, screenshot and prebuilt gates green.
 
 ---
 
 # Digitalis — Sample-Suite Expansion & Heap-Lifetime Fixes (2026-06-20)
 
-This update grows the always-green sample suite to **104 ARM64-only modules**
-(from 85) by adding ~20 third-party native-library samples, and fixes a
-heap-lifetime translator bug and an intermittent heavy-allocation crash that
-those new samples surfaced.
-
-## New samples (sample suite: 85 → 104)
-
-~20 new third-party native-library samples now run under translation on the
-x86_64 emulator as part of the always-green suite:
-
-- **Databases / storage:** Couchbase Lite (`hello-couchbase`), Tencent WCDB
-  (`hello-wcdb`).
-- **Crypto:** libsodium (`hello-libsodium`), Argon2 (`hello-argon2`), Themis
-  (`hello-themis`).
-- **On-device ML / speech / vision:** ONNX Runtime (`hello-onnxruntime`),
-  MediaPipe (`hello-mediapipe`), Vosk offline speech (`hello-vosk`).
-- **Graphics / maps / imaging:** MapLibre vector maps (`hello-maplibre`), Rive
-  vector animation (`hello-rive`), libavif (`hello-avif`).
-- **Media / RTC:** WebRTC (`hello-webrtc`).
-- **Networking / VPN / P2P:** WireGuard (`hello-wireguard`), libtorrent4j
-  (`hello-libtorrent4j`).
-- **JS engines:** Duktape (`hello-duktape`), J2V8 (`hello-j2v8`), Javet V8
-  (`hello-javet`).
-- **JNI bridges:** JavaCPP (`hello-javacpp`), JNA (`hello-jna`), Facebook fbjni
-  (`hello-fbjni`).
-
-## Fixes
-
-**MapLibre — `wstring_convert: from_bytes error` at native init
-(`hello-maplibre`).** MapLibre's `FileSource::getAPIBaseUrl` frees its base-URL
-`std::string` at one call site and re-reads it at the next — a use-after-free
-that is benign on real hardware (the allocator does not recycle the chunk in
-that window). Under translation the guest heap (host Scudo) is shared with the
-translator's own allocations: once the freed chunk's Scudo region empties the
-pages are released, and the lite/heavy translator's bump arena (`MmapPool`)
-immediately re-grabs that address and zero-initialises an IR node over the
-still-referenced bytes, so the guest converts zeros and throws. Root-caused with
-an in-process `mprotect` memory watchpoint that caught the free and the arena's
-overwrite. Fixed with a bounded **free-quarantine** in the `--wrap=free` proxy
-(`libberberis_proxy_libc`): the most recent guest frees are deferred through a
-fixed ring so a just-freed chunk and its region stay live across the window,
-bringing free timing closer to hardware so benign guest use-after-frees stay
-benign.
-
-**Heavy-allocation crash — GWP-ASan guard-page underflow in the free probe.**
-That same `--wrap=free` proxy peeks the 16 bytes before each freed pointer to
-detect non-heap (Qt shared-null) frees. GWP-ASan (the platform sampling
-allocator) flushes ~1/1000 allocations against a guard page, so the peek read
-that guard page and intermittently crashed any heavy-allocation app. The probe
-now skips the peek for page-boundary-adjacent pointers (always a real
-GWP-ASan-guarded heap pointer, never a static shared-null).
-
-**Javet V8 (`hello-javet`).** A `SIGABRT` at V8 startup was a compile-time
-embedder/V8 sandbox build-config mismatch in the `javet-v8-android:5.0.8` arm64
-AAR, not a translator bug; pinning to a consistent build (`4.1.7`) resolves it.
+- **Sample suite 85 → 104:** ~20 third-party native-library samples added —
+  Couchbase Lite, WCDB, libsodium, Argon2, Themis, ONNX Runtime, MediaPipe,
+  Vosk, MapLibre, Rive, libavif, WebRTC, WireGuard, libtorrent4j, Duktape,
+  J2V8, Javet, JavaCPP, JNA, fbjni.
+- **Fixed: guest use-after-free vs the translator's arena (MapLibre).** A
+  benign in-app UAF became fatal under translation because the shared host
+  heap let the translator's bump arena re-grab and zero a still-referenced
+  chunk. Root-caused with an in-process `mprotect` watchpoint; fixed with a
+  bounded free-quarantine in the `--wrap=free` proxy so free timing matches
+  hardware closely enough that benign guest UAFs stay benign.
+- **Fixed: GWP-ASan guard-page underflow** in that free probe's 16-byte peek
+  (skip the peek for page-boundary-adjacent pointers).
+- **Noted:** a V8-embedding sample SIGABRT was a broken upstream arm64 AAR
+  (compile-time sandbox mismatch), not a translator bug; pinned to a working
+  version.
 
 ---
 
 # Digitalis — Prebuilt-App Stability & Translator Update (2026-06-15)
 
-We started a **prebuilt-APK stability campaign**: instead of testing only our own
-sample apps, Digitalis now installs, launches, and soaks **real ARM64-only top
-apps and games** on the x86_64 emulator, and whenever one crashes we fix the
-**root cause in the binary translator** — never the app.
+Start of the prebuilt-APK stability campaign: real ARM64-only top apps and
+games are installed, launched and soaked on the x86_64 emulator, and every
+crash is fixed at its **root cause in the translator** — never the app.
 
-## Verified prebuilt APKs
-
-### Apps
-
-| App | Package |
-|---|---|
-| WeChat | `com.tencent.mm` |
-| WhatsApp | `com.whatsapp` |
-| Facebook | `com.facebook.katana` |
-| Douyin | `com.ss.android.ugc.aweme` |
-| NetEase Cloud Music | `com.netease.cloudmusic` |
-| Baidu Maps | `com.baidu.BaiduMap` |
-| AMap | `com.autonavi.minimap` |
-| Tencent Map | `com.tencent.map` |
-| Tencent App Store | `com.tencent.android.qqdownloader` |
-| QQ Input | `com.tencent.qqpinyin` |
-| CoolApk | `com.coolapk.market` |
-| AliExpress | `com.alibaba.aliexpresshd` |
-| Brave Browser | `com.brave.browser` |
-| Firefox | `org.mozilla.firefox` |
-| Vulkan Caps Viewer | `de.saschawillems.vulkancapsviewer` |
-
-### Games
-
-| Game | Package |
-|---|---|
-| Crossy Road | `com.yodo1.crossyroad` |
-| Temple Run 2 | `com.imangi.templerun2` |
-| Temple Run | `com.imangi.templerun` |
-| Subway Surfers | `com.kiloo.subwaysurf` |
-| Hill Climb Racing | `com.fingersoft.hillclimb` |
-| Space Mafia | `com.innersloth.spacemafia` |
-
-### Partial
-
-Launches and runs, with one intermittent residual that is *not* a translator bug
-(its media player calls a private host graphics library, `libgui.so`, with no
-guest equivalent):
-
-| App | Package |
-|---|---|
-| Kuaishou | `com.smile.gifmaker` |
-
-## Translator engine: two-gear JIT + broadened ISA coverage
-
-**Two-gear optimizing JIT (now the default).** Digitalis runs ARM64 guest code
-through three tiers: an **interpreter** (per-instruction fallback), a **lite
-translator** (single-pass JIT — the first gear, for cold code), and a new
-**heavy optimizer** (an optimizing second gear that engages on hot regions via a
-hotness counter). The heavy tier lowers a whole region to a guest-agnostic SSA
-machine IR and applies global register allocation and loop optimizations
-(hoisting guest register/flag traffic out of loops), versus the lite tier's
-per-instruction codegen. It is neutral-or-faster than lite across microbenchmarks
-and ~2× faster on register-pressure-heavy loops; gear-up is gated to regions
-large enough to recoup the optimization cost, so tiny loops are never regressed.
-The heavy frontend covers integer ALU + NZCV flags, branches (including in-region
-loops), loads/stores (with TBI + fault recovery), CSEL/CCMP, scalar FP (via the
-intrinsic layer), NEON integer, SIMD/FP load-store, SIMD modified-immediate +
-DUP, load/store-exclusive, division & wide-multiply, REV/CLS/SBFIZ, ADRP, and MRS
-TPIDR_EL0 — bailing safely to the lite tier (correct, just not optimized) for
-anything else.
-
-**Broadened ARM64 instruction coverage.** Many instructions and newer ISA
-extensions were implemented across the interpreter and lite JIT (and the
-decoder), several surfaced by real apps and the sample probes:
-
-- **Crypto / extensions:** SM3 (FEAT_SM3), SM4 (FEAT_SM4), CRC32C (via host
-  SSE4.2 CRC32), RNDR/RNDRRS (FEAT_RNG).
-- **Matrix / dot-product:** I8MM USDOT/SUDOT and SMMLA/UMMLA/USMMLA.
-- **FP / SIMD:** FMOV (vector immediate), vector FCVTN/FCVTL (FP16↔FP32),
-  FRINTTS (FRINT32/64, scalar + vector), SUQADD/USQADD, ADDHN/SUBHN/RADDHN/
-  RSUBHN, FCMA complex, and the REV16-vector decoder fix.
-- **Atomics / memory / tags:** EXT odd-imm4, LDXP/STXP exclusive pairs,
-  generic-timer MRS, and the MTE tag group (ADDG/SUBG, LDGM/STGM/STZGM).
-- **Correctness fixes from real apps:** FCSEL destination-aliasing, CCMN register
-  clobber under register-mapping, LDPSW sign-extension, and IC-IVAU
-  self-modifying-code cache invalidation.
-
-This was developed against an extensive differential-fuzzing harness (JIT vs.
-interpreter) for SIMD, scalar-FP, atomics, register-offset load/store, and
-cross-region loops, plus a translator-throughput microbenchmark.
-
-## Sample suite (85 modules)
-
-The sample suite — 85 ARM64-only modules, all running under translation on the
-x86_64 emulator — is the always-green spec the translator is validated against.
-
-- **Platform APIs & graphics:** Vulkan (triangle, multisample FBO grids), OpenGL
-  ES 1.x / 2.0 / 3.x (instanced rendering, NativeActivity/EGL, textured teapot
-  scenes), audio (OpenSL ES, AAudio, Oboe), Camera2 NDK + CameraX, native MIDI,
-  sensors, NDK binder (define/new + host-thread callback round-trip), NNAPI
-  device enumeration, and WebView hardware-accel draw-functor registration.
-- **ARM ISA probes (21):** NEON intrinsics (permutes, CRC32/CRC32C,
-  URECPE/URSQRTE), vector & scalar FP, FP16 (Armv8.2), BF16 (Armv8.6), DotProd
-  (Armv8.4 SDOT/UDOT), JSCVT (Armv8.3 FJCVTZS), FCMA complex, LSE atomics
-  (Armv8.1 CAS/SWP/LDADD), LRCPC/LOR (Armv8.3/8.1), exclusive pairs
-  (LDXP/STXP), barriers (DMB/DSB/ISB), AES + SHA-1/2 + SM3 crypto, widening
-  multiplies (SMULL/UMULL/PMULL), generic-timer MRS, BTI (Armv8.5), PAC
-  return-address signing, interleaved LD/ST, and sigaction/SIGSEGV + siglongjmp
-  recovery.
-- **UI engines:** Qt 6 widgets, React Native + Hermes (prebuilt bytecode), Lynx
-  (ReactLynx + PrimJS).
-- **Third-party native libraries (32):**
-  - *Media:* ijkplayer (FFmpeg), libVLC, FFmpegKit, Oboe.
-  - *Imaging:* Fresco, GPUImage, Tencent libpag, android-gif-drawable, PDFium,
-    RenderScript Toolkit.
-  - *Vision & ML:* OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, Tencent
-    ncnn, ZXing, Tesseract.
-  - *Crypto / storage / runtimes:* SQLCipher, Conscrypt, libsignal (Signal
-    Protocol), Realm, ObjectBox, Tencent MMKV, zstd, QuickJS, Cronet.
-  - *AndroidX-native:* bundled SQLite, graphics-path, CameraX core, Perfetto
-    tracing SDK, AppSearch/Icing, Ink.
-- **Proxy & regression probes:** GLES1 / AAudio / NNAPI / NDK-binder /
-  WebView-functor proxy-library smoke tests, Digitalis libc/libm fast-path
-  trampolines, and JIT regression probes for bugs once hit by Facebook/WhatsApp
-  (LDP base aliasing, etc.).
-
-(21 of the 85 are ports of Google's android/ndk-samples covering core JNI, GLES,
-audio, camera, sensors, and codecs.)
-
-## What was fixed in the prebuilt-app campaign, by theme
-
-**Anti-tamper / integrity SDKs** (the hardest class — Chinese super-apps embed
-aggressive anti-emulator/anti-debug SDKs):
-
-- **Kuaishou** (`com.smile.gifmaker`) — its security SDK corrupted host
-  fd-ownership via raw `close`/`close_range`/`dup3` (host `fdsan` abort), and
-  armed a handler-less `SIGALRM` "deadman" watchdog that killed the process when
-  the slow translated integrity check missed its deadline. Fixed by making guest
-  fd ops fdsan-safe across the guest/host boundary and defaulting the host SIGALRM
-  disposition to ignore.
-- **Baidu Maps** (`com.baidu.BaiduMap`) — same fdsan class, plus its sofire SDK
-  fed a null class into `GetStaticFieldID`, which the emulator's CheckJNI turned
-  into a process-fatal abort; now returns a null field-id (matching production).
-- **Amazon Shopping** (`com.amazon.mShop.android.shopping`) / **Microsoft Teams**
-  (`com.microsoft.teams`) — a denied hidden-API `GetMethodID` left a pending JNI
-  exception that aborted the next call; we clear pending exceptions after each
-  lookup and grant guest apps a hidden-API exemption via host ART. (They reach
-  further but remain blocked on Google Play Services, which the emulator lacks.)
-
-**Douyin / WebView** (`com.ss.android.ugc.aweme`) — Douyin's Lynx UI engine calls
-the WebView hardware-accel support library (`libwebviewchromium_plat_support`),
-which was entirely uncovered by the proxy and aborted on first use. We covered it
-(17/18 symbols), obtaining a valid host `JNIEnv` for the registration calls by
-attaching the calling worker thread to the host VM.
-
-**Instruction & codegen bugs surfaced by real apps:**
-
-- `FCSEL` destination-aliasing corruption (made `strtod` return 0 → broke React
-  Native/Hermes `parseInt`/`Number` and **NetEase Cloud Music**'s login render).
-- `CCMN` clobbering its source register under register-mapping (NetEase blank
-  login via Cronet).
-- `LDPSW` sign-extension; `FMOV` (vector immediate), which unblocked the **Unity
-  games** (Crossy Road, Temple Run 2) from OOM/SIGTRAP; `IC IVAU` cache
-  invalidation for self-modifying JITs (PCRE2/ART/V8).
-
-**fd / signal / proxy plumbing** — `ScopedFd` now closes with its current fdsan
-tag to survive fd reuse (**Firefox** launch), and per-thread host `JNIEnv` tables
-are each wrapped correctly.
-
-## Known limitations
-
-A handful of residual crashes are genuine **anti-emulator self-protection** or
-**host-feature/GMS gaps**, not translator bugs (e.g. Kuaishou's intermittent
-media-path crash, and Amazon/Teams needing Google Play Services). These are
-documented rather than worked around. A separate host Vulkan-driver fix (GFXStream
-`VK_EXT_memory_budget` clamp) was also needed for some games.
+- **Verified apps:** WeChat, WhatsApp, Facebook, Douyin, NetEase Cloud Music,
+  Baidu Maps, AMap, Tencent Map, Tencent App Store, QQ Input, CoolApk,
+  AliExpress, Brave, Firefox, Vulkan Caps Viewer; **games:** Crossy Road,
+  Temple Run 1/2, Subway Surfers, Hill Climb Racing, Space Mafia; Kuaishou
+  partial (a private host-graphics-library gap, closed in a later release).
+- **Two-gear optimizing JIT became the default:** interpreter + lite
+  single-pass first gear + a heavy second gear that lowers hot regions to SSA
+  machine IR with global register allocation and loop optimization —
+  neutral-or-faster than lite, ~2× on register-pressure-heavy loops, gear-up
+  gated by region size.
+- **Broad ISA coverage** across decoder/interpreter/lite: SM3/SM4, CRC32C,
+  RNDR, I8MM dot/matmul, FMOV vector-imm, FCVTN/FCVTL, FRINTTS, FCMA, MTE tag
+  group, LDXP/STXP, and correctness fixes surfaced by real apps (FCSEL
+  aliasing, CCMN clobber, LDPSW sign-extension, IC IVAU self-modifying-code
+  invalidation) — developed against a JIT-vs-interpreter differential-fuzzing
+  harness.
+- **Campaign fixes by theme:** anti-tamper SDK faults (fdsan-safe guest fd
+  ops, SIGALRM deadman neutralization, CheckJNI null-`jclass` tolerance,
+  hidden-API exemption + pending-exception clearing), WebView hardware-accel
+  proxy coverage (17/18 symbols with host-VM thread attach), and fd/signal
+  plumbing (fdsan-tag-correct `ScopedFd`).
+- **Sample suite: 85 always-green modules** spanning platform APIs/graphics,
+  21 ARM ISA probes, UI engines (Qt 6, React Native + Hermes, Lynx), 32
+  third-party native libraries, and proxy/regression probes.
+- **Known limitations:** residual crashes that are anti-emulator
+  self-protection or GMS gaps (documented, not worked around); a host
+  GFXStream `VK_EXT_memory_budget` clamp was needed for some games.
