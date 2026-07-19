@@ -19,3 +19,8 @@ venv/
 # Generated binary distribution bundle (build-and-package-prebuilts.sh output).
 # Binaries are not committed; regenerate from source.
 dist/
+
+# Generated audit report (enumerate-proxy-bad-symbols.py output). The
+# enumerator's exit code is the gate; the report is a local proof artifact,
+# regenerated on every run — not committed.
+docs/proxy-bad-symbol-audit.md

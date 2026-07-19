@@ -1730,7 +1730,8 @@ instead of an abort). The claim is machine-checked:
 `DoBadTrampoline` symbol against `proxy-bad-symbol-allowlist.txt` (each
 allowlist entry carries its own reasoned disposition) and fails if any
 unmangled-C symbol is neither covered nor allowlisted; it regenerates
-`proxy-bad-symbol-audit.md` (currently **0 uncovered**). Per-library arm64
+its report `proxy-bad-symbol-audit.md` locally (untracked; currently **0
+uncovered**) — the enumerator's exit code, not the report, is the gate. Per-library arm64
 counts: the app-facing libraries carry 65 `DoBadTrampoline` entries, 38 covered
 in `digitalis_extra_proxy/` (13 libnativehelper JNI helpers incl. the varargs
 `jniThrowExceptionFmt`, 17 libwebviewchromium `Register*`/`GraphicBufferImpl`
