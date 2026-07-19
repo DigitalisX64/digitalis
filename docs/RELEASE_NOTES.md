@@ -1,3 +1,69 @@
+# Digitalis — Second-Gear Sweep: FCSEL Re-Land, Scalar FP16, Full LSE Atomics, I8MM/BF16 & the NEON Residue (2026-07-19)
+
+A six-slice heavy-optimizer coverage batch, built by a parallel agent team and
+integrated + gated once: **+108 host tests (3306 → 3414, zero failures)**, both
+guest translators building clean, the full sample suite and prebuilt gate green.
+Every item below was already correct via the lite tier/interpreter — this batch
+lets hot regions containing them engage the optimizing second gear instead of
+silently settling at first-gear speed.
+
+## FCSEL: the deliberate bail is gone
+
+FCSEL was the last *common* scalar-FP op the heavy tier refused: an earlier
+lowering had miscompiled inside real regions, so the frontend bailed with a
+do-not-re-enable warning. The batch reproduced that historical crash in a
+region-interaction test and identified the root cause as the
+stale-forwarded-guest-context-vreg bug — the old blend mutated the cached read
+of its source register in place, and a later read in the same region saw the
+select result. That optimizer bug has since been fixed generally, and the
+re-landed lowering is additionally defensive: it blends in a private temp, never
+mutating the cached source reads, so it is correct even without the optimizer
+fix. Fifteen exec tests (isolated, region-interaction, loop) plus three new
+region differential fuzzers guard it.
+
+## Scalar FP16 in the second gear
+
+The whole scalar FP16 surface — arithmetic, min/max, `FSQRT`, the `FRINT*`
+family, compares (incl. conditional), `FCVT` to/from half, and `FMOV` including
+immediates — now lowers via the F16C round-trip (isolate the half, widen,
+compute in FP32, narrow with round-to-nearest-even). Computing in FP32 is
+*correctly rounded* for add/sub/mul/div/sqrt because FP32 carries more than
+twice FP16's precision; FP16 fused multiply-add is **deliberately still a bail**
+(the round-trip would double-round), as are the FP16 vector forms for now.
+
+## LSE atomics: complete
+
+The remaining atomics gaps are closed: byte and halfword forms of the
+bitwise/min-max read-modify-writes (via sized zero-extending loads and
+`LOCK CMPXCHGB/W` retry loops, with per-width sign-extension discipline for the
+signed min/max), and the 128-bit pair operations — `CASP` 64-bit and
+`LDXP`/`STXP` in both pair widths — via `LOCK CMPXCHG16B`, the heavy tier's
+first instruction with four simultaneous fixed-register constraints
+(RAX/RDX/RBX/RCX), which the register allocator handles cleanly.
+
+## ML extensions and the NEON residue
+
+- **I8MM matrix multiply** `SMMLA`/`UMMLA`/`USMMLA` (widen → `PMADDWD` →
+  `PHADDD` folds) and **BF16** `BFDOT`/`BFMMLA`/`BFMLALB`/`BFMLALT` (vector and
+  indexed, mirrored bit-exactly from the lite tier) now gear up — quantized-ML
+  hot loops stay in the second gear end to end.
+- **Indexed FCMLA** (FP32) joins the vector form with a lane-broadcast.
+- **Vector FP-misc:** `FABS`/`FNEG`/`FSQRT` (FP32 + FP64), `FACGE`/`FACGT`,
+  `FCVTL`/`FCVTN` (FP32↔FP64), `FRECPE`/`FRSQRTE`, `SQABS`/`SQNEG`.
+- **Byte-lane NEON:** `MUL`/`MLA`/`MLS` `.8b`/`.16b` and the byte
+  `SSRA`/`USRA`/`URSHR` shifts.
+- **Scalar SIMD forms:** integer D-form three-same (`ADD`/`SUB`/compares),
+  scalar pairwise (`ADDP`, `FADDP`/`FMAXP`/`FMINP`/`FMAXNMP`/`FMINNMP`), and
+  scalar by-element `FMUL`/`FMLA`/`FMLS`/`FMULX`.
+
+Seven machine-IR ops were added to the backend allowlist (SSE3 `HADDPS`, the
+`SQRTPS`/`SQRTPD` and FP32↔FP64 packed converts, and the F16C half↔single
+converts). What remains heavy-tier-only is documented in
+`unsupported-opcodes.md` §3a — chiefly the FP16 vector forms, the
+hardware-conditional `.2D` integer forms, and the crypto families.
+
+---
+
 # Digitalis — JIT Coverage Parity: AES, LSE Atomics, Dot-Product & Complex-FP in the Second Gear; ANGLE Extension-Proc Fix (2026-07-14 – 2026-07-18)
 
 This update closes the JIT-lowering gaps where an instruction ran correctly in
