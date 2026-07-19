@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# heavybail-sweep.sh — heavy-tier (second-gear) gear-up bail measurement driver
-# (plan3 Tier 0, item T0.5).
+# heavybail-sweep.sh — heavy-tier (second-gear) gear-up bail measurement driver.
+# Verifies the second gear actually engages on real apps: a silent heavy bail
+# costs only speed, so this sweep is how a coverage regression is noticed.
 #
 # WHY THIS EXISTS
 # ---------------
@@ -39,7 +40,7 @@
 # WHAT THIS DRIVER DOES
 # ---------------------
 # Discovers the top-level prebuilt APKs (same convention as test-prebuilts.sh /
-# soak-prebuilts.sh: non-recursive on sample/prebuilts/, top-apps/ & top-games/
+# Non-recursive on sample/prebuilts/, top-apps/ & top-games/
 # excluded), makes sure each is installed, then for each app: clears logcat,
 # launches it, dwells, and harvests every `HEAVY_BAIL insn=0x........` line into
 # a raw word list. Finally it hands that list to decode-bail-histogram.py, which

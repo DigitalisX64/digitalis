@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 #
 # decode-bail-histogram.py — decode a heavy-tier gear-up bail word list into a
-# mnemonic-frequency histogram (plan3 Tier 0, item T0.5).
+# mnemonic-frequency histogram (companion to heavybail-sweep.sh).
 #
 # Input: a file (or stdin) of ARM64 instruction words, one per line, as produced
 # by heavybail-sweep.sh — each line is a `0x........` 32-bit encoding of the
