@@ -1,117 +1,22 @@
-# Digitalis — Two Silent-Corruption Fixes: the Width-Blind Guest-Context Cache and the GWP-ASan Header Peek (2026-07-26)
+# Digitalis — Width-Keyed Guest-Context Cache & the GWP-ASan Header Peek (2026-07-26)
 
-Two bugs that never announced themselves. Neither raised `Undefined arm64
-instruction`, neither bailed a JIT tier, and one of them had been misfiled as
-environmental flakiness for weeks. Both are now fixed, both have regression
-coverage, and the sample suite grows 138 → **140**.
+Two silent-corruption fixes: no crash, no SIGILL, no JIT bail in either case.
 
-## The guest-context cache ignored access width
+- **The guest-context cache ignored access width.** Keyed on CPU-state byte offset
+  alone, it forwarded a mapping established by a 64-bit `MOVSD` read of a vector
+  register to a later 128-bit read — and `movsd xmm, m64` zeroes the upper half. A
+  shipping bcrypt key schedule silently hashed wrong: correct under the interpreter
+  and the lite tier, wrong under the default two-gear tier. Mappings now record
+  `{size, is_simd}`, and the loop optimizer skips mixed-width slots. Pinned by four
+  MachineIR unit tests and five guest-level differential regions.
+- **`__wrap_realloc`'s Scudo header peek faulted into GWP-ASan guard pages.** The
+  "emulator exhaustion" flake — a different app dying each run at `SEGV_ACCERR
+  …ff0` — was random only in which process it hit. `free`'s page-boundary guard now
+  covers `realloc` too, through one shared `InspectProbeHeader`.
+- **Samples 138 → 140.** `hello-bcrypt` vendors the real crypt_blowfish/libbcrypt
+  and reproduces the miscompile; `hello-blowfish` builds it from spec and does not.
 
-The heavy optimizer eliminates redundant CPU-state traffic inside a region: when
-a guest register has already been loaded into a host register, a later read of
-the same register is forwarded from that host register instead of reloading it.
-The cache behind that was keyed on the CPU-state **byte offset alone** — it
-recorded *which* slot a host register holds, never *how many bytes* the access
-that loaded it actually moved.
-
-For general-purpose registers that is harmless. For vector registers it is not.
-A shipping ARM64 bcrypt implementation contains this shape in its key expansion:
-
-```
-ldur q0, [x11, #0xff]          ; V0 = key material
-fmov w15, s0                   ; 64-bit MOVSD read of V0
-eor  v1.16b, v1.16b, v0.16b    ; 128-bit read of the same V0
-```
-
-The 128-bit write to V0 lives in an earlier basic block, so within this block the
-64-bit `MOVSD` is the first access and establishes the mapping. But `movsd xmm,
-m64` **zeroes the upper 64 bits** of its destination — so forwarding that
-register to the 128-bit read substituted zeroes for V0's upper half. The key
-schedule then produced a wrong hash, silently: no crash, no SIGILL, no
-heavy-tier bail. Correct under the interpreter and the lite translator; wrong
-under the default two-gear tier. What a user saw was an app that started fine
-and then failed to log in with an empty feed.
-
-The fix records `{size, is_simd}` with every mapping and keeps the load whenever
-the recorded mapping is narrower than the access asking for it, or belongs to
-the other register class — letting that access re-establish the mapping at its
-own width. The store side has the mirror hole (a narrower store does not fully
-overwrite a wider one), so an earlier store is now dropped only when the new one
-covers every byte of it. The sibling **loop** optimizer is width-blind the same
-way — its pre-loop load and post-loop store are emitted at the width of the
-first access seen — so slots touched at more than one width are excluded from
-hoisting there.
-
-**Regression coverage at three levels.** Four MachineIR unit tests pin both
-directions of the width rule and confirm the equal-width case is still
-optimized. `Arm64HeavyDifferentialFuzz.VectorRegReadAtTwoWidths` is the
-guest-level reproducer — the two-instruction region above, whose divergence
-signature is "low 64 bits equal, upper 64 bits differ." Four more differential
-regions cover the Blowfish shape it was found in, including the real
-200-instruction key-expansion region taken verbatim from the library and the
-region that writes results back into the tables it loads from (comparing memory,
-not just registers).
-
-## The "emulator exhaustion" flake was a guard-page underflow
-
-A long-standing intermittent failure — a **different** prebuilt app dying each
-run with `SEGV_ACCERR, fault addr 0x…ff0`, each app passing in isolation, the
-whole thing clearing after a reboot — looked exactly like host resource
-exhaustion. It was not. A GWP-ASan-annotated tombstone pinned it:
-
-```
-Cause: [GWP-ASan]: Buffer Underflow, 16 bytes left of a 736-byte allocation
-#00 __wrap_realloc+36  libberberis_proxy_libc.so
-```
-
-The proxy libc detects Qt's non-heap static "shared-null" object by peeking the
-16-byte Scudo chunk header at `[ptr-16]`. GWP-ASan — the platform's sampling
-allocator, roughly 1 in 1000 mallocs — places a guarded allocation flush against
-a `PROT_NONE` guard page, so `ptr` is page-aligned and the peek lands in the
-guard page. Because the sampling is **random per process**, which app and which
-allocation got hit varied every run; "a reboot fixes it" was just a fresh
-process re-rolling the sampling. The randomness was in which process tripped the
-bug, never in whether the bug was there.
-
-`free`'s probe already carried the correct guard; `realloc`'s was simply
-missing it. Beyond applying it, the follow-ups removed a second unguarded
-re-peek in the diagnostic path and extracted the guard and header read into one
-shared `InspectProbeHeader` helper, so the two wrappers can no longer drift
-apart. Six tests lay out a real `PROT_NONE` page immediately before a mapped one
-— the exact GWP-ASan geometry — and check the guarded probe survives it.
-
-## Samples
-
-Two new modules, both crypto regressions, bringing the suite to **140**:
-
-- **`hello-bcrypt`** vendors the *actual* library shipping apps link — Openwall
-  crypt_blowfish 1.3 plus the libbcrypt wrapper — and drives `bcrypt_gensalt` /
-  `bcrypt_hashpw` / `bcrypt_checkpw` across 28 known-answer vectors, 7 invalid
-  settings, and a cost-12 round trip. It reproduces the guest-context bug
-  directly: `BCRYPT FAIL` without the fix, `BCRYPT OK` with it, verified A/B/A on
-  device. Its native code is compiled `-O2` on purpose: at the debug default of
-  `-O0` the built `.so` contains no SIMD at all, so the bug shape never appears.
-  Apps ship release-optimized native libraries, and a sample that doesn't is
-  testing code that never runs in the field.
-- **`hello-blowfish`** implements the cipher from the specification as an
-  independent correctness check on the round function and key schedule.
-
-The contrast between the two is the lesson worth keeping: the from-spec sample
-passes under *both* the buggy and the fixed translator. Writing a faithful
-algorithm is not the same as reproducing a real compiler's output — for
-translator regressions, vendor the real library.
-
-## Verification
-
-`Arm64*` host suite **3565 passed, zero failures**; the riscv64 host suite
-**1144 passed, zero failures** (the four new width tests skip there — they need
-the dedicated SIMD registers only the ARM64 CPU state has, alongside the
-pre-existing SIMD/flags loop-optimizer skips); `libberberis_arm64` and
-`libberberis_riscv64` both build clean.
-Sample suite **140/140**. Prebuilt-APK gate **14 pass / 1 fail** — unchanged,
-the failure being WhatsApp's pre-existing app-internal
-`provideVoltronDownloadManager must not be called on the main thread` assertion,
-which has no translator frame in its stack.
+Verified: `Arm64*` 3565 passed, riscv64 1144 passed, both translators build clean, samples 140/140, prebuilt gate 14 pass / 1 fail (WhatsApp's own app-internal assertion).
 
 ---
 
