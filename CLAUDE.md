@@ -6,7 +6,7 @@ ARM64-to-x86_64 binary translation for Android, built on AOSP's Berberis NativeB
 
 This is an AOSP (Android Open Source Project) source tree with modifications to the Berberis binary translator to support ARM64-to-x86_64 translation. Berberis originally supported only RISC-V-to-x86_64; Digitalis adds the ARM64 backend.
 
-The `sample/hellodigitalis/` project contains 143 ARM64-only sample app modules that serve as the integration test suite: ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-lib smoke tests, ARM-extension/ABI probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media: ijkplayer, libVLC, FFmpegKit, Oboe; imaging: Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit; vision/ML: OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract; crypto/DB/storage: SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet; AndroidX-native: sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, Ink). These cover Vulkan, OpenGL ES (1.x & 2/3), JNI, audio (OpenSLES & AAudio), camera, MIDI, sensors, SIMD, NDK binder, and NNAPI — all running on an x86_64 emulator via NativeBridge translation. 140 are exercised by `test-samples.sh`; `hello-realm` builds standalone (toolchain pinning) and is verified by launch, and the two Media3 decoder-extension modules have no publishable prebuilt AAR to build against.
+`sample/hellodigitalis/` holds 143 ARM64-only sample app modules — the integration test suite. They span ndk-samples ports, proxy-lib smoke tests, ARM-extension probes, UI engines (Qt 6, React Native, Lynx), and third-party native libraries; `ls` the directory for the current set. 140 are exercised by `test-samples.sh`; `hello-realm` builds standalone (toolchain pinning) and is verified by launch, and the two Media3 decoder-extension modules have no publishable prebuilt AAR to build against.
 
 ## Architecture
 
@@ -20,9 +20,10 @@ ARM64 APK (arm64-v8a only)
   -> Host GPU (GFXStream VkDecoder for Vulkan)
 ```
 
-Dual execution path:
-- **JIT (Lite Translator)**: Translates ARM64 regions to x86_64 machine code. Handles ~98% of instructions. Cached for reuse.
-- **Interpreter**: Per-instruction fallback for syscalls, complex SIMD, and anything the JIT can't handle.
+Three execution tiers, all reachable for the same guest code:
+- **Lite translator** (first gear, the default entry point): single-pass JIT, ARM64 region -> x86_64, ~98% of instructions, cached.
+- **Heavy optimizer** (second gear): re-translates hot regions with SSA MachineIR, global register allocation and loop optimization. Bailing here is correct-but-slow, never a crash.
+- **Interpreter**: per-instruction fallback for syscalls, complex SIMD, and anything the JITs don't cover.
 
 ## Key Directories
 
@@ -32,6 +33,8 @@ All paths relative to repo root.
 |-----------|-----------------|
 | `frameworks/libs/binary_translation/` | Berberis core — the binary translator |
 | `frameworks/libs/binary_translation/lite_translator/arm64_to_x86_64/` | JIT compiler (ARM64 -> x86_64 native code) |
+| `frameworks/libs/binary_translation/heavy_optimizer/arm64/` | Second-gear optimizing JIT (SSA MachineIR frontend) |
+| `frameworks/libs/binary_translation/backend/x86_64/` | Shared MachineIR backend — register allocation, guest-context and loop optimizers |
 | `frameworks/libs/binary_translation/interpreter/arm64/` | Instruction-by-instruction interpreter fallback |
 | `frameworks/libs/binary_translation/decoder/include/berberis/decoder/arm64/` | ARM64 instruction decoder (`decoder.h`, `semantics_player.h`) |
 | `frameworks/libs/binary_translation/runtime/arm64/` | Translation cache, dispatch, region management |
@@ -41,7 +44,7 @@ All paths relative to repo root.
 | `frameworks/libs/binary_translation/prebuilt/` | Prebuilt configs including `ld.config.arm64.txt` |
 | `device/generic/goldfish/` | Emulator (goldfish) product definitions |
 | `device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_digitalis.mk` | Digitalis product config |
-| `sample/hellodigitalis/` | 143 ARM64-only sample app modules (Vulkan, GLES 1/2/3, JNI, OpenSLES + AAudio, camera, MIDI, SIMD, NDK binder, NNAPI, UI engines, third-party native libraries, etc.) |
+| `sample/hellodigitalis/` | The 143 sample app modules |
 
 ## Build
 
@@ -51,80 +54,39 @@ lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug
 m
 ```
 
-Or use the shortcut: `source lunch-digitalis.sh` after `source build/envsetup.sh`.
+Or `source digitalis/scripts/lunch-digitalis.sh`. Emulator: `emulator -memory 4096 -writable-system -qemu -cpu host &` (never `-no-window` when debugging an APK).
 
-Run the emulator:
 ```bash
-emulator -memory 4096 -writable-system -qemu -cpu host &
-```
-
-Install and run sample apps:
-```bash
-# Build all sample modules (ARM64-only APKs)
-cd sample/hellodigitalis && ./gradlew assembleDebug
-# Install and run the Vulkan triangle
-adb install hello-vulkan/build/outputs/apk/debug/hello-vulkan-debug.apk
-adb shell am start -n com.example.hellodigitalis/android.app.NativeActivity
-```
-
-Run host unit tests:
-```bash
+# Host unit tests
 out/host/linux-x86/nativetest64/berberis_arm64_host_tests/berberis_arm64_host_tests --gtest_filter='Arm64*'
+# Samples on the emulator — also --screenshots and --update-references; pass a module name to narrow
+.claude/scripts/test-samples.sh
+# Sample APKs
+cd sample/hellodigitalis && ./gradlew assembleDebug
 ```
 
-Verify the upstream ARM64 build still works (regression check before committing):
-```bash
-source build/envsetup.sh
-lunch sdk_phone64_arm64_minigbm-trunk_staging-userdebug
-m
-```
-After this finishes, switch back to the Digitalis target with `lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug` before resuming x86_64 work.
-
-Test all sample modules on the emulator:
-```bash
-.claude/scripts/test-samples.sh                # test all modules
-.claude/scripts/test-samples.sh hello-vulkan   # test a single module
-```
-
-Run screenshot tests (validates visual output against reference images):
-```bash
-.claude/scripts/test-samples.sh --screenshots              # rendering modules
-.claude/scripts/test-samples.sh --screenshots hello-vulkan  # test a single module
-```
-
-Update reference images (after intentional rendering changes):
-```bash
-.claude/scripts/test-samples.sh --update-references              # all modules
-.claude/scripts/test-samples.sh --update-references hello-vulkan  # single module
-```
+**Upstream ARM64 regression check, before committing.** Berberis lives in shared paths, so translator, makefile and proxy-library edits can leak into the native ARM64 image. Verify `lunch sdk_phone64_arm64_minigbm-trunk_staging-userdebug && m` still builds clean, then `lunch` back to the Digitalis target before resuming x86_64 work. Note `m` on the arm64 product builds no berberis at all — check `m libberberis_riscv64` too.
 
 ## Prebuilt-APK regression (sample/prebuilts/)
 
-If `sample/prebuilts/` exists and contains one or more `*.apk` files, treat them as **extra regression targets** for normal verification (alongside `test-samples.sh`). The expectation:
+Any `*.apk` in the `sample/prebuilts/` **root** is an extra regression target, run in addition to (never instead of) `test-samples.sh`. `.claude/scripts/test-prebuilts.sh` installs, launches, watches for `Fatal signal` / `Undefined arm64 instruction` / `FATAL EXCEPTION` / the process vanishing, and exits non-zero on any of those. The directory is a drop-in spot; the APKs are not committed to manifest repos.
 
-- Install every APK in the `sample/prebuilts/` **root** on the booted Digitalis emulator (`adb install -r`).
-- Launch each one's main activity and watch for `Fatal signal`, `Undefined arm64 instruction`, `FATAL EXCEPTION`, or the process disappearing inside a short watch window. Any of those is a regression.
-- Run this in addition to (not instead of) `test-samples.sh`. Do not add per-APK helper scripts or per-APK CLAUDE.md sections — keep the workflow generic over whatever is dropped into `sample/prebuilts/`.
-- The APKs themselves are not committed in repos that are part of the manifest; the directory is intentionally a drop-in spot.
-- **Excluded subdirectories:** `sample/prebuilts/top-apps/` and `sample/prebuilts/top-games/` are the staging area for `digitalis/scripts/fetch-prebuilt-apks.py` (apkmirror downloads). They are **not** part of this gate — discovery is top-level only (non-recursive), so this regression and the fetch tool's own verification stay independent and don't break each other. Never recurse into them here.
-
-**Mandatory per-cycle gate:** `.claude/scripts/test-prebuilts.sh` automates the install+launch+watch loop, scans every `*.apk` in the `sample/prebuilts/` root (non-recursive — `top-apps/` and `top-games/` are excluded), and exits non-zero if any APK crashes. The dispatch loop runs it at the **end of every cycle**, after `test-samples.sh` and before writing the handoff. The cycle's handoff must include a `## Prebuilt-APK Status` section that copy-pastes the script's per-APK PASS/FAIL summary — whatever APKs are present in the directory, that's what gets tested and reported. This is non-negotiable — it's how the user tracks prebuilt-APK regressions across cycles. The script is generic and discovers APKs at runtime; do NOT add per-app branches and do NOT hard-code app names anywhere in the dispatch flow. If a specific APK needs special handling, fix the underlying translator bug inside `binary_translation/`, not the script.
+- **Mandatory per-cycle gate.** The dispatch loop runs the script at the **end of every cycle**, after `test-samples.sh` and before the handoff, and the handoff copy-pastes its per-APK PASS/FAIL into a `## Prebuilt-APK Status` section. This is how the user tracks prebuilt regressions across cycles — non-negotiable.
+- **Stay generic over whatever is dropped in.** No per-APK scripts, no per-APK CLAUDE.md sections, no hard-coded app names anywhere in the dispatch flow. If one APK needs special handling, the underlying bug belongs in `binary_translation/`, not the script.
+- **Discovery is top-level only.** `top-apps/` and `top-games/` are the staging area for `digitalis/scripts/fetch-prebuilt-apks.py`; never recurse into them, so this gate and the fetch tool's own verification stay independent.
 
 ## Key Files for Development
 
-These are the most-modified files and the ones you'll touch most often:
+The most-edited files, with the constraint each one imposes:
 
-- **`lite_translator/arm64_to_x86_64/lite_translator.h`** — JIT compiler implementation (~1100+ lines of ARM64->x86_64 translation). All integer, branch, load/store, system, and basic SIMD JIT ops.
-- **`lite_translator/arm64_to_x86_64/lite_translator.cc`** — Branch condition evaluation, NZCV flag emission (LAHF+SETO+AND+MOVW).
-- **`lite_translator/arm64_to_x86_64/lite_translate_region.cc`** — JIT region management, early termination on register pressure.
-- **`lite_translator/arm64_to_x86_64/allocator.h`** — x86_64 register pool (13 GP registers: RBX, RSI, RDI, R8-R15, RDX, RCX). RDX needs save/restore around DIV/MUL, RCX around variable shifts. RAX reserved for guest PC. RBP holds ThreadState pointer.
-- **`decoder/include/berberis/decoder/arm64/decoder.h`** — ARM64 instruction bit decoding. Many bugs have been opcode dispatch ordering issues here.
-- **`decoder/include/berberis/decoder/arm64/semantics_player.h`** — Bridges decoder to translator/interpreter.
-- **`interpreter/arm64/interpreter.h`** — All interpreter-only SIMD instructions (pairwise, widening, permute, compare, across-lanes, CRC32, scalar conversions).
-- **`kernel_api/arm64/syscall_emulation.cc`** — Syscall forwarding, futex workarounds, errno/struct-layout translation.
+- **`lite_translator/arm64_to_x86_64/allocator.h`** — the x86_64 register pool: 13 GP registers (RBX, RSI, RDI, R8-R15, RDX, RCX). RDX needs save/restore around DIV/MUL, RCX around variable shifts. RAX is reserved for the guest PC, RBP holds the ThreadState pointer.
+- **`decoder/include/berberis/decoder/arm64/decoder.h`** — instruction bit decoding. A large share of past bugs were opcode dispatch *ordering* issues here, not wrong semantics.
+- **`lite_translator/arm64_to_x86_64/lite_translator.cc`** — branch condition evaluation and NZCV flag emission (LAHF+SETO+AND+MOVW).
+- **`lite_translator/arm64_to_x86_64/lite_translate_region.cc`** — region management, including early termination on register pressure.
+- **`kernel_api/arm64/syscall_emulation.cc`** — syscall forwarding, futex workarounds, errno/struct-layout translation.
 - **`kernel_api/sys_mman_emulation.cc`** — BSS partial-page zeroing after file-backed mmaps.
-- **`lite_translator/arm64_to_x86_64/lite_translate_region_exec_tests.cc`** — JIT unit tests (45 tests).
-- **`sample/hellodigitalis/`** — 143 ARM64-only sample app modules: android/ndk-samples ports, 4 Digitalis proxy-lib smoke tests (hello-gles1, hello-aaudio, hello-binder-ndk, hello-nnapi), ARM-extension probes, UI-engine samples, and third-party native-library integration samples. Use `/test-samples` to test on the emulator.
+
+`lite_translator.h`, `interpreter/arm64/interpreter.h`, `heavy_optimizer/arm64/frontend.cc` and the matching `*_exec_tests.cc` are the per-tier instruction implementations; grep them for a neighbouring instruction to find the house style.
 
 ## Modification Surface (binding)
 
@@ -159,81 +121,11 @@ re-route through `frameworks/libs/binary_translation/`.
 
 - **License: Apache 2.0** for all new source files (matches the rest of AOSP).
 - **Copyright holder: `utzcoz`** for newly created Digitalis source files (e.g., `Copyright (C) 2026 utzcoz`). Keep the existing AOSP copyright in any file that originated upstream.
-- **No `// region digitalis` / `// endregion` markers in Digitalis-created files.** See the comprehensive rule under Critical Conventions ("region-marker placement"). In short: a file with **no upstream Berberis counterpart** — the entire ARM64 backend (`*/arm64/`, `*arm64_to_x86_64/`, `*arm64_to_all/`, `*_arm64.*`, e.g. `decoder/arm64/decoder.h`, `interpreter/arm64/interpreter.h`) and everything under `sample/hellodigitalis/` — is Digitalis-only by construction, so region markers there are pure noise and must be omitted. Markers belong **only** in shared/upstream-derived files (compiled for both riscv64 and arm64), and even there as **one block per contiguous run**.
+- **No `// region digitalis` / `// endregion` markers in Digitalis-created files** — see the full region-marker rule under Critical Conventions below.
 
 ## Debugging Prebuilt APKs
 
-When a prebuilt third-party APK (Facebook, WhatsApp, etc.) fails on the emulator, **prefer tracing-based diagnostic** over static code audit. Static audit alone routinely takes many build/push cycles to converge; a single trace usually points straight at the offending guest PC.
-
-**Setup** (per emulator boot):
-
-```bash
-adb root
-adb shell setenforce 0                                       # SELinux Permissive — needed to setprop berberis.tracing
-adb shell setprop berberis.tracing '<pkg>=digitalis-trace.log'   # e.g. com.facebook.katana=digitalis-trace.log
-adb shell am force-stop <pkg>
-adb shell am start -n <pkg>/<launch-activity>
-sleep 18
-adb shell 'chmod 644 /data/user/0/<pkg>/digitalis-trace.log'
-adb pull /data/user/0/<pkg>/digitalis-trace.log /tmp/trace.log
-```
-
-Relative trace filenames land in the app's private dir (`/data/user/0/<pkg>/`). Absolute paths are rejected by `TraceToFile` unless the dir is owned by the app uid. The `BERBERIS_TRACING` env var also works but is read once at zygote fork time; `setprop` is the only reliable way to set it per-app.
-
-**Why `setenforce 0` is fine for debugging:**
-- It's emulator-local and reverts on the next reboot.
-- The property service rejects `setprop berberis.tracing` under Enforcing because no `property_contexts` rule exists for it. Adding such a rule means editing SELinux policy and rebuilding; flipping to Permissive is the temporary equivalent.
-- **Always restore Enforcing (`adb shell setenforce 1`) when done debugging**, and never commit Permissive into product config.
-
-**Reading the trace:**
-- `berberis: dispatch#N pc=… x0=… x29=… x30=… sp=…` — the field labeled `sp=` is actually **x1** (see `runtime/arm64/translator_x86_64.cc:196`).
-- `berberis: trans#N pc=… size=… JIT|INTERP …` — a new translation cache entry. Cross-reference `pc` against `link_map[i]: <base> <lib>` lines (also logged) to compute `lib_offset = pc - base`, then disasm at that offset with `prebuilts/clang/host/linux-x86/llvm-binutils-stable/llvm-objdump -d <pulled-lib>` to see the guest instruction.
-- `berberis: interp #N pc=…` — emitted every 5 million interpreter instructions; if you see it during a small region, that region is interp-bailout-hot and worth JIT-implementing.
-- Wrong-output bugs (Brotli/zstd checksum mismatches, "Bad context map", etc.) point at decoder mis-dispatch — verify the JIT-bailed-out instruction's encoding against the ARM ARM and confirm it routes to the right handler.
-
-**Don't bisect via SIGILL substitution as the first move.** Replacing a handler with `Undefined()` and watching for SIGILL only proves whether that handler is hit; tracing both narrows the hit set and shows the operand values, which is far more useful per build/push cycle.
-
-### Speeding up root-cause diagnosis
-
-Multi-cycle prebuilt-APK investigations tend to cycle through wrong hypotheses before localizing the real hot path. Each wrong direction is usually rooted in one of the traps below; bake these checks into every diagnostic cycle.
-
-- **Trace first, simpleperf second.** Set `setprop berberis.tracing '<pkg>=digitalis-trace.log'` BEFORE any simpleperf work. simpleperf samples host PCs that map to JIT regions; **interpreter-hot paths (including `svc #0` syscalls) get misattributed to whichever JIT region's `movabs <guest_pc>` immediate was last seen**, looking like "hot in <random JIT region>" when the real CPU work is in `berberis_HandleInterpret`. Tracing's `berberis: interp #N pc=…` lines surface this directly.
-
-- **Re-verify linker base every cycle.** `/system/bin/arm64/linker64`'s load address changes every emulator boot. Always read `/proc/<pid>/maps | grep linker64` to anchor offset math. NEVER inherit a base address from a previous handoff — a 4-KB error (e.g. `0x...cbc000` vs `0x...cc0000`) silently maps function offsets to the *wrong* function (`AddToMap` vs `LogdSocket::GetSocket`) and propagates that wrong hypothesis across multiple subsequent cycles.
-
-- **debuggerd's `pc` is `ThreadState.insn_addr`, which is stale.** It reflects the *last region exit*, not live execution. For loops that never exit dispatch back through the path that updates `insn_addr` (e.g. a backward branch with `b loop_top`), the pc stays at whatever value it held N region exits ago. Three back-to-back debuggerd snapshots showing the same pc is NOT confirmation of a wedge at that pc — cross-check by sampling the actual TID with simpleperf AND looking at the JIT memfd:exec region the samples cluster in.
-
-- **Stale-inode trap on diagnostic builds.** `md5sum` on disk does NOT tell you what's loaded in already-running processes. After `adb push` of a diagnostic library: (a) force-stop every prebuilt-APK process AND (b) `adb shell stop && start` to restart zygote AND (c) check `/proc/<pid>/maps` for the `(deleted)` annotation on the library file. If any process still has the old inode mapped, your "diagnostic trace" will be capturing the wrong code path while reporting the right md5sum.
-
-- **Cheap-falsify before expensive-pin.** Before writing a full dispatch-enabled host test for a hypothesis (≥30 LOC + region encoding + execution harness + watchdog), verify the hypothesis at the live guest level first: single-step the interpreter at the suspect PC, or use a 5-line `berberis.tracing` snippet that logs the specific values the hypothesis depends on. Reserve the host-test pin for hypotheses you've already confirmed at guest level. Otherwise cycles burn ~30 minutes building a beautiful pinning test for a hypothesis that the cheaper check would have falsified in 5 minutes.
-
-- **Don't re-anchor on a disproved hypothesis.** If cycle N's host test PASSES under the suspected failure condition, that hypothesis is dead — do NOT re-anchor on it in cycle N+1 without genuinely new evidence. The natural urge to "double-check" wastes a cycle. Treat host-test-passes as a hard exclusion; move the search to a different code path.
-
-- **Mind the simpleperf↔interpreter blind spot.** simpleperf's call-stack output for time spent in the interpreter shows up as samples in `berberis_HandleInterpret` and the dispatch table function, which don't trivially decode to guest PCs. If `>30%` of samples are in those host functions and not in `memfd:exec`, the wedge is in the interpreter path; switch to the per-instruction `interp #N` trace immediately.
-
-- **Sanity-check the candidate code is still on the hot path.** A multi-cycle investigation that keeps narrowing to "the AddToMap loop" should periodically run a non-AddToMap quick-check: e.g., grep the live trace for the function names of OTHER candidate functions (CFIShadowWriter, mprotect, dlopen). If they appear with high `interp #N` density, the original localization was wrong even if the trace at the suspect site looks busy.
-
-- **Scatter-trace then narrow.** Don't add one `TRACE()` at a time and rebuild for every hypothesis. Sprinkle 5–10 `TRACE()` calls across every plausible candidate spot in a single build — every suspect function entry, every backward-branch target, every potential infinite-loop top, every syscall handler, every error-return path. Run one trace capture. The output tells you which spots actually fire and with what frequency / argument values — usually one or two of the scattered points reveal a 1000× anomaly that the others don't, and the narrowing happens in one round-trip instead of N. Cost is one extra build/push; payoff is replacing N cycles of "one-shot diagnostic, capture, revert, next" with one cycle of "broad scatter, narrow, fix." **Strip every temp `TRACE()` before commit** per the existing "no temp debug log in commits" rule — the broad scatter is for diagnosis only, not for shipping.
-
-### Test-first, then on-device tracing (the hello-qt IC IVAU bug)
-
-- **Host test first; go on-device when host tests pass but the device keeps failing.** A host gtest is the fastest loop, but differential fuzzers are blind to bugs needing real region structure / inputs / self-modifying-code timing. After ~2 host repros pass while the device still crashes, stop writing fuzzers — that hypothesis is excluded, the bug isn't.
-- **On-device: scatter many traces in ONE build to cut round-trips, then strip them when fixed.** Each build/push/reboot is slow, so instrument every candidate at once (syscall handlers, dispatch, the crash signal handler). At a crash, walk the guest x29 frame chain via `/proc/self/mem` to pin the real call path — `insn_addr` is stale. `git checkout` all diagnostics once the root cause lands.
-- **`force-interpret X fixes it` does NOT prove X is buggy** — it changes region chaining, not just X's codegen. Confirm a suspect region's codegen against the interpreter (host test or an on-device JIT-vs-interpreter self-check) before trusting the localization.
-- **Reusable gotcha:** ARM64 has no `flush_icache` syscall — user-space JITs (PCRE2/sljit, ART, V8) signal self-modified code with **`IC IVAU`**. A translator must treat `IC IVAU, Xt` as a translation-cache invalidation of the line at `Xt`, not a NOP; otherwise it runs stale translations of regenerated code. `DC CVAU` stays a NOP (shared in-process memory).
-
-### Full-path differential (use it for wrong-output / internal-throw bugs, not just crashes)
-
-When a guest app **throws or returns wrong output deep inside a library** (no SIGILL/SIGSEGV — e.g. `wstring_convert: from_bytes error`, a checksum mismatch, "Bad context map") and host tests pass while the device keeps failing, **trace the DATA through the full call path on-device and diff JIT-vs-interp at each step** until you find where a value first diverges. This converts an unbounded "which instruction is wrong" search into a localized one. Recipe (all crash-free, all proven on the hello-maplibre bug):
-
-1. **Crash-free library base:** read it from the link map in `instrument/instrument.cc`'s `OnConsistentLinkMap` (`link->l_addr` for the target `lib*.so`) into a global the translator reads. NEVER `fopen("/proc/self/maps")` per-call — that ANRs the app (10s attach timeout) and the per-translation fopen storm corrupts diagnostics.
-2. **Capture at region-START PCs only.** A hook in `berberis_HandleNotTranslated` / `berberis_HandleInterpret` (keyed on `GetInsnAddr(state->cpu) == base + <off>`) sees the live register/stack state when a region is (re)entered. Most interesting values (a function's args, a `do_in` result, a status byte) live at the instruction **right after a `bl`** — disassemble to find that PC; it is a region start. Mid-region PCs can't be hooked this way.
-3. **Per-call capture needs force-interpret.** `HandleNotTranslated` fires once per region (first translation only). To see EVERY call's data, force-interpret a tiny window `[off, off+4)` containing that region (a writable `berberis.filo`/`berberis.fihi`-style knob gating a `kInterpreted` install) so each entry routes through `HandleInterpret`. Force-interpreting a callee's PLT (e.g. `operator delete`) captures every call to it.
-4. **Walk the data backward to the source.** Capture the bad value, then its producer's output, then *its* input, … until you reach the first point where JIT and interp disagree. Decode std::string descriptors (`mk=byte[obj]`, `size=[obj+8]`, `data=[obj+0x10]`; bit0 of mk = is-long) and dereference the data buffer — a `size=N, data=<heap ptr>, data-bytes=0` string is an **allocated-but-unfilled / zeroed buffer**, distinct from input corruption or a facet-null.
-5. **Bisect with force-interpret windows to pin the region.** Once you know the failing function, force-interpret sub-windows of it; the window that flips FAIL→PASS contains the trigger. **Re-run the flip 3-4× to prove it's deterministic (a real region bug) vs probabilistic (a race/heap-timing artifact).** Then confirm against a control: nearby regions whose interp does NOT flip it.
-6. **Dump the suspect region's codegen** with `MachineCode::AsString(&s, InstructionSize::OneByte)` and TRACE it. If the executed path's codegen is provably correct (e.g. the live branch skips the only store/free), the bug is **region-structural** (chaining / code-pool install / never-cleared `recovery_map_`), NOT a per-instruction miscompile. Host single-region replays are blind to these; instrument the code-pool/dispatch/recovery infrastructure instead.
-
-Strip every temp `TRACE`/global/knob before commit (the "no temp debug log in commits" rule); the link-map base + region-start hooks + force-interpret bisection are diagnosis scaffolding only.
+When a prebuilt third-party APK fails on the emulator, **trace before auditing** — a single `berberis.tracing` capture usually points straight at the offending guest PC, where static audit takes many build/push cycles. The `debugging-prebuilt-apks` skill carries the whole playbook: tracing setup, reading the trace, the traps that burn cycles (stale linker base, stale `insn_addr`, stale inode after `adb push`, the simpleperf/interpreter blind spot), scatter-tracing, and the full-path JIT-vs-interpreter differential for wrong-output bugs. Read it before starting an investigation.
 
 ## Critical Conventions
 
@@ -264,15 +156,11 @@ Strip every temp `TRACE`/global/knob before commit (the "no temp debug log in co
 - **Fix root causes in the translator, not workarounds in samples.** When a sample app fails, the bug is in the binary translator (decoder, interpreter, lite translator, proxy libraries, syscall emulation), not the app. Do not modify code under `sample/hellodigitalis/` to work around translator bugs unless explicitly asked to.
 - **Write sample logic without considering implementation status.** Samples should exercise their target API surface fully, including intrinsics, instructions, or APIs the translator does not yet implement. If a sample crashes on `Undefined arm64 instruction`, the fix is to add that opcode to `frameworks/libs/binary_translation/` (decoder + interpreter, plus JIT when applicable) — *never* to delete the offending code from the sample. The sample is the spec; the translator catches up to it.
 - **Cover all THREE translation tiers for a common fix (binding).** ARM64 guest code runs through three paths: the **interpreter** (`interpreter/arm64/interpreter.h`, per-instruction fallback), the **lite translator** (`lite_translator/arm64_to_x86_64/`, single-pass JIT — the default first gear), and the **heavy optimizer** (`heavy_optimizer/arm64/`, the two-gear second gear). When you implement or fix something *common* — an instruction or behavior that can appear in arbitrary guest code, not a niche/one-off path — you must cover **every tier where it is reachable**, not just the one in front of you. A gap in one tier silently degrades that tier rather than crashing: a missing interpreter/JIT case raises `Undefined arm64 instruction`, but a **heavy-optimizer bail just falls back to lite — correct but slow**, and for a *common* instruction that is a real regression, not a free pass. Concretely, the heavy frontend silently bailing on `ADRP` / `MRS TPIDR_EL0` / `SBFX` (all long-since handled by the interpreter and lite tier) made it bail out of nearly every real-app region, so two-gear never engaged on real apps and a security-SDK CRC loop ran at lite speed and tripped the app's watchdog. So when adding/fixing a common instruction or behavior, explicitly check each tier — *does the interpreter handle it? the lite translator? the heavy optimizer?* — implement it wherever reachable, add a **per-tier test** (interpreter via `InterpretInsn`, lite/heavy via their exec-test harnesses), and state in the commit which tiers were covered and why any was intentionally skipped (e.g. a genuinely heavy-only optimization, or a niche path that legitimately bails). Tier-specific bugfixes (a miscompile in one backend) need only that tier; *new common coverage* needs all of them.
-- **Decompose into an agent team, then integrate + verify ONCE in the main session (try this pattern first).** When a task splits into **independent, separable slices** of new implementation or analysis — several instruction categories, several proxy symbols, several files to research, several candidate fixes to evaluate — prefer this shape over doing the slices serially or building/gating each one on its own:
-  1. **Fan out an agent team**, one agent per slice. Each agent *researches and writes* its slice — the actual code (handlers, encoders, tests) plus the verification it did (ARM ARM encodings checked against the assembler, allowlist/op availability confirmed, expected values computed) — and **returns it as a reviewed deliverable (text), not by editing the tree directly.** Direct parallel edits to the shared files (e.g. `heavy_optimizer/arm64/frontend.{h,cc,tests.cc}`) collide; returning deliverables avoids the conflict and lets the integrator see every slice before anything lands.
-  2. **The main session integrates all deliverables as ONE batch**, then runs the expensive gate **a single time** over the combined result: one `m libberberis_arm64 libberberis_riscv64 berberis_arm64_host_tests`, one full `Arm64*` host run, one on-device gate (`test-samples.sh` liveness + `--screenshots` + codecs + `test-prebuilts.sh`). This is the whole point — the slow serial part (full build, 2400+ host tests, device deploy + sample/screenshot/prebuilt gate, tens of minutes) runs **once**, not once per slice, collapsing N verification cycles into one.
-  3. **Integration is adversarial reconciliation, not copy-paste.** The main session owns everything no single agent can see and must independently re-verify every agent's claims against ground truth (the assembler, the ARM ARM, the *current* files) before the gate. Real defects surface only here: cross-slice interactions (region-count/aggregate tests that span categories — recompute from the actual combined instruction set; an agent that only knows its own slice will undercount), duplicate/colliding helper or encoder definitions, a slice's hardcoded test constants being wrong (assemble to confirm), and codegen that passes an agent's reasoning but trips a real build/runtime check (e.g. a `MemoryOperand` vs assembler-`Operand` type, or a recovery-block split stranding a CMPXCHG FLAGS output → `lifetime.h reg_class_` CHECK). Treat agent deliverables as *proposed and self-attested*, never as verified.
-  This pattern landed the heavy-optimizer coverage expansion (`af915dff`: REV/CLS/SBFIZ, UDIV/SDIV/UMULH/SMULH, SIMD modified-imm + DUP, LDXR/STXR/LDAR/STLR) from four parallel agents in one gate pass; the integrator caught a real reg_class crash, four wrong test encodings, and a region-test the slice agents missed. **Reach for it first** on any task that fans out cleanly; fall back to inline serial work only when the slices are interdependent or too small to parallelize.
-- **Don't bake plan or handoff references into code or commits.** `digitalis-full-support-plan.md` and `digitalis-handoff-*.md` are scaffolding for the dispatch loop, not load-bearing project history. Don't write `// Plan §H1 …` in sources, don't title commits `Plan §C8: …`, don't refer to section letters in inline comments, and **don't reference handoff numbers** (e.g. `// handoff-58 derivation`, `// handoff-253 audit`, `(handoff-14 stale-foreground flake)`). Describe changes on their own terms — reference the ARM ARM section, the instruction encoding, or the upstream Berberis convention being followed. Plan-section labels and handoff-N references are fine inside `digitalis-handoff-*.md` and `digitalis-full-support-plan.md` (those files are themselves dispatch scaffolding); they must not leak from handoffs into shipped code or commit messages.
+- **Decompose into an agent team, then integrate + verify ONCE in the main session (try this pattern first).** When a task splits into independent, separable slices (several instruction categories, several proxy symbols, several files to research, several candidate fixes), fan out one agent per slice writing its slice as a *returned deliverable* rather than editing the tree, then integrate as one batch and run the expensive gate once. Integration is adversarial re-verification, not copy-paste. Full pattern: the `agent-team-decomposition` skill.
+- **Don't bake plan or handoff references into code or commits.** `digitalis-full-support-plan*.md` and `digitalis-handoff-*.md` are dispatch scaffolding, not project history. No `// Plan §H1 …` in sources, no `Plan §C8: …` commit titles, no section letters in comments, and no handoff numbers (`// handoff-58 derivation`, `(handoff-14 stale-foreground flake)`). Describe changes on their own terms — the ARM ARM section, the instruction encoding, the upstream Berberis convention being followed. Those labels are fine *inside* the handoff and plan files themselves; they must not leak into shipped code or commit messages.
 - **Strip temporary debug logging before committing.** Investigative `__android_log_print`, `printf`, `TRACE`, and similar one-off log lines added while diagnosing a bug must be removed before `git commit`. They pollute production logcat, bias future debugging, and inflate diffs with noise. Load-bearing diagnostics (e.g., the `berberis: trans#N pc=…` region trace, the `Undefined arm64 instruction …` line, sample-side CHECK macros that surface test failures) stay; investigative scaffolding goes. If a debug log proves broadly useful, promote it to a documented diagnostic with a clear comment explaining why it exists.
-- **At the end of every dispatch cycle, commit the cycle's verified clean code — even when it only fixes part of a larger problem.** Before writing the handoff, the subagent must run `git status -s` in each sub-repo (`frameworks/libs/binary_translation/`, `sample/hellodigitalis/`, `digitalis/`); if any has changes that satisfy the three-gate commit-readiness check below, commit them as one commit per logical change. Don't accumulate uncommitted work across cycles waiting for a "complete" fix — that's how stray `git stash` / `git reset` / scrub scripts have silently destroyed hours of code in past cycles. Commit-readiness gate (ALL three): (1) **builds clean** — host tests + `m libberberis_arm64`; (2) **target test passes** — the sample/probe/host gtest this cycle was meant to make pass actually passes; (3) **no regression** — the sample suite PASS count hasn't dropped. If all three are true, commit. "Partial fix" framing is fine: `interpreter: implement FCADD vector (FP32 only; FP16 follow-up)` is a perfectly good commit; the FP16 case is the next cycle's commit. The handoff documents scaffolding; the commit is the durable artifact — keep them separate.
-- **Don't break the upstream ARM64 build.** Before committing, verify `lunch sdk_phone64_arm64_minigbm-trunk_staging-userdebug && m` still builds clean. Berberis lives in shared paths (`frameworks/libs/binary_translation/`), so translator edits, makefile changes, and proxy-library changes can leak into the native ARM64 image. New commits must keep the existing ARM64 build green. After verifying, switch back to the Digitalis target before resuming x86_64 work.
+- **At the end of every dispatch cycle, commit the cycle's verified clean code — even when it only fixes part of a larger problem.** Before writing the handoff, run `git status -s` in each sub-repo (`frameworks/libs/binary_translation/`, `sample/hellodigitalis/`, `digitalis/`) and commit anything that passes all three gates, one commit per logical change: (1) **builds clean** — host tests + `m libberberis_arm64`; (2) **target test passes** — the sample/probe/gtest this cycle was meant to fix actually passes; (3) **no regression** — the sample suite PASS count hasn't dropped. "Partial fix" framing is fine (`interpreter: implement FCADD vector (FP32 only; FP16 follow-up)`); the rest is the next cycle's commit. Don't accumulate uncommitted work waiting for a "complete" fix — that is how stray `git stash` / `git reset` / scrub scripts have silently destroyed hours of work. The handoff is scaffolding; the commit is the durable artifact.
+- **Don't break the upstream ARM64 build.** New commits must keep it green — see the regression check under Build.
 - **Compile arm64-only changes into the arm64 target only (binding).** Many `.cc` files under `frameworks/libs/binary_translation/` are **shared** — a single source compiled into BOTH `libberberis_riscv64` and `libberberis_arm64` (e.g. `native_bridge/native_bridge.cc`, `guest_loader/*.cc`, `guest_os_primitives/*.cc`, `kernel_api/sys_mman_emulation.cc`, `proxy_loader/proxy_library_builder.cc`, `runtime_primitives/crash_reporter.cc`, `base/tracing.cc`). Any Digitalis change that only makes sense for the **arm64 guest** — Qt/RN/prebuilt-app features (in-APK lib extract, `QT_PLUGIN_PATH` injection), arm64-app-debugging diagnostics, arm64-specific CPUState/behavior — **leaks into the riscv64 build** when added to a shared file: as undefined-symbol link errors if it pulls a new dependency (this is exactly how `native_bridge.cc`'s `libziparchive` use silently broke `libberberis_riscv64` for ~390 commits), or, more quietly, as dead code that bloats and risks the riscv64 image. **Confine such code to arm64 as much as possible:**
   1. **Guard the code with `#if defined(NATIVE_BRIDGE_GUEST_ARCH_ARM64)`** — the include, the function definition, AND every call site (miss one and the symbol is re-introduced). The macro is `-D`-defined only for the arm64-guest flavor (`berberis_arm64_defaults` / each lib's arm64 `Android.bp`), never for riscv64. These guards live INSIDE the existing `// region digitalis` block (the feature is a Digitalis addition with no upstream line to preserve, so one guarded block per run, no `#else`).
   2. **Scope new build dependencies to the arm64 static lib only** (e.g. `libberberis_native_bridge_arm64`), NOT to the shared `cc_defaults` and NOT to the riscv64 target. The fix for a riscv64 link break caused by an arm64 feature is *"guard the code so riscv64 never references it,"* **never** *"add the missing dependency to riscv64 too"* (that papers over the leak and bloats upstream).
