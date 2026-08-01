@@ -105,26 +105,20 @@ number.
 
 ## What the numbers currently look like
 
-Medians from a 2-repeat, three-tier sweep on the emulator
-(`20260801-222521.ndjson`, 102 records). Only cases where **every mode passed
-the 10% IQR gate** are shown; regenerate rather than trusting this table across
-translator changes.
+Current results live in [`benchmark-results.md`](benchmark-results.md) — a
+generated page, one row per workload with the fastest reliable tier bolded and
+noisy cells marked. Refresh it after any sweep:
 
-| workload | interpret | lite | two-gear | best vs interpret |
-|---|---|---|---|---|
-| bcrypt hashpw cost-8 | 588.9 ms | 15.9 ms | 13.7 ms | 42.9× |
-| argon2id 16 MiB t2 | 609.1 ms | 36.9 ms | 28.0 ms | 21.8× |
-| secp256k1 ecdh ×20 | 84.9 ms | 3.01 ms | 2.18 ms | 38.9× |
-| openblas saxpy 65k ×200 | 54.7 ms | 3.60 ms | 1.57 ms | 34.9× |
-| zstd compress 1 MB L3 | 23.8 ms | 1.69 ms | 1.60 ms | 14.9× |
-| snappy compress 1 MB | 18.8 ms | 1.19 ms | 1.27 ms | 15.8× |
-| zstd compress 1 MB L9 | 101.0 ms | 11.9 ms | 11.4 ms | 8.9× |
-| pcre2 match ×2000 (via its JIT) | 8.39 ms | 0.25 ms | 0.24 ms | 35.5× |
+```bash
+digitalis/scripts/run-benchmarks.sh --repeats 2
+digitalis/scripts/summarize-benchmarks.py digitalis/out/bench/<stamp>.ndjson \
+    --markdown digitalis/docs/benchmark-results.md
+```
 
-The shape to notice: translation payoff tracks workload character — ~9× on
-entropy-coded compression up to ~43× on compute-bound crypto — and the second
-gear's win concentrates where register and vector pressure is highest (2.3× over
-lite on saxpy, 1.4× on ecdh, nil on copy-dominated codecs). A run's flagged
-rows (this sweep: box2d, fftw, sgemm, secp sign/verify under two-gear) are
-typically gear-up landing inside the measurement window; lengthen the warmup
-for those cases before quoting them.
+The page is committed so results travel with the tree and changes show up in
+`git diff`; the raw NDJSON stays untracked (it embeds the machine-specific
+build fingerprint). The shape to notice across runs so far: translation payoff
+tracks workload character — ~9× on entropy-coded compression up to ~43× on
+compute-bound crypto — and the second gear's win concentrates where register
+and vector pressure is highest (2.3× over lite on saxpy, nil on copy-dominated
+codecs).
