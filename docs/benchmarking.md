@@ -103,6 +103,27 @@ number.
   once made "attempt#5" read as "only 5 attempts" when the true count was
   anywhere below 10000. Instrument with cumulative counters.
 
+## Distance to native
+
+`benchmarks/standalone/` builds the bcrypt workload as static binaries for
+arm64 and x86_64 from the sample's vendored sources (same NDK compiler, same
+flags, same bionic), so the x86_64 binary runs natively inside the emulator
+and the arm64 binary runs under Digitalis via binfmt_misc — same kernel,
+libc, compiler and machine, isolating translation as the only variable:
+
+```bash
+digitalis/benchmarks/standalone/build.sh
+adb push digitalis/out/bench-bin/bench_bcrypt.* /data/local/tmp/
+adb shell /data/local/tmp/bench_bcrypt.x86_64   # native baseline
+adb shell /data/local/tmp/bench_bcrypt.arm64    # translated (berberis.mode applies)
+```
+
+Measured 2026-08-02: two-gear runs bcrypt at 1.53× native x86_64 time (~65%
+of native speed), lite at 1.71×; the arm64 binary agrees with the in-app
+harness within 4%. Known issue: the standalone binary crashes under
+`berberis.mode=interpret-only` (tracked; the JIT tiers and all APK modes are
+unaffected).
+
 ## What the numbers currently look like
 
 Current results live in [`benchmark-results.md`](benchmark-results.md) — a
