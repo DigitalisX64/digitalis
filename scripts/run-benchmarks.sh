@@ -33,7 +33,8 @@ while [ $# -gt 0 ]; do
 done
 
 # module:activity — extend as more samples grow benchmark cases.
-ALL_MODULES="hello-bcrypt:com.example.hellodigitalis.hellobcrypt/com.example.hellobcrypt.MainActivity"
+ALL_MODULES="hello-bcrypt:com.example.hellodigitalis.hellobcrypt/com.example.hellobcrypt.MainActivity
+hello-zstd:com.example.hellodigitalis.hellozstd/com.example.hellozstd.MainActivity"
 [ -n "$MODULES" ] || MODULES="$ALL_MODULES"
 
 cd "$(dirname "$0")/../.."
