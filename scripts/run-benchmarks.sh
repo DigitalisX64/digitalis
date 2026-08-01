@@ -77,6 +77,7 @@ echo "device:  $DEVICE_FINGERPRINT"
 echo "output:  $OUT"
 
 fail=0
+CLEARED=""
 for repeat in $(seq 1 "$REPEATS"); do
   for mode in $MODES; do
     adb shell setprop berberis.mode "$mode"
@@ -94,6 +95,20 @@ for repeat in $(seq 1 "$REPEATS"); do
       package="${component%%/*}"
 
       adb shell am force-stop "$package"
+      # Clear app data the first time each module runs in this invocation.
+      # Digitalis extracts in-APK guest libraries into app data, and a plain
+      # `adb install -r` does NOT invalidate that extract — so after a
+      # reinstall the app can silently keep executing the OLD native library.
+      # That once produced a convincing but entirely fictitious 7.7x
+      # translator regression. The apps hold no state worth keeping; always
+      # start each sweep from a fresh extract.
+      case " $CLEARED " in
+        *" $package "*) ;;
+        *)
+          adb shell pm clear "$package" >/dev/null
+          CLEARED="$CLEARED $package"
+          ;;
+      esac
       adb logcat -c
       adb shell am start -n "$component" >/dev/null 2>&1
 

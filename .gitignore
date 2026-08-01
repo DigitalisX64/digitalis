@@ -24,3 +24,8 @@ dist/
 # enumerator's exit code is the gate; the report is a local proof artifact,
 # regenerated on every run — not committed.
 docs/proxy-bad-symbol-audit.md
+
+# Benchmark measurement data (run-benchmarks.sh output). Raw NDJSON runs are
+# machine-specific point-in-time measurements, regenerated on demand — not
+# committed.
+out/
