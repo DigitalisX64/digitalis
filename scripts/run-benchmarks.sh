@@ -50,6 +50,23 @@ discover_modules() {
 
 [ -n "$MODULES" ] || MODULES="$(cd "$(dirname "$0")/../.." && discover_modules)"
 
+# Validate --modules up front. Entries are `module:package/activity`; a bare
+# module name parses into a package that does not exist, so `am start` simply
+# never launches anything and every case burns the full timeout before
+# reporting "0 case(s)" — a sweep that looks like a total translator failure
+# but is only a typo. Fail immediately instead, and show the expected form.
+for entry in $MODULES; do
+  case "$entry" in
+    *:*/*) ;;
+    *)
+      echo "bad --modules entry: '$entry'" >&2
+      echo "expected 'module:package/activity', for example:" >&2
+      (cd "$(dirname "$0")/../.." && discover_modules | sed 's/^/  /') >&2
+      exit 2
+      ;;
+  esac
+done
+
 cd "$(dirname "$0")/../.."
 OUT_DIR="digitalis/out/bench"
 mkdir -p "$OUT_DIR"
