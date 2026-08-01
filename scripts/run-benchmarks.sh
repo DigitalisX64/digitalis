@@ -32,10 +32,23 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# module:activity — extend as more samples grow benchmark cases.
-ALL_MODULES="hello-bcrypt:com.example.hellodigitalis.hellobcrypt/com.example.hellobcrypt.MainActivity
-hello-zstd:com.example.hellodigitalis.hellozstd/com.example.hellozstd.MainActivity"
-[ -n "$MODULES" ] || MODULES="$ALL_MODULES"
+# Modules enrol themselves: any sample whose build.gradle.kts depends on
+# bench-lib is a benchmark module, so adding one needs no edit here. The
+# component name is read from its applicationId and MainActivity package.
+discover_modules() {
+  for gradle in sample/hellodigitalis/*/build.gradle.kts; do
+    grep -q 'project(":bench-lib")' "$gradle" || continue
+    dir="$(dirname "$gradle")"
+    activity="$(find "$dir/src/main/java" -name MainActivity.kt 2>/dev/null | head -1)"
+    [ -n "$activity" ] || continue
+    app="$(sed -n 's/.*applicationId = "\([^"]*\)".*/\1/p' "$gradle" | head -1)"
+    pkg="$(sed -n 's/^package \([A-Za-z0-9_.]*\).*/\1/p' "$activity" | head -1)"
+    [ -n "$app" ] && [ -n "$pkg" ] || continue
+    echo "$(basename "$dir"):$app/$pkg.MainActivity"
+  done
+}
+
+[ -n "$MODULES" ] || MODULES="$(cd "$(dirname "$0")/../.." && discover_modules)"
 
 cd "$(dirname "$0")/../.."
 OUT_DIR="digitalis/out/bench"
