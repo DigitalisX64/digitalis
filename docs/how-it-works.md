@@ -1769,7 +1769,20 @@ probed pointer, so an advertised-but-NULLed proc means the app jumps to guest
 PC 0 and dies. The Digitalis override chains to the upstream trampoline (its
 several-hundred-entry core-GL wrap table intact) and wraps the ~80
 ANGLE/CHROMIUM extension procs it couldn't — which is what stopped the
-Chromium GPU process from crash-looping under translation. And the **host-call
+Chromium GPU process from crash-looping under translation. A second override
+repairs an out-parameter rather than a return value: `ANativeWindow_lock`
+reports `stride = 0` for a planar-YUV window, because the single
+`ANativeWindow_Buffer::stride` field cannot describe a planar layout (those
+strides belong in `android_ycbcr`'s `ystride`/`cstride`) — but the gralloc
+implementations media apps are written against report the luma stride there. A
+CPU-side renderer addresses row *y* at `bits + y * stride`, so a zero stride
+collapses every row onto row 0 and the buffer is posted as allocated; an
+untouched YUV buffer is all zeros, and Y=U=V=0 converts to exactly RGB(0,135,0),
+which is why the symptom was solid green video over a working UI. The override
+chains to the upstream trampoline and, *only* when it returned success and left
+the field at zero, supplies the stride the format mandates (16-pixel-aligned
+luma for YV12, tightly packed for the single-plane Y formats); a host that fills
+the field in is left untouched. And the **host-call
 redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
 skips the normal symbol-lookup path (the linker's jump table, the PLT) and
 branches *directly into a host system library's x86_64 code* — bytes the guest

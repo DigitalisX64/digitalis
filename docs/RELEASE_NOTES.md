@@ -1,3 +1,58 @@
+# Digitalis — Green Video Fixed: the Stride an ANativeWindow Lock Forgot (2026-08-02)
+
+Kuaishou's feed rendered **solid green** video over a working UI. The cause was
+ours, one field wide.
+
+- **`ANativeWindow_lock` reports `stride = 0` for planar-YUV windows, and we
+  passed it through.** The single `ANativeWindow_Buffer::stride` field cannot
+  describe a planar layout — those strides belong in `android_ycbcr`'s
+  `ystride`/`cstride` — so the host leaves it unset, while the gralloc
+  implementations such apps are written against report the luma stride there. A
+  CPU-side renderer addresses row *y* at `bits + y * stride`, so a zero stride
+  collapses every row onto row 0 and the buffer is posted essentially as
+  allocated. An untouched YUV buffer is all zeros, and **Y=U=V=0 converts to
+  exactly RGB(0,135,0)** — that colour is the signature of "never written". A
+  chained override now fills in the stride the format mandates (16-pixel-aligned
+  luma for YV12, tightly packed for the single-plane Y formats) *only* when the
+  host returned success and left the field at zero. Measured at the boundary:
+  stride 0 → 576 on a 572×1024 window, frame buffers going from untouched to
+  carrying real luma, and the feed from 15 colours / 0.0% frame-to-frame change
+  to 1905 colours / 57.5%.
+- **A failed JIT code-region allocation no longer kills the app.** Exhausting
+  memory mid-playback used to abort the process from `MmapImplOrDie` under
+  `TryLiteTranslateAndInstallRegion`. The interpreter can always run any region,
+  so this is recoverable: allocation failure now installs an interpreted entry
+  instead.
+- **The interpreter now applies ARM64 top-byte-ignore.** The lite and heavy
+  tiers always had it; the interpreter did not, so Scudo's tagged heap pointers
+  faulted and no statically linked binary could run interpret-only.
+- **Two JIT tiers gained coverage**: SHA-256 in both (lite and heavy), plus
+  FRECPS/FRSQRTS, BFCVTN, 32-bit SRSHL/SQRSHL, SSHL/USHL, 2D integer compares
+  and scalar DUP in the heavy optimizer; and lite fixes for SBFX/SBFIZ, exact
+  MRS/MSR NZCV and MRS FPCR. Per-mnemonic heavy coverage 89.5% → 91.4%.
+- **Test suite 3,565 → 3,674.** New this cycle: a committed 48,032-encoding
+  decoder-vs-objdump corpus, memory differential fuzzers for both JIT tiers, an
+  interpreter memory-semantics golden set pinned against the ARM ARM, an IC IVAU
+  invalidation test, and a per-tier translation-coverage table.
+
+## Not ours, and now proven so
+
+The `anon_inode:sync_file` fence-fd leak that accompanied the green video is
+**not a Digitalis bug**. Rebuilding our own `native-activity` sample — which
+draws through `ANativeWindow_lock` every frame — with `abiFilters = "x86_64"`
+and running it natively on the same emulator leaks at **73.7/s**, against
+**74.2/s** for the arm64-translated build. Same source, same device, same API
+path; only the ABI differs, and the x86_64 process was confirmed to have zero
+JIT regions mapped. It is emulator-side behaviour in the `dequeueBuffer` fence
+path, unreachable from the translator.
+
+Verified: `Arm64*` 3,674 passed (1 skipped, F16C-gated), both guest translators
+build clean, samples 141/141, prebuilt gate 14 pass / 1 fail (WhatsApp's own
+app-internal assertion), and no benchmark cell moved beyond noise across 22
+workloads × 3 tiers.
+
+---
+
 # Digitalis — Width-Keyed Guest-Context Cache & the GWP-ASan Header Peek (2026-07-26)
 
 Two silent-corruption fixes: no crash, no SIGILL, no JIT bail in either case.
