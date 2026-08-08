@@ -613,6 +613,10 @@ The guest ARM64 linker takes over symbol resolution within the guest world. When
 
 Once the guest environment is ready, the app's native code can execute — either through JNI calls from Java (JNI, the Java Native Interface, is the standard bridge Java uses to call into native C/C++ code) or through direct native activity entry points.
 
+**Libraries that live inside the APK.** Modern apps often ship their native libraries uncompressed *inside* the APK rather than unpacked into a directory, and Android loads them straight from there using a path like `base.apk!/lib/arm64-v8a/libfoo.so`. The guest linker cannot open that — the `!/` form is a zip-entry reference, not a file — so Digitalis extracts the entry to the app's own cache (`<app>/cache/berberis_extract/`) and loads the real file it just wrote. The copy persists, so later launches reuse it rather than unpacking again.
+
+That reuse needs one guard, because the two halves age differently: an app's cache directory survives an app update, while the APK is replaced by one. A cached copy keyed only on the library's name would therefore keep serving the *previous* version's native code to the new version's Java — loudly as an `UnsatisfiedLinkError` for a JNI method that only exists in the new library, quietly as old native code running against new callers, or as a native fix that simply never takes effect. Digitalis requires the cached copy to be newer than the APK it came from and re-extracts when it is not. The cost is one `stat`; the archive is opened only when something genuinely has to be unpacked. This is not a theoretical failure: before the check existed, a stale extract once produced a convincing but entirely fictitious 7.7× translator regression in a benchmark sweep.
+
 ### Going Deeper
 
 The NativeBridge integration is implemented in the `NdktNativeBridge` class, which provides Android's NativeBridge v8 callback interface. Key callbacks include:
@@ -1780,9 +1784,22 @@ collapses every row onto row 0 and the buffer is posted as allocated; an
 untouched YUV buffer is all zeros, and Y=U=V=0 converts to exactly RGB(0,135,0),
 which is why the symptom was solid green video over a working UI. The override
 chains to the upstream trampoline and, *only* when it returned success and left
-the field at zero, supplies the stride the format mandates (16-pixel-aligned
-luma for YV12, tightly packed for the single-plane Y formats); a host that fills
-the field in is left untouched. And the **host-call
+the field at zero, supplies a stride; a host that fills the field in is left
+untouched. Which stride, though, is not the format's business but the
+allocator's: how far a row is padded past `width` varies with the gralloc and
+with the buffer's usage, so the format's own rule (16-pixel-aligned luma for
+YV12) is a guess, and a stride that disagrees with the allocation shears every
+row. The override therefore *asks*: on a window's first locked frame it
+allocates a throwaway `AHardwareBuffer` with the same format, geometry and
+usage, reads the luma plane's `rowStride` back out of
+`AHardwareBuffer_lockPlanes`, and falls back to the format's rule only if the
+host does not export those entry points or refuses the description. The answer
+is cached per window, because both halves of it are expensive — the window's
+consumer usage lives on the far side of the BufferQueue, so asking for it is a
+binder round trip — and neither belongs on a per-frame path. `hello-nativewindow`
+holds this to account: three YV12 geometries post and read back byte-exact
+through an ImageReader, including 642×362, whose 656-pixel rows exercise real
+padding rather than the padding-free case. And the **host-call
 redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
 skips the normal symbol-lookup path (the linker's jump table, the PLT) and
 branches *directly into a host system library's x86_64 code* — bytes the guest
