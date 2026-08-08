@@ -260,7 +260,6 @@ declare -A MODULES=(
     ["hello-libxml2"]="com.example.hellodigitalis.hellolibxml2/com.example.hellolibxml2.MainActivity"
     ["hello-blowfish"]="com.example.hellodigitalis.helloblowfish/com.example.helloblowfish.MainActivity"
     ["hello-bcrypt"]="com.example.hellodigitalis.hellobcrypt/com.example.hellobcrypt.MainActivity"
-    ["hello-simdops"]="com.example.hellodigitalis.hellosimdops/com.example.hellosimdops.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -312,7 +311,7 @@ MODULE_ORDER=(
     hello-libyuv hello-secp256k1 hello-filament hello-gltfio hello-openblas hello-fftw hello-gsl hello-leptonica hello-box2d hello-filament-render
     hello-lua hello-mupdf hello-sentry-ndk hello-bullet
     hello-libwebp hello-libarchive hello-opus hello-leveldb hello-pcre2 hello-libxml2
-    hello-blowfish hello-bcrypt hello-simdops
+    hello-blowfish hello-bcrypt
     hello-reactnative hello-qt
 )
 
