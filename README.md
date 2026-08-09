@@ -2,6 +2,8 @@
 
 The arm64-to-x86_64 binary translation based on Berberis framework.
 
+Built on **AOSP 16** (API 36).
+
 ## Init
 
 ```
