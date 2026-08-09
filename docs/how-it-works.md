@@ -69,7 +69,7 @@ Digitalis is built on top of [Berberis](https://android.googlesource.com/platfor
 
 **An ARM64 backend for Berberis already exists — Google just doesn't publish it.** Google's own Android Emulator system images carry one. The *Google APIs* x86_64 images register `ro.dalvik.vm.native.bridge=libndk_translation.so` in `build.prop`, and that binary is Berberis with an ARM64 backend: its symbol table contains `berberis::intrinsics::Arm64ReadFpcr` and `Arm64ReadFpsr` alongside the x86_64 code generator (`berberis::CondBranch(berberis::x86_32_or_x86_64…)`), and the images ship `/system/etc/berberis/cpuinfo.arm64.txt`, `/system/etc/init/berberis_arm_or_arm64.rc`, `/system/lib64/libberberis_exec_region.so` and `arm64_dyn`/`arm64_exe` binfmt_misc handlers. Checking the images in a local SDK, this holds from **Android 14 (API 34) through Android 17 (API 37)**, including the 16 KB-page Android 17 image; the plain AOSP images (`default`, `aosp_atd`, `google_atd`) set `native.bridge=0` and ship no translator at all. None of that ARM64 source is in AOSP — upstream Berberis publishes only the RISC-V backend. So Digitalis is not filling a gap nobody has solved; it is an **open** implementation of something that currently ships only as a closed binary in Google's images.
 
-The project includes 131 ARM64-only sample app modules under `sample/hellodigitalis/` — ports from Google's [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, LDXP/STXP, CNTVCT, sigaction/signal delivery, CRC32/CRC32C, SHA/AES crypto, and more), UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (ijkplayer, libVLC, FFmpegKit, Oboe, Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit, OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract, SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet, and the AndroidX native libraries sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, and Ink) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, NNAPI, and WebView hardware-accel support. All 131 run successfully on an x86_64 emulator through Digitalis translation (130 via `test-samples.sh`; `hello-qt` and `hello-realm` build standalone with pinned toolchains and verify by launch).
+The project includes 144 ARM64-only sample app modules under `sample/hellodigitalis/` — ports from Google's [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, LDXP/STXP, CNTVCT, sigaction/signal delivery, CRC32/CRC32C, SHA/AES crypto, and more), UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (ijkplayer, libVLC, FFmpegKit, Oboe, Fresco, GPUImage, libpag, gif-drawable, PDFium, RenderScript Toolkit, OpenCV, TensorFlow Lite, LiteRT-LM, PyTorch Mobile, ncnn, ZXing, Tesseract, SQLCipher, Conscrypt, libsignal, Realm, ObjectBox, MMKV, zstd, QuickJS, Cronet, and the AndroidX native libraries sqlite-bundled, graphics-path, camera-core, tracing-perfetto, AppSearch/Icing, and Ink) — covering Vulkan, OpenGL ES 1.x / 2 / 3, JNI, OpenSL ES + AAudio, camera, MIDI, sensors, SIMD, NDK binder, NNAPI, and WebView hardware-accel support. 141 of them run on an x86_64 emulator through `test-samples.sh`; `hello-realm` builds standalone with a pinned toolchain and is verified by launch, and the two Media3 decoder-extension modules have no publishable prebuilt AAR to build against.
 
 ---
 
@@ -1733,29 +1733,27 @@ verify the per-field marshalling with a host recorder test even when the API
 can't run end-to-end on the emulator.)
 
 **Coverage inventory.** No app can hit a `Bad '<sym>' call` abort from a
-remaining `DoBadTrampoline` symbol: every one is covered, contract-stubbed
-(`AIBinder_toPlatformBinder` → null `sp<>`, `glGetVkProcAddrNV` → NULL,
-`ANativeWindow_setPerformInterceptor` → no-op), or caught by the loud arm64-only
-`DoGracefulBadTrampoline` net (greppable `BAD-TRAMPOLINE` trace + zeroed x0
-instead of an abort). The claim is machine-checked:
+remaining `DoBadTrampoline` symbol. Every one is either covered by a Digitalis
+trampoline, contract-stubbed (`AIBinder_toPlatformBinder` → null `sp<>`,
+`glGetVkProcAddrNV` → NULL, `ANativeWindow_setPerformInterceptor` → no-op), or
+caught by the loud arm64-only `DoGracefulBadTrampoline` net, which emits a
+greppable `BAD-TRAMPOLINE` trace and zeroes x0 instead of aborting.
+
+That claim is machine-checked rather than maintained by hand:
 `digitalis/scripts/enumerate-proxy-bad-symbols.py` classifies every
-`DoBadTrampoline` symbol against `proxy-bad-symbol-allowlist.txt` (each
-allowlist entry carries its own reasoned disposition) and fails if any
-unmangled-C symbol is neither covered nor allowlisted; it regenerates
-its report `proxy-bad-symbol-audit.md` locally (untracked; currently **0
-uncovered**) — the enumerator's exit code, not the report, is the gate. Per-library arm64
-counts: the app-facing libraries carry 65 `DoBadTrampoline` entries, 38 covered
-in `digitalis_extra_proxy/` (13 libnativehelper JNI helpers incl. the varargs
-`jniThrowExceptionFmt`, 17 libwebviewchromium `Register*`/`GraphicBufferImpl`
-symbols, 3 libbinder_ndk, 2 libcamera2ndk callback-struct trampolines, 2
-`glGetVkProcAddrNV` stubs, 1 libnativewindow stub); the 27 remaining (8 libEGL
-mangled-internal, 18 libnativehelper launcher/cache internals, 1 webview
-`JNI_OnLoad`) are not NDK-stable / not app-reachable and ride the net.
-`libandroid_runtime`'s 1135 entries are unreachable duplicates (apps resolve
-the only NDK-stable trio via `libnativehelper.so`, covered upstream). One
-GetProcAddress-contract rule bears repeating: an API like `eglGetProcAddress`
-must keep *advertised-implies-non-NULL* — returning NULL for a proc whose
-extension the driver advertises sends string-gated callers to guest PC 0.
+`DoBadTrampoline` symbol against `proxy-bad-symbol-allowlist.txt` (each entry
+carries its own reasoned disposition) and fails if any unmangled-C symbol is
+neither covered nor allowlisted. **The enumerator's exit code is the gate**; run
+it for current per-library numbers, which it writes to a local, untracked
+`proxy-bad-symbol-audit.md`. The counts are deliberately not repeated here — they
+change whenever the upstream generator does.
+
+Two facts about the shape of that surface survive the counts. Most entries belong
+to `libandroid_runtime`, and they are unreachable duplicates: apps resolve the
+only NDK-stable symbols via `libnativehelper.so`, which upstream already covers.
+And one contract rule bears repeating — an API like `eglGetProcAddress` must keep
+*advertised-implies-non-NULL*, because returning NULL for a proc whose extension
+the driver advertises sends string-gated callers to guest PC 0.
 
 Three sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
 are *not* `DoBadTrampoline` stories. **Missing-symbol additions** supply symbols
@@ -1776,33 +1774,27 @@ PC 0 and dies. The Digitalis override chains to the upstream trampoline (its
 several-hundred-entry core-GL wrap table intact) and wraps the ~80
 ANGLE/CHROMIUM extension procs it couldn't — which is what stopped the
 Chromium GPU process from crash-looping under translation. A second override
-repairs an out-parameter rather than a return value: `ANativeWindow_lock`
-reports `stride = 0` for a planar-YUV window, because the single
+repairs an out-parameter rather than a return value: `ANativeWindow_lock` reports
+`stride = 0` for a planar-YUV window, because the single
 `ANativeWindow_Buffer::stride` field cannot describe a planar layout (those
 strides belong in `android_ycbcr`'s `ystride`/`cstride`) — but the gralloc
 implementations media apps are written against report the luma stride there. A
 CPU-side renderer addresses row *y* at `bits + y * stride`, so a zero stride
-collapses every row onto row 0 and the buffer is posted as allocated; an
-untouched YUV buffer is all zeros, and Y=U=V=0 converts to exactly RGB(0,135,0),
-which is why the symptom was solid green video over a working UI. The override
-chains to the upstream trampoline and, *only* when it returned success and left
-the field at zero, supplies a stride; a host that fills the field in is left
-untouched. Which stride, though, is not the format's business but the
-allocator's: how far a row is padded past `width` varies with the gralloc and
-with the buffer's usage, so the format's own rule (16-pixel-aligned luma for
-YV12) is a guess, and a stride that disagrees with the allocation shears every
-row. The override therefore *asks*: on a window's first locked frame it
-allocates a throwaway `AHardwareBuffer` with the same format, geometry and
-usage, reads the luma plane's `rowStride` back out of
-`AHardwareBuffer_lockPlanes`, and falls back to the format's rule only if the
-host does not export those entry points or refuses the description. The answer
-is cached per window, because both halves of it are expensive — the window's
-consumer usage lives on the far side of the BufferQueue, so asking for it is a
-binder round trip — and neither belongs on a per-frame path. `hello-nativewindow`
-holds this to account: three YV12 geometries post and read back byte-exact
-through an ImageReader, including 642×362, whose 656-pixel rows exercise real
-padding rather than the padding-free case. And the **host-call
-redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
+collapses every row onto row 0 and posts the buffer as allocated. The override
+chains to the upstream trampoline and supplies a stride *only* when it returned
+success and left the field at zero.
+
+Which stride is the allocator's business, not the format's: row padding varies
+with the gralloc and with the buffer's usage, so the format's own rule is a
+guess, and a stride that disagrees with the allocation shears every row. The
+override therefore **asks** — on a window's first locked frame it allocates a
+throwaway `AHardwareBuffer` with the same format, geometry and usage and reads
+the luma `rowStride` out of `AHardwareBuffer_lockPlanes`, keeping the format rule
+only as a fallback. Cached per window: the consumer usage it needs lives across
+the BufferQueue, so asking is a binder round trip, and neither half belongs on a
+per-frame path. `hello-nativewindow` holds this to account, posting and reading
+back byte-exact through an `ImageReader` — including 642×362, whose 656-pixel
+rows exercise real padding. And the **host-call redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
 skips the normal symbol-lookup path (the linker's jump table, the PLT) and
 branches *directly into a host system library's x86_64 code* — bytes the guest
 CPU-under-translation was never meant to reach: the resulting non-executable-fault is caught by a `HandleNoExec`
@@ -2658,7 +2650,7 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Product Configuration.** `sdk_phone64_x86_64_digitalis.mk` — the emulator product definition that enables ARM64 translation, sets the NativeBridge system property, and includes all proxy libraries.
 
-**Sample Apps.** 131 ARM64-only sample app modules — ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media, imaging, vision/ML, crypto/DB/storage, and AndroidX-native) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio + Oboe), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, NNAPI, and WebView hardware-accel proxy coverage, plus targeted instruction-set probes (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, CRC32/CRC32C, SHA/AES crypto). The original `hello-vulkan` module was written specifically for the Digitalis project.
+**Sample Apps.** 144 ARM64-only sample app modules — ports from [android/ndk-samples](https://github.com/android/ndk-samples), Digitalis-specific proxy-library smoke tests (`hello-gles1`, `hello-aaudio`, `hello-binder-ndk`, `hello-nnapi`, `hello-webview-functor`), ARM-extension probe modules, UI-engine samples (Qt 6, React Native + Hermes, Lynx + PrimJS), and third-party native-library integration samples (media, imaging, vision/ML, crypto/DB/storage, and AndroidX-native) — that serve as the integration test suite. Coverage spans Vulkan rendering, OpenGL ES 1.x / 2 / 3, JNI, C++ exceptions, audio (OpenSL ES + AAudio + Oboe), video codec, MIDI, camera (Camera2 NDK), sensors, SIMD vectorization, sanitizers, GoogleTest, NDK binder, NNAPI, and WebView hardware-accel proxy coverage, plus targeted instruction-set probes (NEON, FP16, BFloat16, FCMA, dot-product, I8MM, JSCVT, PAC, LSE/LRCPC atomics, CRC32/CRC32C, SHA/AES crypto). The original `hello-vulkan` module was written specifically for the Digitalis project.
 
 **Distribution Artifact Allowlist.** `berberis_config.mk` defines `BERBERIS_DISTRIBUTION_ARTIFACTS_ARM64` — the explicit list of files allowed in the Digitalis system image (used by `PRODUCT_ARTIFACT_PATH_REQUIREMENT_ALLOWED_LIST` in `enable_arm64_to_x86_64.mk`). Mirroring the upstream RISC-V coverage, it enumerates 74 paths in total: the 21 `libberberis_proxy_*.so` stubs, 43 guest ARM64 system libs under `system/lib64/arm64/` (libc, libm, libvulkan, libdl, libicu, libsqlite, libssl, libcrypto, libcompiler_rt, libnative_bridge_vdso, the guest-only `libgui.so` stub, …), `libberberis_arm64.so`, `libberberis_exec_region.so`, the ARM64 `app_process64` and `linker64`, the two binfmt_misc magic files (`arm64_exe`, `arm64_dyn`), the two ARM64 program-runner binaries (`berberis_program_runner_arm64`, `berberis_program_runner_binfmt_misc_arm64`), `system/etc/init/berberis.rc`, and `system/etc/ld.config.arm64.txt`. The complete list is what makes a Digitalis build pass the AOSP artifact-allowlist check (closes [DigitalisX64/digitalis#1](https://github.com/DigitalisX64/digitalis/issues/1)).
 
