@@ -4,6 +4,16 @@ The arm64-to-x86_64 binary translation based on Berberis framework.
 
 Built on **AOSP 16** (API 36).
 
+Upstream AOSP Berberis publishes only a RISC-V backend. Google's own Android
+Emulator *Google APIs* x86_64 system images do ship an ARM64 one — they register
+`ro.dalvik.vm.native.bridge=libndk_translation.so`, a Berberis build whose symbol
+table carries `berberis::intrinsics::Arm64ReadFpcr`, next to
+`/system/etc/berberis/cpuinfo.arm64.txt` and `arm64_dyn`/`arm64_exe` binfmt_misc
+handlers — but that implementation is closed. It is present in the Google APIs
+images from Android 14 (API 34) through **Android 17** (API 37); the plain AOSP
+images ship no native bridge at all. Digitalis is an open ARM64 backend for the
+public framework.
+
 ## Init
 
 ```
