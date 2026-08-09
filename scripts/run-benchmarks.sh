@@ -33,13 +33,20 @@ TIMEOUT=180
 NATIVE_SUFFIX=".native"
 BUILD_NATIVE=0
 
-# Modules with no meaningful native baseline, and why. The first three compute
-# with ARM64 intrinsics and inline `.inst` encodings: there is no x86_64 build of
-# the same work, only a different program, so comparing them would be dishonest
-# rather than merely unavailable. The last two carry their natives inside jars
-# (a gdx `natives-arm64-v8a` classifier; snappy-java extracting at runtime), so
-# an x86_64 build needs a dependency swap that has not been made yet.
-NATIVE_EXCLUDE="hello-neon hello-neonmisc hello-bf16 hello-box2d hello-snappy"
+# Modules with no native baseline, and why.
+#
+#   hello-neon, hello-neonmisc, hello-bf16
+#       Compute with ARM64 intrinsics and inline `.inst` encodings. There is no
+#       x86_64 build of the same work, only a different program, so comparing
+#       them would be dishonest rather than merely unavailable. Permanent.
+#
+#   hello-box2d, hello-snappy, hello-fftw, hello-openblas
+#       Their natives arrive inside dependencies pinned to arm64 — a gdx
+#       `natives-arm64-v8a` classifier, snappy-java extracting at runtime, and
+#       the JavaCPP `android-arm64` classifier jars. Each needs a dependency
+#       swap to its x86_64 equivalent before a native build means anything;
+#       until then they would build clean and contain no host code. Fixable.
+NATIVE_EXCLUDE="hello-neon hello-neonmisc hello-bf16 hello-box2d hello-snappy hello-fftw hello-openblas"
 
 while [ $# -gt 0 ]; do
   case "$1" in
