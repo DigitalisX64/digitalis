@@ -1,62 +1,56 @@
-# Digitalis — Ask the Allocator: a Derived Stride, a Stale-Library Fix, and the Emulator's Own Abort (2026-08-09)
+# Digitalis — Ask the Allocator: a Derived Stride, a Stale-Library Fix, and a Clean Prebuilt Gate (2026-08-09)
 
-Three fixes, each of which began as something that looked like a translator bug
-and turned out to need a different culprit named before it could be fixed.
+Three fixes, each of which began as something that looked like a translator bug.
 
-- **The repaired `ANativeWindow_lock` stride is now derived from the host, not
+- **`ANativeWindow_lock`'s repaired stride is now derived from the host, not
   guessed from the format.** The previous fix substituted the stride YV12
-  specifies — `ALIGN(width, 16)` — whenever the host returned success and left
-  the field at zero. That is a statement about the format, not about the buffer:
-  how far a row is padded past `width` is the allocator's choice and varies with
-  the gralloc and with the buffer's usage, and a stride that disagrees with the
-  allocation shears every row an app writes. The override now asks. On a
-  window's first locked frame it allocates a throwaway `AHardwareBuffer` with
-  the same format, geometry and usage, reads the luma plane's `rowStride` out of
-  `AHardwareBuffer_lockPlanes`, and keeps the format's rule only as a fallback
-  for a host that will not answer. Cached per window, because the window's
-  consumer usage lives across the BufferQueue and asking for it is a binder
-  round trip — not something to repeat per frame.
+  specifies, `ALIGN(width, 16)`. That is a statement about the format, not the
+  buffer: row padding is the allocator's choice and varies with the gralloc and
+  the buffer's usage, and a stride that disagrees with the allocation shears
+  every row. The override now allocates a throwaway `AHardwareBuffer` with the
+  same format, geometry and usage on a window's first locked frame and reads the
+  luma `rowStride` out of `AHardwareBuffer_lockPlanes`, keeping the format rule
+  only as a fallback. Cached per window — the consumer usage it needs is a binder
+  round trip.
 - **An updated app no longer runs the previous version's native code.** Guest
-  libraries shipped inside an APK are extracted to `<app>/cache/berberis_extract/`
-  and loaded from there, and the extracted copy was reused whenever a file of
-  that name existed. An app's cache survives an update; the APK does not. So
-  after any ordinary update the old library kept being loaded against the new
-  Java — loudly as an `UnsatisfiedLinkError`, quietly as stale native code, or
-  as a native fix that never took effect. A cached copy must now be newer than
-  the APK it came from. The benchmark runner had been clearing app data to dodge
-  this, and records that the stale extract once produced an entirely fictitious
-  7.7× translator regression.
-- **`hello-nativewindow`, a new sample, covers the surface both of those live
-  on.** A proxy that mis-marshals `ANativeWindow` does not crash; it produces
-  wrong pixels. The sample writes a pattern that is a pure function of
-  (x, y, frame), reads every posted frame back off an `ImageReader`, and
-  re-derives the same function on the consumer side rather than trusting
-  anything the producer reports. Six geometries including 642×362, whose
-  656-pixel rows exercise real padding. A second case covers the attribute and
-  query calls and the `dequeueBuffer`/`queueBuffer`/`cancelBuffer` loop that
-  engines use instead of `lock()`, carrying fence file descriptors across the
-  boundary — 31 assertions over roughly 25 entry points, up from 7.
+  libraries shipped inside an APK are extracted to `<app>/cache/berberis_extract/`,
+  and the extracted copy was reused whenever a file of that name existed. An
+  app's cache survives an update; the APK does not. A cached copy must now be
+  newer than the APK it came from. The benchmark runner had been clearing app
+  data to dodge this, and records that a stale extract once produced an entirely
+  fictitious 7.7x translator regression.
+- **`hello-nativewindow` covers the surface both of those live on.** A proxy that
+  mis-marshals `ANativeWindow` does not crash, it produces wrong pixels. The
+  sample writes a pattern that is a pure function of (x, y, frame), reads every
+  posted frame back off an `ImageReader`, and re-derives that function on the
+  consumer side. Six geometries including 642x362, whose 656-pixel rows exercise
+  real padding, plus a case covering the attribute/query calls and the
+  `dequeueBuffer`/`queueBuffer`/`cancelBuffer` loop engines use instead of
+  `lock()` — 31 assertions over ~25 entry points, up from 7.
 
-Two things this work did **not** find, both worth recording because each looked
-like ours and was not:
+Three failures turned out not to be ours:
 
-- **A CPU-written YV12 SurfaceView composites to a blank green frame on this
-  emulator**, and does so identically in a build with no translation in it at
-  all. The earlier belief that the display path needed a 64-byte-aligned stride
-  did not survive measurement.
+- **A CPU-written YV12 SurfaceView composites to blank green on this emulator**,
+  identically in a build with no translation in it at all.
 - **The emulator process itself aborts** when an app queries
-  `VK_EXT_memory_budget` — Chromium-based APKs within seconds of their GPU
-  process starting. It is gfxstream's host decoder, reproduces on an older
-  translator library, and disappears under `-gpu swiftshader_indirect`, which
-  takes the host Vulkan decoder out of the path and lets the same app run and
-  render. `digitalis/docs/emulator-gfxstream-deploy.md` covers building an
-  emulator that has the fix, and `digitalis/scripts/deploy-emulator.sh` does it.
+  `VK_EXT_memory_budget`. It is gfxstream's host decoder: it reproduces on an
+  older translator library and disappears under `-gpu swiftshader_indirect`.
+  `digitalis/scripts/deploy-emulator.sh` builds an emulator carrying the fix.
+- **WhatsApp's long-standing gate failure needed another app to be installed.**
+  With a second Meta app present it routes its EULA into cross-app account
+  linking, tears the EULA down, and builds a Play-Store-delivered download
+  manager on the main thread against its own thread guard — on an image with no
+  Play Store. Uninstalling the other app fixed it against an unchanged
+  translator; reinstalling brought it back. WhatsApp has since fixed it, and the
+  prebuilt gate is now **15 PASS / 0 FAIL**, its first clean sweep.
 
 Benchmarks: five SIMD workloads (`srshl-requant`, `sqrshl-requant`,
 `recip-newton`, `rsqrt-newton`, `bf16-narrow`) rejoin the sweep in the modules
-that now own those instructions, at 37–64× over the interpreter with the second
+that now own those instructions, at 37-64x over the interpreter with the second
 gear fastest in all five. The results table is regenerated from a full
 22-workload sweep, so every row again corresponds to something that runs.
+
+---
 
 # Digitalis — Green Video Fixed: the Stride an ANativeWindow Lock Forgot (2026-08-02)
 
