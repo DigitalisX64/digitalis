@@ -85,3 +85,25 @@ To run directly from the terminal:
 ```bash
 .claude/scripts/digitalis-dispatch.sh "Implement FRECVTS instruction"
 ```
+
+## Attribution
+
+Digitalis is a modification of the [Android Open Source Project](https://source.android.com/)
+and its [Berberis](https://cs.android.com/android/platform/superproject/main/+/main:frameworks/libs/binary_translation/)
+binary-translation framework, © Google LLC, used under the Apache License 2.0.
+Android, Berberis, ANGLE and GFXStream are projects and/or trademarks of Google LLC.
+Digitalis is not affiliated with, endorsed by, or sponsored by Google.
+
+Arm, AArch64 and NEON are trademarks of Arm Limited. Vulkan and OpenGL ES are
+trademarks of the Khronos Group.
+
+The sample apps under `sample/hellodigitalis/` link third-party libraries — among
+them Qt, React Native, Lynx, OpenCV, TensorFlow Lite, PyTorch, ONNX Runtime,
+FFmpeg, WebRTC, Realm and SQLCipher — each the property of its respective owners
+and used under its own license.
+
+Third-party application and product names and packages referenced in the docs and
+test tooling are trademarks of their respective owners and appear solely to report
+interoperability-testing results; no affiliation or endorsement is implied. No
+third-party application is redistributed by this repository — the prebuilt APKs
+used for regression testing are not committed.
