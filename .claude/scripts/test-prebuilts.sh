@@ -46,6 +46,13 @@ if [ ! -d "${PREBUILTS_DIR}" ]; then
     exit 0
 fi
 
+# Checked before target discovery, not after: discovery itself reads package
+# names with aapt2 to tell a split-app directory from any other grouping.
+if [ ! -x "${AAPT2}" ]; then
+    echo "[prebuilts] aapt2 not available at ${AAPT2} — cannot extract package metadata"
+    exit 2
+fi
+
 shopt -s nullglob
 # Non-recursive on purpose: top-apps/ and top-games/ (fetch-prebuilt-apks.py
 # staging) are excluded from this gate.
@@ -59,12 +66,27 @@ APKS=( "${PREBUILTS_DIR}"/*.apk )
 # signature. Generic over any split app dropped in this way — no app names are
 # hard-coded. top-apps/ and top-games/ stay excluded (they are fetch staging,
 # not split-app groups).
+#
+# Splits of one app all declare the SAME package name, so that is the test for
+# whether a subdirectory is a split-app group. A directory holding APKs of two
+# different packages is some other kind of grouping (e.g. a benchmark suite kept
+# together, or per-ABI copies of the same app); `install-multiple` would reject
+# it, turning an unrelated drop-in into a gate FAIL. Skip those instead, and say
+# so — silently ignoring a directory someone deliberately populated is worse.
 for d in "${PREBUILTS_DIR}"/*/; do
     dname="$(basename "${d}")"
     [ "${dname}" = "top-apps" ] && continue
     [ "${dname}" = "top-games" ] && continue
     dsplits=( "${d}"*.apk )
-    [ ${#dsplits[@]} -gt 0 ] && APKS+=( "${d%/}" )
+    [ ${#dsplits[@]} -eq 0 ] && continue
+    dpkgs="$(for s in "${dsplits[@]}"; do
+                 "${AAPT2}" dump packagename "${s}" 2>/dev/null | head -1
+             done | sort -u | grep -c .)"
+    if [ "${dpkgs}" -eq 1 ]; then
+        APKS+=( "${d%/}" )
+    else
+        echo "[prebuilts] skip ${dname}/ — ${dpkgs} distinct packages, not one app's splits"
+    fi
 done
 shopt -u nullglob
 
@@ -84,10 +106,6 @@ if [ "${BOOTED}" != "1" ]; then
     exit 0
 fi
 
-if [ ! -x "${AAPT2}" ]; then
-    echo "[prebuilts] aapt2 not available at ${AAPT2} — cannot extract package metadata"
-    exit 2
-fi
 
 pass=0
 fail=0
