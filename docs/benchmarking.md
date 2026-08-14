@@ -29,7 +29,11 @@ Three pieces, all in-tree:
    by git; runs are machine-specific point-in-time data). Modules enrol
    themselves: any sample whose `build.gradle.kts` depends on
    `project(":bench-lib")` is discovered automatically — adding a benchmark
-   needs no runner edit.
+   needs no runner edit. A fourth `native` pseudo-mode times the same workload
+   built for x86_64 (`assembleDebug -PnativeBaseline`, installed under a
+   `.native` application id; `--build-native` builds them) — it is not a
+   translation mode, it is the denominator for the summary's **vs-native**
+   column.
 
 3. **`digitalis/scripts/summarize-benchmarks.py`** — per case and mode:
    median, relative interquartile range, and speedup against the
@@ -105,6 +109,16 @@ number.
 
 ## Distance to native
 
+Speedup-over-interpreter flatters: "42× the interpreter" says nothing about
+whether translated code is usable. The honest metric is **% of native** — the
+same workload, same machine, with translation as the only variable. Three
+instruments measure it, at increasing realism:
+
+1. **In-app microbenchmarks** — the `native` pseudo-mode above; the vs-native
+   column in `benchmark-results.md`.
+2. **Standalone binaries** — below; isolates translation from the app runtime.
+3. **Full third-party apps** — `benchmark-apps.sh`; the next section.
+
 `benchmarks/standalone/` builds the bcrypt workload as static binaries for
 arm64 and x86_64 from the sample's vendored sources (same NDK compiler, same
 flags, same bionic), so the x86_64 binary runs natively inside the emulator
@@ -123,6 +137,45 @@ of native speed), lite at 1.71×; the arm64 binary agrees with the in-app
 harness within 4%. Known issue: the standalone binary crashes under
 `berberis.mode=interpret-only` (tracked; the JIT tiers and all APK modes are
 unaffected).
+
+## Full-app benchmarks (third-party yardsticks)
+
+`digitalis/scripts/benchmark-apps.sh` drives the benchmark apps kept in
+`sample/prebuilts/benchmark-apps/` — third-party workloads (Geekbench, 3DMark)
+nobody here wrote or tuned for, which is exactly what makes them useful: they
+are the yardstick an outside comparison uses, and they exercise code paths our
+samples do not. This is *not* the prebuilt regression gate — that gate asks
+"did it crash"; this asks "how fast", takes hours, and needs a quiet machine.
+
+Each app is dropped in as an **ABI pair**: the same version built for
+arm64-v8a and for x86_64. The x86_64 half is the native denominator. Legs run
+ABBA (native, arm64, arm64, native) so host drift over an hours-long campaign
+shows up as spread inside an arm, not as a fake difference between arms. The
+script guards the two traps that produce beautiful fictitious numbers: the two
+halves share a package name (installing one replaces the other — every leg
+re-reads `primaryCpuAbi` from the device), and the extract cache (below). Every
+arm64 leg proves `libberberis_arm64.so` is actually mapped in the app process —
+the only positive evidence the translator was in the path.
+
+Interpreting GPU-bound rows: a 3DMark-class score measures the whole stack —
+translated render thread, gfxstream encode, host GPU — not translation alone.
+Use it as an end-to-end check; use CPU-bound rows (Geekbench) as the
+translator's own scoreboard. And check the emulator first: an unfixed
+prebuilt emulator clamps every guest Vulkan heap to 2 GB, which kills large
+GPU workloads for reasons that have nothing to do with translation — see
+[`emulator-gfxstream-deploy.md`](emulator-gfxstream-deploy.md).
+
+## Finding what the first gear cannot translate
+
+When a workload runs far below the % of native its character suggests, the
+usual cause is not a slow lowering but a *missing* one: a region the lite
+translator fails installs `kInterpreted`, carries no profiling counter, and is
+permanently locked out of the heavy tier. `digitalis/scripts/litefail-sweep.sh`
+applies a temporary failure-logging diagnostic (apply, sweep, revert — never
+commit it), runs a set of real apps, and histograms exactly which instructions
+lite stops on; `heavybail-sweep.sh` is the analogue for heavy-tier bails. Rank
+coverage work from those histograms, never from static disassembly of stripped
+libraries (constant pools decode as plausible SVE/SME garbage).
 
 ## What the numbers currently look like
 

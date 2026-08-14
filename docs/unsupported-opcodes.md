@@ -1,6 +1,6 @@
 # ARM64 Opcode Support Gaps
 
-> **Verified 2026-08-09** against the decoder, lite translator and heavy optimizer.
+> **Verified 2026-08-14** against the decoder, lite translator and heavy optimizer.
 > Current state only; the history of coverage promotions lives in `RELEASE_NOTES.md`.
 
 ## The authoritative source is generated, not this file
@@ -25,7 +25,7 @@ Where it is at:
 
 | | encodings | share |
 |---|---|---|
-| Lite translator | 44,893 / 48,032 | 93.5% |
+| Lite translator | 44,980 / 48,032 | 93.6% |
 | Heavy optimizer | 43,945 / 48,032 | 91.5% |
 
 136 mnemonics have no lite coverage and 156 no heavy coverage — but most of those
@@ -83,13 +83,16 @@ Both JIT tiers bail; the interpreter is correct. Filter the generated table for
 | **MTE** | `ADDG`/`SUBG`, `IRG`/`GMI`/`SUBP`, `LDG`/`STG`/`STZG`/… | Interpreter executes with no-MTE-backing semantics. Rarely hot. |
 | **System registers** | `MRS`/`MSR` outside the modelled set, `IC`, `MRRS`/`MSRR`, `SYSP` | The JITs model `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0`, `FPCR`; the interpreter models a larger set as constants/no-ops. |
 | **Newer atomics** | `RCW*` (ARMv8.9), FP atomics (`LDFADD*`/`LDFMAX*`) | Not yet lowered; vanishingly rare in NDK output. |
-| **AdvSIMD residue** | FP reductions (`FMAXV`/`FMINV`/`FMAXNMV`/…, pairwise `FMAXNMP`/`FMINNMP`), widening `FMLAL`/`FMLSL` family, `FRINT32Z`/`FRINT64Z`, replicating loads `LD2R`/`LD3R`/`LD4R`, `SUQADD`/`USQADD` `.1D`/`.2D` | Each needs a multi-instruction host sequence; none is common enough to have been worth it yet. |
+| **AdvSIMD residue** | FP16 forms of the across-lanes reductions and `FADDP` (the FP32 forms are lowered), pairwise `FMAXNMP`/`FMINNMP`, widening `FMLAL`/`FMLSL` family, `FRINT32Z`/`FRINT64Z`, replicating loads `LD2R`/`LD3R`/`LD4R`, `SUQADD`/`USQADD` `.1D`/`.2D` | Each needs a multi-instruction host sequence; none is common enough to have been worth it yet. |
 
 **Already lowered, contrary to older revisions of this document:** `AES*` (host AES-NI),
 **SHA-256** (`SHA256H`/`H2`/`SU0`/`SU1`, via a software GPR sequence — the x86 assembler
 still has no SHA-NI definitions), `PMULL`/`PMULL2`, both the IEEE `CRC32*` (PCLMULQDQ
-reflected Barrett) and Castagnoli `CRC32C*` (host `crc32`) groups, and the full I8MM
-dot-product/matrix set.
+reflected Barrett) and Castagnoli `CRC32C*` (host `crc32`) groups, the full I8MM
+dot-product/matrix set, and the FP32 across-lanes reductions
+(`FMAXV`/`FMINV`/`FMAXNMV`/`FMINNMV`) with vector `FADDP` — the gap whose closure
+moved Geekbench single-core +23% (its Object Remover workload sat 20× below its
+neighbours while every region containing an `FMAXV` was locked out of both JIT tiers).
 
 ### Host-feature-gated
 Where the host CPU lacks a feature the JIT path bails to the interpreter — correct,
@@ -143,3 +146,12 @@ A §3 gap needs only the JIT case-arm and a test — decoder and interpreter alr
 handle it. A §4 gap needs only the heavy case-arm and a `frontend_tests.cc` test. A §2
 extension needs decoder dispatch first. Regenerate the coverage table in the same
 commit that adds coverage, or the gate reports the difference.
+
+**Which gap to close first is measured, not guessed.** A lite gap costs far more
+than one slow instruction: a region lite cannot translate installs `kInterpreted`,
+carries no profiling counter, and can never reach the heavy tier at all.
+`digitalis/scripts/litefail-sweep.sh` runs real apps under a temporary
+failure-logging diagnostic and histograms exactly which instructions lite stops
+on; `heavybail-sweep.sh` does the same for heavy bails. Do not rank gaps by
+statically disassembling stripped release libraries — constant-pool data decodes
+as plausible-looking SVE/SME mnemonics and produces a confidently wrong histogram.

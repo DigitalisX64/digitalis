@@ -494,7 +494,7 @@ graph TD
         SEM_J["SemanticsPlayer bridges to LiteTranslator"]
         ALLOC["Allocator maps guest regs → host regs<br/><i>13 GP register pool</i>"]
         EMIT["Emit x86_64 machine code"]
-        REGION{"Region end?<br/><i>branch / SVC / reg pressure</i>"}
+        REGION{"Region end?<br/><i>branch / SVC</i>"}
         INSTALL["InstallTranslated() into cache"]
         EXEC_J["Execute translated x86_64 code"]
         DECODE_J --> BITFIELD --> SEM_J --> ALLOC --> EMIT --> REGION
@@ -677,7 +677,7 @@ graph TD
     D --> E["Emit x86_64 machine code"]
     E --> F{"Region-ending condition?"}
     F -->|"No"| B
-    F -->|"Forward branch / SVC /<br/>register pressure"| G["Region complete"]
+    F -->|"Forward branch / SVC"| G["Region complete"]
     E --> H{"success_ == false?"}
     H -->|"Yes — unsupported instruction"| I{"Partial success?<br/>Previous instructions OK?"}
     I -->|"Yes"| J["Re-translate successful prefix<br/>Install partial region"]
@@ -692,8 +692,19 @@ A region has one entry point (the starting PC) and continues until the compiler 
 
 - **Unconditional branch or call**: the region ends because the target may not be compiled yet. (Conditional forward branches do *not* end the region — the JIT emits the taken-path exit and continues compiling the fall-through path.)
 - **Backward conditional branch**: ends the region to prevent infinite loops without signal checks
-- **Register pressure**: the register allocator is running low on available host registers (see `IsGpRegPoolLow()`)
 - **Any other stopping point**: any remaining condition that ends a straight-line run of instructions
+
+Register pressure is deliberately *not* on that list. The allocator holds a
+fixed six-register temp reserve out of the 13-register pool (so permanent
+guest-register mappings cap at seven), sized to the worst single-instruction
+temp demand — an SP-based `LDP`/`STP`, which needs base, address, and a
+top-byte-ignore mask plus data temp per element. Once the mapping pool is full,
+further guest registers are accessed by spilling through `ThreadState` memory
+and translation continues to the region's natural end. An earlier design ended
+the region early when the pool ran low; on real apps that split every
+callee-save prologue/epilogue into fragments too small for the second gear to
+accept, and a 14-app sweep measured 70k such failures before the reserve
+eliminated them.
 
 Note: **SVC (system call)** ends the region but is *not* a bail. The lite translator lowers it inline (`LiteTranslator::Svc()` in `lite_translator.cc`): it flushes mapped guest registers back to `ThreadState`, mirrors the host MXCSR into the guest FPSR, emits a direct call to `RunGuestSyscall`, and direct-dispatches to `pc+4`. A syscall therefore stays inside JIT-compiled code and never round-trips through the interpreter. (Earlier versions *did* bail SVC via `success_ = false`; that marked the SVC's own PC `kInterpreted` so every syscall bounced through the interpreter — see [§14](#14-syscall-emulation).)
 
@@ -919,7 +930,7 @@ The `Allocator<RegType>` class manages register mappings. When `GetReg()` encoun
 
 **Permanent vs temporary mappings.** Permanent mappings persist across all instructions in a region — they're used for guest registers that appear repeatedly. Temporary mappings are per-instruction scratch registers, allocated from the pool end in reverse order (so they don't collide with permanent mappings allocated from the front) and released after each instruction via `FreeTemps()`. The pool order matters: `RCX` sits early (so it tends to get a permanent mapping rather than being a scratch) but is saved/restored around variable-shift instructions that need `CL`; `RDX` sits last and is saved/restored around `DIV`/`MUL`.
 
-**Spill-to-temp before early termination.** When a guest register needs a host slot but the permanent pool is exhausted, the JIT does *not* immediately cut the region. It first falls back to a **temp-based access**: allocate a temporary, load the guest value from `ThreadState` for the read (or write it back for a store). Only when the pool is so tight that even a temp can't be had does `IsGpRegPoolLow()` fire and the JIT end the region cleanly (rather than risk cascading spills). Spilling first keeps regions long; cutting is the last resort.
+**A fixed temp reserve makes pressure spill, not split.** Permanent mappings and temps share the 13-register pool, growing from opposite ends — and the allocator refuses to hand out a permanent mapping that would leave fewer than **six** registers for temps (`kReservedTempRegs`), capping permanent mappings at seven. Six is the measured worst case for a single instruction: an SP-based `LDP`/`STP` needs a base, an address, and a top-byte-ignore mask plus a data/result temp per element. With the reserve in place, a full pool is not a reason to stop: `GetReg`/`SetReg` fall back to **temp-based access** — allocate a temporary, load the guest value from `ThreadState` for the read (or write it back for a store) — and translation runs to the region's natural end. Spilled access costs a memory round-trip per use; a region split costs a dispatcher exit, a cache lookup, a full register flush, *and* (since the second gear only accepts regions above a minimum size) often the permanent loss of heavy optimization for that code. The predecessor design — an adaptive reserve plus an early "pool low" region break — made exactly that trade backwards, and a 14-app sweep found 70k region failures at callee-save prologues/epilogues before it was replaced. The rare instruction needing more than six temps still falls back to the clamp-and-retranslate path.
 
 **PUSH/POP vs SUB/ADD.** When saving registers before reading condition flags (via LAHF), the JIT must use PUSH/POP or LEA for stack adjustment — never SUB RSP or ADD RSP. The reason: SUB and ADD clobber x86_64's FLAGS register, which would destroy the very flags that LAHF needs to read. PUSH/POP don't affect FLAGS.
 
@@ -2636,7 +2647,7 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **Decoder.** The complete ARM64 instruction decoder: bit-field parsing for all instruction groups (data processing, branches, loads/stores, SIMD/FP), including instructions not present in the original Berberis decoder — CRC32/CRC32C, the SM3/SM4 crypto groups, I8MM dot/matrix-multiply (`USDOT/SUDOT/USMMLA`), `FRINT32X/64X/32Z/64Z`, MTE tag ops, the RNG system registers (`RNDR/RNDRRS`), and `BRK`.
 
-**JIT — first gear (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture, register pressure monitoring (`IsGpRegPoolLow()`) for early region termination, direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region. Host-feature-gated native paths fall back to the interpreter when the host CPU lacks the needed extension — e.g. `CRC32C*` uses the SSE4.2 `crc32` instruction and bails when SSE4.2 is absent.
+**JIT — first gear (Lite Translator).** The ARM64-to-x86_64 code generator: all translation methods in `lite_translator.h`, register allocation tuning for ARM64's 31-register architecture (a fixed six-register temp reserve so register pressure spills through `ThreadState` instead of ending the region), direct dispatch / region chaining (`allow_dispatch = true`), and partial-success compilation that salvages work when translation fails mid-region. Host-feature-gated native paths fall back to the interpreter when the host CPU lacks the needed extension — e.g. `CRC32C*` uses the SSE4.2 `crc32` instruction and bails when SSE4.2 is absent.
 
 **JIT — second gear (Heavy Optimizer).** The ARM64 heavy optimizer (`heavy_optimizer/arm64/`) re-translates hot lite-translated regions with global register allocation and loop optimizations, replacing them in the cache. It is the **default** second gear: gear-up is gated to regions of roughly 20+ guest instructions (so tiny loops aren't regressed), and the optimizer is neutral-or-faster than lite across microbenchmarks, ~2x on a register-pressure kernel. Instructions the heavy frontend doesn't yet translate cause it to bail back to the (correct) lite version rather than crash.
 
@@ -3128,7 +3139,7 @@ pie title Instruction Translation Coverage
     "Interpreter (fallback)" : 2
 ```
 
-The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter now handles only a small tail: **syscalls, most system-register access, IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2). Recent JIT promotions moved vector `FCVTN/FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE/URSQRTE`, the full I8MM dot/matmul family (`USDOT/SUDOT/SMMLA/UMMLA/USMMLA`), `.2S<-.2D` `ADDHN`–`RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, and scalar `REV32` onto the native path; the `ORR/BIC #imm` vector forms were corrected to read-modify-write. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
+The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter now handles only a small tail: **syscalls, most system-register access, IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2). Recent JIT promotions moved vector `FCVTN/FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE/URSQRTE`, the full I8MM dot/matmul family (`USDOT/SUDOT/SMMLA/UMMLA/USMMLA`), `.2S<-.2D` `ADDHN`–`RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and the FP32 across-lanes reductions (`FMAXV/FMINV/FMAXNMV/FMINNMV`) with vector `FADDP` onto the native path; the `ORR/BIC #imm` vector forms were corrected to read-modify-write. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
 
 ---
 
@@ -3518,7 +3529,7 @@ flowchart LR
     EXEC -.region exit.-> PC
 ```
 
-A region exits and returns to the dispatcher on: an out-of-region branch, a syscall, a call/return, register pressure, or any JIT-unsupported opcode. See [section 9](#9-translation-cache-and-dispatch-loop).
+A region exits and returns to the dispatcher on: an out-of-region branch, a syscall, a call/return, or any JIT-unsupported opcode. (Register pressure does not exit a region — the allocator's fixed temp reserve makes it spill through `ThreadState` instead.) See [section 9](#9-translation-cache-and-dispatch-loop).
 
 ### D.6 Translation Cache Anatomy
 

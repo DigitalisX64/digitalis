@@ -3,27 +3,27 @@
 Some Digitalis failures are not Digitalis failures. The emulator under
 `prebuilts/android-emulator/` is a released binary that lags the emulator's own
 source tree, so a host-side graphics fix that has already landed upstream is
-still absent from the binary you run. When that happens the symptom is
-distinctive and alarming: the **emulator process itself dies**, taking every app
-with it, which no guest code should be able to cause.
+still absent from the binary you run.
 
-This page covers the one such fix Digitalis currently needs, how to tell it
-apart from a translator bug, and how to build and deploy an emulator that has
-it.
+This page covers the two such fixes Digitalis currently needs — one that kills
+the emulator process, one that silently starves apps of Vulkan memory — how to
+tell each apart from a translator bug, and how to build and deploy an emulator
+that has both.
 
-## The symptom
+## Symptom 1: the emulator process aborts on `VK_EXT_memory_budget`
 
-The emulator aborts — the host process exits, `adb devices` goes empty — and the
-emulator's own stdout ends with:
+The emulator's own stdout ends with:
 
 ```
 reservedunmarshal_extension_struct, Unhandled Vulkan structure type
 VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT [1000237000], aborting.
 ```
 
-It reproduces whenever an app queries `VK_EXT_memory_budget`. Chromium-based
-apps do it as a matter of course, so any browser or WebView-heavy APK triggers
-it within seconds of its GPU process starting; games hit it too.
+The emulator process exits, `adb devices` goes empty, and it reproduces
+whenever an app queries `VK_EXT_memory_budget`. Chromium-based apps do it as a
+matter of course, so any browser or WebView-heavy APK triggers it within
+seconds of its GPU process starting; games hit it too. No guest code should be
+able to kill the host process, and none does — the abort is entirely host-side.
 
 The fix is host-side: `clampMemoryBudgetToGuestHeapSizes` in gfxstream's
 `vk_emulated_physical_device_memory.cpp` clamps the reported budget to the
@@ -51,12 +51,43 @@ assuming:
 Step 3 is the decisive one: it separates "the app is broken under translation"
 from "the host cannot decode what the app sends".
 
+## Symptom 2: every guest Vulkan heap is capped at 2 GB
+
+The released emulator's gfxstream predates upstream commit `07d70ebe` ("Add
+VulkanMaxSafeHeapSize feature"), which **removed a hard-coded 2 GB clamp on
+every guest-visible Vulkan heap** — upstream's own rationale being that the
+old default "can lead to some apps not work as expected". On an unfixed
+emulator the guest sees 2048 MiB per heap no matter how much VRAM and host RAM
+exist, and raising the AVD's `-memory` changes nothing.
+
+This one does *not* kill the emulator, which is what makes it hard to
+attribute. A workload whose allocations exceed 2 GiB — 3DMark Wild Life at
+1440p is the canonical case — gets `vkAllocateMemory` failures mid-loading,
+and what surfaces is whatever the app does with an allocation failure it never
+expected: 3DMark dereferences an unchecked null mapping, crashes with
+`SIGSEGV addr 0x0`, and reports "out of memory" although both guest RAM and
+host VRAM are plentiful. The alloc-failure path in the guest Mesa driver is
+silent, so the absence of graphics errors in logcat proves nothing.
+
+The tell is one command:
+
+```bash
+adb shell cmd gpu vkjson    # look at "memoryHeaps"
+```
+
+Heaps of `0x80000000` (2048 MiB) on a host with a bigger GPU mean the clamp is
+in place. After deploying a fixed emulator the same dump shows the real
+sizes (e.g. ~30 GiB host-visible and ~16 GiB device-local on a 16 GB card).
+
+To confirm the translator is not involved, run the same workload's x86_64
+build: the failure reproduces identically with no translation in the path.
+
 ## Deploying a fixed emulator
 
 ### 1. Get the emulator source
 
 The emulator is a separate checkout from AOSP, on the `emu-main-dev` branch,
-which carries the merged fix:
+which carries both merged fixes:
 
 ```bash
 mkdir emu-main-dev && cd emu-main-dev
@@ -108,9 +139,10 @@ result after copying:
   resolves inside the package;
 - `emulator -version` runs.
 
-Then confirm the behaviour directly: launch a Chromium-based APK on the default
-GPU and check that the emulator survives and its log contains no `aborting`
-line.
+Then confirm both behaviours directly: launch a Chromium-based APK on the
+default GPU and check that the emulator survives with no `aborting` line in
+its log, and run `adb shell cmd gpu vkjson` and check the guest heaps report
+the host's real sizes rather than 2048 MiB.
 
 ## Why the whole package, not just the one library
 
@@ -143,3 +175,7 @@ Two practical notes:
   launched anything. If you need a long undisturbed run (a benchmark sweep, say)
   on an unfixed emulator, uninstall the app from the device first — leaving the
   APK in `sample/prebuilts/` so the gate still covers it.
+- The heap clamp poisons full-app benchmarking: a GPU workload that dies at
+  2 GiB "passes" smaller presets and fails bigger ones for reasons that have
+  nothing to do with translation. Check `cmd gpu vkjson` before attributing any
+  large-allocation failure.
