@@ -1,3 +1,97 @@
+# Digitalis — The First Gear Stops Dropping Regions: +23% Geekbench, 3DMark at 88% of Native (2026-08-14)
+
+This release is about the lite translator's role as gatekeeper. Heavy, the
+optimizing tier, is only attempted for a region that is already hot — and
+hotness is counted by a profiling counter that lite installs into the region
+*it* translated. A region lite cannot translate installs `kInterpreted`,
+carries no counter, and can never gear up; a region lite translates only
+partially is clamped at the failure point, leaving hot loops as fragments too
+small for heavy to accept. Two first-gear gaps of exactly that shape were
+found by measuring real apps instead of guessing, and closing them moved
+third-party benchmarks by double digits.
+
+- **FP across-lanes reductions and vector `FADDP` now translate in the lite
+  tier.** `FMAXV`, `FMINV`, `FMAXNMV`, `FMINNMV` and the vector form of
+  `FADDP` had no lite lowering, so every region containing one was installed
+  as `kInterpreted` — and the heavy frontend's long-standing implementations
+  of these very opcodes were unreachable, because nothing below them could
+  gear up. The FP32 forms are lowered with NaN-correct MAXPS/MINPS folding
+  sequences (`FMAXNMV`/`FMINNMV` first suppress single-input NaNs via a
+  self-compare mask, so a NaN survives only if both inputs are NaN); the
+  FP16 forms still go to the interpreter, pending an F16C round-trip.
+  Measured on Geekbench 6.7.1 with the translator as the only change:
+  **single-core 369 → 455 (+23%), multi-core 1138 → 1388 (+22%)**. Its
+  Object Remover workload — an FP32 patch-reduction kernel that had sat
+  roughly 20× below its neighbours — went 25 → 522 single-core.
+- **Register pressure now spills instead of failing the region.** A
+  14-app sweep with a temporary failure-logging diagnostic (the new
+  `litefail-sweep.sh`) measured **70,246 lite-translation failures, 94% of
+  them `STP`/`LDP`**: an SP-based pair op needs six scratch registers (base,
+  address, and a top-byte-ignore mask plus data temp per element), but the
+  old adaptive reservation could admit it with only four, so at the pressure
+  wall every callee-save prologue and epilogue failed its region and forced a
+  clamp-and-retranslate split — fragments that also fell under the heavy
+  tier's gear-up minimum. The allocator now holds a fixed six-register temp
+  reserve (permanent guest-register mappings cap at 7 of the 13-register
+  pool) and the early pool-low region break is gone: a full pool spills
+  through `ThreadState` and translation runs to the region's natural end.
+  Re-running the same sweep: **70,246 → 707 events (−99%), `STP`/`LDP`
+  eliminated entirely**. Register-heavy lite workloads improved (bcrypt
+  hashpw −16%, secp256k1 sign −11%, pcre2 match −10%); nothing regressed
+  beyond noise.
+- **3DMark went from crashing to running — and the crash was the emulator's,
+  not ours.** Wild Life died ~45 s into loading with an "out of memory"
+  dialog that no amount of guest RAM changed. The released prebuilt
+  emulator's gfxstream hard-clamps **every guest-visible Vulkan heap to
+  2 GB** (removed upstream by gfxstream `07d70ebe` precisely because it
+  breaks apps); Wild Life's allocations exceed that mid-loading, the failed
+  `vkAllocateMemory` surfaced as a null mapping 3DMark never checks, and the
+  workload died by SIGSEGV — reproduced byte-for-byte on the same APK's
+  native x86_64 half, exonerating the translator. `deploy-emulator.sh` now
+  documents this second reason to redeploy, and the diagnostic is one
+  command: `adb shell cmd gpu vkjson` showing 2048 MiB heaps on a bigger
+  GPU. With a fixed emulator the guest sees the real heaps and Wild Life
+  runs to its scorecard.
+
+**Where that leaves the yardsticks** (Ryzen 9 7950X / RX 7800 XT, translated
+arm64 vs the same app's native x86_64 build on the same emulator):
+
+| Benchmark | Translated | Native x86_64 | Ratio |
+|---|---|---|---|
+| 3DMark Wild Life | 11,019 (66.0 FPS, "Maxed Out" — frame-capped) | frame-capped too | at cap |
+| 3DMark Wild Life Extreme | **4,801** (28.75 FPS) | 5,458 (32.69 FPS) | **88%** |
+| Geekbench 6 single-core | **456** | 2,511 | 18% |
+| Geekbench 6 multi-core | **1,372** | 7,136 | 19% |
+
+Wild Life Extreme is GPU-bound, so 88% measures the whole stack — translated
+render thread, gfxstream encode, host GPU — not translation alone; the
+CPU-bound Geekbench ratios are the translator's own scoreboard. Against the
+start of this optimization arc, Geekbench is up **+23.6% single / +20.6%
+multi** (369/1,138 → 456/1,372).
+
+Tooling and docs that made the above findable, all landed this cycle: the
+in-app microbenchmark sweep gained a **native x86_64 baseline** mode and a
+vs-native column in `benchmark-results.md`; a **full-app benchmark harness**
+(`benchmark-apps.sh`) measures ABI-paired third-party apps with ABBA legs and
+positive proof the translator was in the path; `litefail-sweep.sh` histograms
+first-gear failures on real apps (its lesson is written into the docs: rank
+coverage work from dynamic sweeps, never from static disassembly of stripped
+libraries, whose constant pools decode as plausible SVE/SME garbage);
+`benchmarking.md`, `how-it-works.md`, `unsupported-opcodes.md` and
+`emulator-gfxstream-deploy.md` are updated to match.
+
+## Verification
+
+Full `Arm64*` host suite: **3,630 pass, zero failures**; `libberberis_arm64`
+and `libberberis_riscv64` both build clean. Sample suite **141/141 PASS** and
+the prebuilt-APK gate **15 PASS / 0 FAIL** — both re-run twice, on the
+released emulator and again on the redeployed heap-clamp-free emulator. The
+microbenchmark sweep was re-run after each translator change and
+`benchmark-results.md` regenerated; every movement beyond noise is an
+improvement, and the two-gear tier is flat where it should be.
+
+---
+
 # Digitalis — Ask the Allocator: a Derived Stride, a Stale-Library Fix, and a Clean Prebuilt Gate (2026-08-09)
 
 Three fixes, each of which began as something that looked like a translator bug.
