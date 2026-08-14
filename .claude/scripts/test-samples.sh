@@ -267,6 +267,7 @@ declare -A MODULES=(
     ["hello-sharedmem"]="com.example.hellodigitalis.hellosharedmem/com.example.hellosharedmem.MainActivity"
     ["hello-fonts"]="com.example.hellodigitalis.hellofonts/com.example.hellofonts.MainActivity"
     ["hello-openmaxal"]="com.example.hellodigitalis.helloopenmaxal/com.example.helloopenmaxal.MainActivity"
+    ["hello-realm"]="com.example.hellodigitalis.hellorealm/com.example.hellorealm.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -284,6 +285,7 @@ SCREENSHOT_MODULES=(
 )
 NO_INSTRUMENTATION_MODULES=(
     hello-qt
+    hello-realm
 )
 
 declare -A TEST_PACKAGES TEST_CLASSES
@@ -320,7 +322,7 @@ MODULE_ORDER=(
     hello-libwebp hello-libarchive hello-opus hello-leveldb hello-pcre2 hello-libxml2
     hello-blowfish hello-bcrypt
     hello-hardwarebuffer hello-imagedecoder hello-mediandk-source hello-adpf
-    hello-sharedmem hello-fonts hello-openmaxal
+    hello-sharedmem hello-fonts hello-openmaxal hello-realm
     hello-reactnative hello-qt
 )
 
@@ -388,6 +390,15 @@ for mod in "${MODULE_ORDER[@]}"; do
 
     # Install APK
     apk="${SAMPLE_DIR}/${mod}/build/outputs/apk/debug/${mod}-debug.apk"
+    # Standalone modules (their own settings.gradle.kts, outside the suite
+    # build — e.g. a pinned-toolchain project) carry a build-apk.sh; build on
+    # demand so a fresh tree still runs end-to-end.
+    if [[ ! -f "$apk" && -x "${SAMPLE_DIR}/${mod}/build-apk.sh" ]]; then
+        echo "  Building $mod standalone via build-apk.sh..."
+        if ! "${SAMPLE_DIR}/${mod}/build-apk.sh" >/tmp/test-samples-${mod}-build.log 2>&1; then
+            echo "  WARN: $mod standalone build failed (see /tmp/test-samples-${mod}-build.log)"
+        fi
+    fi
     # Fallback: Qt-built samples (hello-qt) ship a prebuilt APK in the module
     # root instead of the gradle outputs tree.
     if [[ ! -f "$apk" && -f "${SAMPLE_DIR}/${mod}/${mod}-debug.apk" ]]; then
