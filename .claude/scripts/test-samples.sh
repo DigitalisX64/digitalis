@@ -260,6 +260,13 @@ declare -A MODULES=(
     ["hello-libxml2"]="com.example.hellodigitalis.hellolibxml2/com.example.hellolibxml2.MainActivity"
     ["hello-blowfish"]="com.example.hellodigitalis.helloblowfish/com.example.helloblowfish.MainActivity"
     ["hello-bcrypt"]="com.example.hellodigitalis.hellobcrypt/com.example.hellobcrypt.MainActivity"
+    ["hello-hardwarebuffer"]="com.example.hellodigitalis.hellohardwarebuffer/com.example.hellohardwarebuffer.MainActivity"
+    ["hello-imagedecoder"]="com.example.hellodigitalis.helloimagedecoder/com.example.helloimagedecoder.MainActivity"
+    ["hello-mediandk-source"]="com.example.hellodigitalis.hellomediandksource/com.example.hellomediandksource.MainActivity"
+    ["hello-adpf"]="com.example.hellodigitalis.helloadpf/com.example.helloadpf.MainActivity"
+    ["hello-sharedmem"]="com.example.hellodigitalis.hellosharedmem/com.example.hellosharedmem.MainActivity"
+    ["hello-fonts"]="com.example.hellodigitalis.hellofonts/com.example.hellofonts.MainActivity"
+    ["hello-openmaxal"]="com.example.hellodigitalis.helloopenmaxal/com.example.helloopenmaxal.MainActivity"
 )
 
 # Instrumentation targets are derived from MODULES: every module's test APK is
@@ -312,6 +319,8 @@ MODULE_ORDER=(
     hello-lua hello-mupdf hello-sentry-ndk hello-bullet
     hello-libwebp hello-libarchive hello-opus hello-leveldb hello-pcre2 hello-libxml2
     hello-blowfish hello-bcrypt
+    hello-hardwarebuffer hello-imagedecoder hello-mediandk-source hello-adpf
+    hello-sharedmem hello-fonts hello-openmaxal
     hello-reactnative hello-qt
 )
 

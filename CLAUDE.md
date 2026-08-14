@@ -6,7 +6,7 @@ ARM64-to-x86_64 binary translation for Android, built on AOSP's Berberis NativeB
 
 This is an **AOSP 16** (Android Open Source Project, API 36) source tree with modifications to the Berberis binary translator to support ARM64-to-x86_64 translation. Berberis originally supported only RISC-V-to-x86_64; Digitalis adds the ARM64 backend.
 
-`sample/hellodigitalis/` holds 144 ARM64-only sample app modules — the integration test suite. They span ndk-samples ports, proxy-lib smoke tests, ARM-extension probes, UI engines (Qt 6, React Native, Lynx), and third-party native libraries; `ls` the directory for the current set. 141 are exercised by `test-samples.sh`; `hello-realm` builds standalone (toolchain pinning) and is verified by launch, and the two Media3 decoder-extension modules have no publishable prebuilt AAR to build against.
+`sample/hellodigitalis/` holds 151 ARM64-only sample app modules — the integration test suite. They span ndk-samples ports, proxy-lib smoke tests (including NDK proxy-surface probes: AHardwareBuffer, AImageDecoder, AMediaDataSource/Muxer, ADPF, ASharedMemory, system fonts, OpenMAX AL), ARM-extension probes, UI engines (Qt 6, React Native, Lynx), and third-party native libraries; `ls` the directory for the current set. 148 are exercised by `test-samples.sh`; `hello-realm` builds standalone (toolchain pinning) and is verified by launch, and the two Media3 decoder-extension modules have no publishable prebuilt AAR to build against.
 
 ## Architecture
 
@@ -44,7 +44,7 @@ All paths relative to repo root.
 | `frameworks/libs/binary_translation/prebuilt/` | Prebuilt configs including `ld.config.arm64.txt` |
 | `device/generic/goldfish/` | Emulator (goldfish) product definitions |
 | `device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_digitalis.mk` | Digitalis product config |
-| `sample/hellodigitalis/` | The 143 sample app modules |
+| `sample/hellodigitalis/` | The 151 sample app modules |
 
 ## Build
 
