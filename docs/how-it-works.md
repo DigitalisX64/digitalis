@@ -1766,7 +1766,7 @@ And one contract rule bears repeating — an API like `eglGetProcAddress` must k
 *advertised-implies-non-NULL*, because returning NULL for a proc whose extension
 the driver advertises sends string-gated callers to guest PC 0.
 
-Three sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
+Four sibling mechanisms live in the same `digitalis_extra_proxy/` directory but
 are *not* `DoBadTrampoline` stories. **Missing-symbol additions** supply symbols
 the upstream proxy omits entirely (libc fast-path helpers like the `*64`
 stat/mmap family, libm's `__*_finite` math entry points) through the same
@@ -1812,6 +1812,40 @@ CPU-under-translation was never meant to reach: the resulting non-executable-fau
 hook that re-resolves the same symbol in the **guest** copy of the library and
 redirects the guest PC there, so the call runs under translation instead of
 crashing.
+
+The fourth mechanism, **named-trampoline overrides**
+(`named_trampoline_override.{h,cc}`), reaches the one place none of the above
+can: a trampoline that never appears in any symbol table because it wraps a
+**vtable method** — registered lazily at runtime, by name, when a guest obtains
+an interface through `GetInterface`. The audio libraries are built this way:
+OpenSL ES and OpenMAX AL hand out C structs of function pointers, and the
+upstream translation layers wrap each method via `WrapHostFunctionImpl` under a
+unique name (`"SLPlayItf::RegisterCallback"`). Where upstream couldn't marshal a
+method it registered a `LOG_ALWAYS_FATAL("not implemented: …")` stub under that
+same name. The registry lets a Digitalis file compiled into the owning proxy
+library declare `{name, replacement}` pairs; an arm64-guarded hook inlined into
+`WrapHostFunctionImpl` (so the riscv64 build compiles the original code
+byte-identically) installs the replacement at wrap time and records the
+displaced upstream trampoline, which an override can fetch back and delegate to.
+Two consumers exist. `libOpenSLES`'s override file replaces all nine fatal
+`Register*Callback` stubs with working `WrapGuestFunction` marshalling — three
+are reachable from app code on the Android profile (`SLAndroidBufferQueueItf`'s
+AAC-ADTS streaming callback, proven end-to-end by `hello-opensles` with a fired
+host→guest callback; `SLDynamicInterfaceManagementItf::RegisterCallback`;
+`SLOutputMixItf::RegisterDeviceChangeCallback`), while the other six
+(AudioIODeviceCapabilities ×3, MIDIMessage ×2, Visualization) sit behind
+interfaces the platform's `USE_PROFILES=0` build never exposes — the probe pins
+each refusal so a future exposure change surfaces as a test failure instead of
+an abort. `libOpenMAXAL`'s override file wraps the *object-level*
+`"XAObject::GetInterface"` dispatch itself: it marshals `XA_IID_SEEK` and
+`XA_IID_PREFETCHSTATUS` (obtainable on any media player that requests them —
+previously an instant abort), tolerates `XA_IID_OBJECT`, keeps
+`XA_IID_DYNAMICINTERFACEMANAGEMENT` ready (in the class table but init-hook-less
+on today's platform, so never actually exposed), and delegates every other IID
+to the upstream trampoline unchanged. One sharp edge is designed around: the
+registry records the *incoming* trampoline as the delegable original on every
+matching wrap, so an override must never re-wrap its own name — and the registry
+refuses to record an override as its own original if one tries.
 
 ---
 

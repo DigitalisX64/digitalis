@@ -267,6 +267,7 @@ declare -A MODULES=(
     ["hello-sharedmem"]="com.example.hellodigitalis.hellosharedmem/com.example.hellosharedmem.MainActivity"
     ["hello-fonts"]="com.example.hellodigitalis.hellofonts/com.example.hellofonts.MainActivity"
     ["hello-openmaxal"]="com.example.hellodigitalis.helloopenmaxal/com.example.helloopenmaxal.MainActivity"
+    ["hello-opensles"]="com.example.hellodigitalis.helloopensles/com.example.helloopensles.MainActivity"
     ["hello-realm"]="com.example.hellodigitalis.hellorealm/com.example.hellorealm.MainActivity"
 )
 
@@ -322,7 +323,7 @@ MODULE_ORDER=(
     hello-libwebp hello-libarchive hello-opus hello-leveldb hello-pcre2 hello-libxml2
     hello-blowfish hello-bcrypt
     hello-hardwarebuffer hello-imagedecoder hello-mediandk-source hello-adpf
-    hello-sharedmem hello-fonts hello-openmaxal hello-realm
+    hello-sharedmem hello-fonts hello-openmaxal hello-opensles hello-realm
     hello-reactnative hello-qt
 )
 
