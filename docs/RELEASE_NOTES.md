@@ -1,3 +1,82 @@
+# Digitalis — No Reachable Call Aborts: Full Audio-Proxy Coverage, 150 Samples (2026-08-15)
+
+Every proxy library forwards guest calls through trampolines, and until now two
+of the 21 — OpenSL ES and OpenMAX AL — still carried loaded guns: vtable
+methods the upstream translation layer registers as
+`LOG_ALWAYS_FATAL("not implemented")` stubs. These never showed up in the
+`DoBadTrampoline` audit because they are not symbols. The audio proxies wrap
+host interface vtables *lazily, by name*, when a guest first obtains an
+interface through `GetInterface`; a method the upstream generator could not
+marshal aborts the whole process on its first call. Nine OpenSL ES
+`Register*Callback` methods were such stubs, and OpenMAX AL's entire
+`XAObject::GetInterface` dispatch aborted on any interface ID outside its
+six-entry set — including `XA_IID_SEEK` and `XA_IID_PREFETCHSTATUS`, which the
+platform hands out to any media player that asks. This release closes all of
+it; no app-reachable call aborts in any proxy library.
+
+- **A fourth extras mechanism: named-trampoline overrides.** The existing
+  symbol-level extras registry cannot reach a trampoline that never appears in
+  a symbol table, so a new registry
+  (`digitalis_extra_proxy/named_trampoline_override.{h,cc}`) intercepts by the
+  one stable handle these wraps have — their registration name. Override files
+  compiled into the owning proxy library declare `{name, replacement}` pairs
+  from a constructor; a guarded hook inlined into `WrapHostFunctionImpl`
+  installs the replacement at wrap time and records the displaced upstream
+  trampoline, which an override can fetch back and delegate to. Because the
+  hook lives in the inline header body, it compiles per consumer flavor: the
+  riscv64 build compiles the original code byte-identically, and a weak
+  reference keeps binaries that inline the header without the registry
+  linking. One sharp edge is pinned by unit test: the registry records the
+  incoming trampoline as the delegable original on every matching wrap, so it
+  refuses to record an override as its own original — the self-wrap that would
+  otherwise recurse forever.
+- **libOpenSLES: all nine fatal callback registrations now marshal.** Each
+  wraps the guest callback with `WrapGuestFunction` and forwards to the host
+  method. Three are reachable from app code on the Android profile —
+  `SLAndroidBufferQueueItf::RegisterCallback` (the AAC-ADTS streaming-decode
+  path real players use), `SLDynamicInterfaceManagementItf::RegisterCallback`
+  (implicit on every object), and
+  `SLOutputMixItf::RegisterDeviceChangeCallback`. The other six
+  (AudioIODeviceCapabilities ×3, MIDIMessage ×2, Visualization) sit behind
+  interfaces the platform build never exposes (`USE_PROFILES=0`); covering
+  them uniformly costs nothing and survives a profile change.
+- **libOpenMAXAL: `GetInterface` marshals what the platform can hand out.**
+  The override handles `XA_IID_SEEK` and `XA_IID_PREFETCHSTATUS` (method
+  wrapping plus the `xaPrefetchCallback` custom trampoline), tolerates
+  `XA_IID_OBJECT` (already wrapped — every object shares one static vtable),
+  keeps `XA_IID_DYNAMICINTERFACEMANAGEMENT` ready, and delegates every other
+  ID to the upstream dispatch unchanged, so behaviour is identical wherever it
+  already worked.
+- **Two platform findings, pinned rather than papered over.** The XA
+  dynamic-interface-management interface sits in the media player'"'"'s class
+  table as implicit, but the implementation ships no init hook for it, so
+  `GetInterface` refuses it on native devices exactly as under translation.
+  And the engine'"'"'s `AudioIODeviceCapabilities` interface is compiled
+  unavailable by the platform'"'"'s profile setting. The probes assert the clean
+  refusal in both cases and exercise the registrations only if a platform
+  exposes the interface.
+- **The suite grows to 150 modules.** A new `hello-opensles` probe registers
+  the three reachable callbacks with golden result checks, round-trips the
+  buffer-queue event mask, and streams a command item through the AAC-ADTS
+  decode player — under translation the buffer-queue callback **fires**, host
+  code calling back into translated guest code, so the round trip is proven
+  end to end, not just the registration. `hello-openmaxal` gains a
+  media-player section that obtains Seek and PrefetchStatus through the new
+  dispatch and golden-checks loop state, position seeks, the prefetch
+  events mask, status and fill-level getters, and both rejection paths.
+  Before this release both probes aborted at their first fatal stub.
+
+## Verification
+
+Full `berberis_arm64_host_tests` binary: **3,687 pass, zero failures**
+(including the three new named-override registry tests); `libberberis_arm64`
+and `libberberis_riscv64` both build clean. Sample suite **150/150 PASS**,
+prebuilt-APK gate **15 PASS / 0 FAIL**. The microbenchmark sweep against the
+committed baseline is within noise on every unflagged row — expected, since
+the hook runs only at wrap time and no translator tier is touched.
+
+---
+
 # Digitalis — The First Gear Stops Dropping Regions: +23% Geekbench, 3DMark at 88% of Native (2026-08-14)
 
 This release is about the lite translator's role as gatekeeper. Heavy, the
