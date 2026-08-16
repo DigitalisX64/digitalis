@@ -142,8 +142,11 @@ if [ "$BUILD_NATIVE" = 1 ]; then
       [ -n "$apk" ] || { echo "  $module: no APK produced" >&2; continue; }
       # A module whose natives live in a dependency rather than its own
       # CMakeLists can build clean and still contain no host code; installing it
-      # would silently measure nothing.
-      if ! unzip -l "$apk" 2>/dev/null | grep -q "lib/x86_64/"; then
+      # would silently measure nothing. Plain grep (not -q) on purpose, here and
+      # in every pipeline below: under `set -o pipefail`, grep -q exits at the
+      # first match, the producer dies with SIGPIPE (141), and the pipeline
+      # "fails" despite the match — which made this check reject every good APK.
+      if ! unzip -l "$apk" 2>/dev/null | grep "lib/x86_64/" >/dev/null; then
         echo "  $module: built without x86_64 natives, not installing" >&2
         continue
       fi
@@ -187,7 +190,7 @@ for repeat in $(seq 1 "$REPEATS"); do
         esac
         package="$package$NATIVE_SUFFIX"
         component="$package/${component#*/}"
-        if ! adb shell pm list packages 2>/dev/null | grep -Fqx "package:$package"; then
+        if ! adb shell pm list packages 2>/dev/null | grep -Fx "package:$package" >/dev/null; then
           echo "  $module: no native build installed (--build-native)" >&2
           continue
         fi
@@ -214,7 +217,7 @@ for repeat in $(seq 1 "$REPEATS"); do
       # Wait for the module to report it is finished, or give up.
       waited=0
       while [ "$waited" -lt "$TIMEOUT" ]; do
-        if adb logcat -d -s DigitalisBench 2>/dev/null | grep -q "BENCH_DONE $module"; then
+        if adb logcat -d -s DigitalisBench 2>/dev/null | grep "BENCH_DONE $module" >/dev/null; then
           break
         fi
         sleep 2
@@ -222,7 +225,7 @@ for repeat in $(seq 1 "$REPEATS"); do
       done
 
       lines="$(adb logcat -d -s DigitalisBench 2>/dev/null)"
-      if ! printf '%s' "$lines" | grep -q "BENCH_DONE $module"; then
+      if ! printf '%s' "$lines" | grep "BENCH_DONE $module" >/dev/null; then
         echo "  $module: TIMEOUT after ${TIMEOUT}s" >&2
         fail=1
       fi
