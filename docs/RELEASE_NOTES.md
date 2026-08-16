@@ -1,3 +1,86 @@
+# Digitalis — The Interpreter Loses Its Tail: +16% Geekbench, SHA-1 and FP16 in the JIT, a 17-App Gate (2026-08-16)
+
+A measurement-first performance cycle, the last two instruction families that
+mattered, and two new commercial games in the standing regression gate. A
+fresh Geekbench profile at the start of the cycle showed 11.4% of CPU time
+still inside `libberberis_arm64.so` — half of it heavy-optimizer translation
+passes re-running mid-benchmark, a quarter the interpreter executing a handful
+of specific instruction families. Each item below removes a measured slice of
+that; together they move Geekbench 6 from **456 / 1,372 to 529 / 1,592**
+(single/multi, +16% on both axes) — **21% / 22% of the same emulator's native
+x86_64 scores** (2,511 / 7,136) — and 3DMark Wild Life Extreme to **4,903
+(29.36 FPS), 90% of the native 5,458**.
+
+- **Production stops validating its own IR.** `GenCode` ran `CheckMachineIR`
+  twice per heavy translation — 2.5% of the benchmark's CPU inside a debug
+  assertion. A new `disable-ir-check` config flag gates it; host tests and
+  developer builds keep validating, the shipped product config turns it off
+  via `ro.berberis.flags`.
+- **Single-lane and replicating structure loads/stores JIT in both tiers.**
+  `LD1`–`LD4`/`ST1`–`ST4` lane forms and `LD2R`/`LD3R`/`LD4R` were the
+  largest single interpreter slice in the profile (8.6% of the library's CPU,
+  led by `ST4`-lane stores in the benchmark's image workloads). Lowered in
+  lite and heavy with per-element fault recovery.
+- **The SSE-emulable `.2D` forms come off the AVX-512-blocked list.**
+  `CMEQ/CMGT/CMGE/CMLE/CMLT #0`, `ABS` and `SSHR` on 64-bit lanes lower to
+  PCMPEQQ/PCMPGTQ-based sequences (SSE4.1/4.2, which the baseline host has);
+  only the true AVX-512 dependents (64-bit min/max, `MUL .2D`-class) remain
+  hardware-conditional bails.
+- **Exclusive stores no longer fail regions under register pressure.**
+  `STXR`/`STLXR` in a fully-mapped region exceeded the lite tier's temp
+  reserve and failed the region at the store — 19% of the app-sweep's
+  actionable lite failures (douyin, kuaishou, netease). The
+  reservation-address compare and expected value now stage through RAX, which
+  LOCK CMPXCHG needs anyway. A pressured LL/SC host test pins the shape.
+- **SHA-1 joins the JIT.** `SHA1C/P/M`, `SHA1SU0/SU1`, `SHA1H` lower in both
+  tiers through the same scalar-GPR round sequences as SHA-256 (the x86
+  assembler still has no SHA-NI). With AES, SHA-256 and `PMULL` already
+  native, the interpreted crypto residue is exactly SHA-512 and SM3/SM4 —
+  never observed in a real app.
+- **FP16 across-lanes reductions and FP16 `FADDP` JIT via the F16C
+  round-trip** — in both tiers, closing the last planned AdvSIMD family.
+  Two coupled root-cause fixes surfaced on the way: the decoder rejected the
+  architecturally-valid `.4H` (Q=0) across-lanes encodings outright, and the
+  interpreter hardcoded an 8-lane sweep for a form that can have four. The
+  max/min round-trip is exact (a reduction returns one of its inputs); the
+  `FADDP` double rounding is innocuous because FP32's 24 significand bits
+  exactly meet the 2·11+2 bound. Generated coverage now stands at **94.4%
+  of the 48,032-encoding corpus for lite, 92.3% for heavy**.
+- **The prebuilt gate grows 15 → 17, and the games now span three engines.**
+  Hill Climb Racing (Fingersoft's custom native engine) and Among Us (Unity
+  IL2CPP + Epic Online Services) join as standing regression targets, next to
+  miHoYo's Honkai: Star Rail. Among Us carried this cycle's triage lesson:
+  the single-APK mirror variant renders pure black at a steady 30 FPS in
+  every tier — because it is base-only (a 1.5 KB bootstrap scene and a
+  PlayCore `PLAY_STORE_NOT_FOUND` asset-pack error), not because of
+  translation. Installed the way the store delivers it (base plus its 941 MB
+  `UnityDataAssetPack` split), the full game renders and runs; the gate
+  installs split-app directories with `adb install-multiple`, signatures
+  intact.
+- **The benchmark harness stops lying about native baselines.** The sweep's
+  `--build-native` flow rejected every freshly-built x86_64 APK and then
+  skipped every native run: under `set -o pipefail`, `grep -q` exits at the
+  first match, the producing `unzip`/`adb` dies with SIGPIPE, and the
+  matched pipeline reports failure. All four pipeline checks now use plain
+  `grep` and the committed table carries a same-build native column again.
+- **hello-qt builds on demand — locally and on CI.** The standalone Qt
+  sample's `build-apk.sh` reads `qt.dir`/`sdk.dir` from an untracked
+  `local.properties` (hello-realm's convention), so the suite's
+  build-on-demand hook actually rebuilds it, and a new CI job provisions the
+  pinned Qt 6.7.3 toolchain via aqtinstall and builds it on every push.
+
+## Verification
+
+Full `berberis_arm64_host_tests` binary: **3,720 pass, zero failures** (two
+by-design skips assert the no-F16C bail path on hosts that have F16C);
+`libberberis_arm64` and `libberberis_riscv64` both build clean. Sample suite
+**150/150 PASS**, prebuilt-APK gate **17 PASS / 0 FAIL**. The committed
+microbenchmark table is regenerated from a fresh four-mode sweep on this
+build; every unflagged row is within noise of the previous table, with the
+FP16 and SHA-1 rows measuring work that previously never reached a JIT tier.
+
+---
+
 # Digitalis — No Reachable Call Aborts: Full Audio-Proxy Coverage, 150 Samples (2026-08-15)
 
 Every proxy library forwards guest calls through trampolines, and until now two
