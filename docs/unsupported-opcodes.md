@@ -1,6 +1,6 @@
 # ARM64 Opcode Support Gaps
 
-> **Verified 2026-08-14** against the decoder, lite translator and heavy optimizer.
+> **Verified 2026-08-16** against the decoder, lite translator and heavy optimizer.
 > Current state only; the history of coverage promotions lives in `RELEASE_NOTES.md`.
 
 ## The authoritative source is generated, not this file
@@ -25,11 +25,11 @@ Where it is at:
 
 | | encodings | share |
 |---|---|---|
-| Lite translator | 44,980 / 48,032 | 93.6% |
-| Heavy optimizer | 43,945 / 48,032 | 91.5% |
+| Lite translator | 45,338 / 48,032 | 94.4% |
+| Heavy optimizer | 44,354 / 48,032 | 92.3% |
 
-136 mnemonics have no lite coverage and 156 no heavy coverage — but most of those
-are SVE/SME/FP8 encodings that are undecoded by design (§2). 78 mnemonics are
+123 mnemonics have no lite coverage and 147 no heavy coverage — but most of those
+are SVE/SME/FP8 encodings that are undecoded by design (§2). 75 mnemonics are
 lite-covered but weaker in heavy (§4).
 
 **Read `0` as proof of absence; do not read a full count as proof of presence.**
@@ -83,16 +83,20 @@ Both JIT tiers bail; the interpreter is correct. Filter the generated table for
 | **MTE** | `ADDG`/`SUBG`, `IRG`/`GMI`/`SUBP`, `LDG`/`STG`/`STZG`/… | Interpreter executes with no-MTE-backing semantics. Rarely hot. |
 | **System registers** | `MRS`/`MSR` outside the modelled set, `IC`, `MRRS`/`MSRR`, `SYSP` | The JITs model `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0`, `FPCR`; the interpreter models a larger set as constants/no-ops. |
 | **Newer atomics** | `RCW*` (ARMv8.9), FP atomics (`LDFADD*`/`LDFMAX*`) | Not yet lowered; vanishingly rare in NDK output. |
-| **AdvSIMD residue** | FP16 forms of the across-lanes reductions and `FADDP` (the FP32 forms are lowered), pairwise `FMAXNMP`/`FMINNMP`, widening `FMLAL`/`FMLSL` family, `FRINT32Z`/`FRINT64Z`, replicating loads `LD2R`/`LD3R`/`LD4R`, `SUQADD`/`USQADD` `.1D`/`.2D` | Each needs a multi-instruction host sequence; none is common enough to have been worth it yet. |
+| **AdvSIMD residue** | Pairwise FP min/max `FMAXP`/`FMINP`/`FMAXNMP`/`FMINNMP` FP32/FP64 vector forms (the FP16 forms run in the heavy tier), widening `FMLAL`/`FMLSL` family, `FRINT32Z`/`FRINT64Z`, `SUQADD`/`USQADD` `.1D`/`.2D` | Each needs a multi-instruction host sequence; none is common enough to have been worth it yet. |
 
 **Already lowered, contrary to older revisions of this document:** `AES*` (host AES-NI),
-**SHA-256** (`SHA256H`/`H2`/`SU0`/`SU1`, via a software GPR sequence — the x86 assembler
+**SHA-1 and SHA-256** (via software GPR round sequences — the x86 assembler
 still has no SHA-NI definitions), `PMULL`/`PMULL2`, both the IEEE `CRC32*` (PCLMULQDQ
 reflected Barrett) and Castagnoli `CRC32C*` (host `crc32`) groups, the full I8MM
-dot-product/matrix set, and the FP32 across-lanes reductions
-(`FMAXV`/`FMINV`/`FMAXNMV`/`FMINNMV`) with vector `FADDP` — the gap whose closure
-moved Geekbench single-core +23% (its Object Remover workload sat 20× below its
-neighbours while every region containing an `FMAXV` was locked out of both JIT tiers).
+dot-product/matrix set, the single-lane and replicating structure loads/stores
+(`LD1`–`LD4`/`ST1`–`ST4` lane forms, `LD2R`/`LD3R`/`LD4R`), the SSE-emulable `.2D`
+zero-compares/`ABS`/`SSHR`, and the across-lanes reductions
+(`FMAXV`/`FMINV`/`FMAXNMV`/`FMINNMV`) with vector `FADDP` in **both FP32 and
+Armv8.2-FP16 forms** (FP16 via the F16C round-trip) — the FP32 across-lanes gap is
+the one whose closure moved Geekbench single-core +23% (its Object Remover workload
+sat 20× below its neighbours while every region containing an `FMAXV` was locked out
+of both JIT tiers).
 
 ### Host-feature-gated
 Where the host CPU lacks a feature the JIT path bails to the interpreter — correct,
@@ -102,7 +106,7 @@ just slower: FP16 needs `F16C`, FMA-based paths need `FMA`, `CRC32C*` needs SSE4
 
 Correct via lite/interpreter; the heavy frontend just doesn't translate them, so a hot
 region containing one can't gear up. Filter the generated table for
-`lite > 0 && heavy < lite` — 78 mnemonics. The largest, by encodings lost:
+`lite > 0 && heavy < lite` — 75 mnemonics. The largest, by encodings lost:
 
 | Mnemonic | lite → heavy | 
 |---|---|
@@ -125,7 +129,6 @@ AVX-512-less host:
 
 | Family | Missing host op |
 |---|---|
-| `.2D` integer compares | `PCMPEQQ` (SSE4.1) / `PCMPGTQ` (SSE4.2) |
 | `.2D` min/max and pairwise min/max | `PMAXSQ`/`PMINSQ`/`PMAXUQ`/`PMINUQ` (AVX-512F-VL) |
 | `MUL .2D` | `VPMULLQ` (AVX-512DQ) |
 | Packed FP64↔int64 converts `.2D` | `CVTTPD2QQ`/`CVTUQQ2PD` (AVX-512DQ) |
