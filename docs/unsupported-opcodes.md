@@ -79,7 +79,7 @@ Both JIT tiers bail; the interpreter is correct. Filter the generated table for
 
 | Class | Examples | Why |
 |---|---|---|
-| **Crypto residue** | `SHA1*`, `SHA512*`, `SM3*`, `SM4*`, `EOR3`/`BCAX`/`RAX1`/`XAR` | No x86 baseline primitive for SHA512/SM3/SM4; the ARM and x86 SHA round decompositions are non-isomorphic and a wrong round silently corrupts output. Deferred as low value — Android crypto routes through host BoringSSL/Conscrypt. |
+| **Crypto residue** | `SHA512*`, `SM3*`, `SM4*`, `EOR3`/`BCAX`/`RAX1`/`XAR` | No x86 baseline primitive for SHA512/SM3/SM4. AES (via AES-NI), SHA-1 and SHA-256 (scalar-GPR round sequences) and `PMULL` (PCLMULQDQ) are JIT-lowered in both tiers; only these exotic families remain interpreted, and no translation-failure sweep has ever recorded them in a real app. Android crypto routes through host BoringSSL/Conscrypt. |
 | **MTE** | `ADDG`/`SUBG`, `IRG`/`GMI`/`SUBP`, `LDG`/`STG`/`STZG`/… | Interpreter executes with no-MTE-backing semantics. Rarely hot. |
 | **System registers** | `MRS`/`MSR` outside the modelled set, `IC`, `MRRS`/`MSRR`, `SYSP` | The JITs model `NZCV`, `CTR_EL0`, `DCZID_EL0`, `MIDR_EL1`, `TPIDR_EL0`, `FPCR`; the interpreter models a larger set as constants/no-ops. |
 | **Newer atomics** | `RCW*` (ARMv8.9), FP atomics (`LDFADD*`/`LDFMAX*`) | Not yet lowered; vanishingly rare in NDK output. |

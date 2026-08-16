@@ -139,7 +139,7 @@ graph TD
     C --> D["Cache translated code"]
     D --> E["Execute at near-native speed"]
     B -->|"Unsupported instruction hit"| F["Mark address for interpreter"]
-    F --> G["Interpreter simulates instruction<br/><i>complex SIMD, crypto</i>"]
+    F --> G["Interpreter simulates instruction<br/><i>complex SIMD, exotic crypto</i>"]
     E --> H["Update guest state"]
     G --> H
     H --> I["Dispatch loop picks next PC"]
@@ -148,7 +148,7 @@ graph TD
 
 The JIT compiler (called the "Lite Translator") handles the vast majority of instructions — roughly 98% of what a typical app executes. This includes arithmetic, logic, branches, memory loads and stores, and basic SIMD operations.
 
-The interpreter handles the rest: complex or rare SIMD (pairwise operations, widening/narrowing, cross-lane reductions), the crypto families (AES/SHA/SM3/SM4) and IEEE CRC32, and any instruction the JIT hasn't implemented yet. When the JIT encounters an instruction it can't translate, it marks that location for interpreter handling, and the dispatch loop routes future executions of that address to the interpreter. (System calls are *not* in this list — the JIT lowers `SVC` inline; see [§14](#14-syscall-emulation).) Hot regions also get a third, faster path — the heavy optimizer — described in [§6](#6-three-execution-tiers-lite-jit-heavy-optimizer-and-interpreter).
+The interpreter handles the rest: complex or rare SIMD (pairwise operations, widening/narrowing, cross-lane reductions), the exotic crypto families (SHA-512, SM3/SM4) and IEEE CRC32, and any instruction the JIT hasn't implemented yet. When the JIT encounters an instruction it can't translate, it marks that location for interpreter handling, and the dispatch loop routes future executions of that address to the interpreter. (System calls are *not* in this list — the JIT lowers `SVC` inline; see [§14](#14-syscall-emulation).) Hot regions also get a third, faster path — the heavy optimizer — described in [§6](#6-three-execution-tiers-lite-jit-heavy-optimizer-and-interpreter).
 
 This dual approach gives Digitalis near-native performance for the common case while maintaining correctness for the full ARM64 instruction set.
 
@@ -1397,7 +1397,7 @@ Some ARM64 operations have direct x86_64 equivalents — the JIT emits a single 
 - **Bit manipulation**: ARM64's `REV` (byte reverse) maps to x86_64's `BSWAP` — a single instruction for endianness conversion
 - **Count leading zeros**: ARM64's `CLZ` maps to x86_64's `BSR` (bit scan reverse) + `XOR 63` — two instructions to find the highest set bit and compute the leading zero count
 
-Not all ARM64 instructions have hardware equivalents on x86_64. For example, the IEEE `CRC32B/H/W/X` instructions are handled entirely by the interpreter using software table-based computation: x86_64's hardware `CRC32` (SSE4.2) uses the Castagnoli polynomial, which matches ARM's `CRC32C*` (those *are* JIT-lowered) but not the IEEE polynomial of the plain `CRC32*` group. Similarly, the AES/SHA crypto instructions decode their rounds differently from x86 AES-NI/SHA-NI, so they remain interpreter-executed.
+Not all ARM64 instructions have hardware equivalents on x86_64. For example, the IEEE `CRC32B/H/W/X` instructions are handled entirely by the interpreter using software table-based computation: x86_64's hardware `CRC32` (SSE4.2) uses the Castagnoli polynomial, which matches ARM's `CRC32C*` (those *are* JIT-lowered) but not the IEEE polynomial of the plain `CRC32*` group. The AES and SHA rounds decompose differently from x86 AES-NI/SHA-NI, but that is bridged rather than avoided: AESE/AESD map onto AESENCLAST/AESDECLAST with a zero round key (the SubBytes/ShiftRows halves without MixColumns), AESMC composes AESDECLAST+AESENC, and the SHA-1/SHA-256 round and schedule ops unroll into scalar 32-bit GPR sequences that need no SHA-NI at all — so the whole AES/SHA-1/SHA-256/PMULL surface is JIT-lowered, and only SHA-512 and the SM3/SM4 national-standard families remain interpreter-executed.
 
 The **`intrinsics/`** directory (`arm64_to_all/`, `riscv64_to_all/`) provides architecture-specific intrinsic function implementations. For the ARM64 backend, this directory is currently minimal — most direct mappings live in the JIT itself.
 
@@ -2676,7 +2676,7 @@ Berberis is Google's binary translator in AOSP, originally built for RISC-V-to-x
 
 **JIT — second gear (Heavy Optimizer).** The ARM64 heavy optimizer (`heavy_optimizer/arm64/`) re-translates hot lite-translated regions with global register allocation and loop optimizations, replacing them in the cache. It is the **default** second gear: gear-up is gated to regions of roughly 20+ guest instructions (so tiny loops aren't regressed), and the optimizer is neutral-or-faster than lite across microbenchmarks, ~2x on a register-pressure kernel. Instructions the heavy frontend doesn't yet translate cause it to bail back to the (correct) lite version rather than crash.
 
-**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across consecutive instructions for ~3x speedup), and the fallback path for instructions without a JIT translation — IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the `SUQADD/USQADD .1D/.2D` saturating accumulate, and a handful of host-feature-gated paths (e.g. FP16 without `F16C`). (The I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family was promoted to the JIT and is no longer interpreter-only.)
+**Interpreter.** ARM64 instruction semantics for the full instruction set, the `InterpretBatch()` optimization (reusing Decoder/Interpreter objects across consecutive instructions for ~3x speedup), and the fallback path for instructions without a JIT translation — IEEE CRC32, the SHA-512 and SM3/SM4 crypto families, the `SUQADD/USQADD .1D/.2D` saturating accumulate, and a handful of host-feature-gated paths (e.g. FP16 without `F16C`). (The I8MM `USDOT/SUDOT/SMMLA/UMMLA/USMMLA` family was promoted to the JIT and is no longer interpreter-only.)
 
 **Syscall Emulation.** ARM64-to-x86_64 syscall number mapping with inline `SVC` lowering in the JIT, the futex BSS workaround for Bionic's pthread_mutex implementation, BSS partial-page zeroing in `sys_mman_emulation.cc`, fdsan-safe `close`/`close_range`/`dup3`, and the `F_SETPIPE_SZ` fcntl passthrough that keeps guest tombstones working.
 
@@ -3153,7 +3153,8 @@ This appendix shows how ARM64 instructions map to x86_64 instructions in the Dig
 | `SUQADD/USQADD` (`.1D`/`.2D`) | — | Interpreter | 64-bit-element saturating accumulate (65-bit saturation; rare) |
 | `CRC32CB/CH/CW/CX` | `crc32` (SSE4.2) | JIT | Castagnoli poly == host `crc32`; bails to interpreter if SSE4.2 absent |
 | `CRC32B/H/W/X` | — | Interpreter | IEEE 802.3 poly (0x04C11DB7) — no direct host instruction |
-| `AESE/AESD/AESMC/AESIMC`, `SHA1*/SHA256*/SHA512*`, `SM3*/SM4*` | — | Interpreter | Crypto (decoded; interpreter-executed; non-isomorphic to x86 AES-NI/SHA-NI) |
+| `AESE/AESD/AESMC/AESIMC`, `SHA1*`, `SHA256*`, `PMULL` | — | JIT (both tiers) | Crypto: AES via AES-NI last-round identities, SHA-1/SHA-256 via scalar-GPR round sequences, PMULL via PCLMULQDQ |
+| `SHA512*`, `SM3*/SM4*`, `EOR3/BCAX/RAX1/XAR` | — | Interpreter | Exotic crypto (no x86 baseline primitive; never observed in real-app sweeps) |
 | `PMULL/PMULL2` (`.1Q`/`.8H`) | `pclmulqdq` / widen+seq | JIT | Polynomial multiply long (`.1Q` via `PCLMULQDQ`) |
 
 ### Summary
@@ -3164,7 +3165,7 @@ pie title Instruction Translation Coverage
     "Interpreter (fallback)" : 2
 ```
 
-The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter now handles only a small tail: **syscalls, most system-register access, IEEE CRC32, the AES/SHA/SM3/SM4 crypto families, the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2). Recent JIT promotions moved vector `FCVTN/FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE/URSQRTE`, the full I8MM dot/matmul family (`USDOT/SUDOT/SMMLA/UMMLA/USMMLA`), `.2S<-.2D` `ADDHN`–`RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and the FP32 across-lanes reductions (`FMAXV/FMINV/FMAXNMV/FMINNMV`) with vector `FADDP` onto the native path; the `ORR/BIC #imm` vector forms were corrected to read-modify-write. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
+The JIT covers all **arithmetic, logic, shifts, moves, branches, conditionals, loads/stores (single- and multi-structure, including de-interleaving `LD2-4`/`ST2-4`), atomics, scalar FP (including conversions, fused multiply-add, `FCSEL`, and FP16), the full vector modified-immediate family (`MOVI/MVNI/FMOV`), and the bulk of NEON SIMD compute** — element-wise arithmetic/logical/compare, min/max, widening multiply-accumulate, shifts (by immediate and register), integer narrowing (`XTN/SQXTN`), pairwise and across-lanes reductions, permute/copy/extract/table, vector FP, and the FCMA/DotProd/BFloat16 families. Together these make up ~98% of executed code in typical apps. The interpreter now handles only a small tail: **syscalls, most system-register access, IEEE CRC32, the SHA-512 and SM3/SM4 crypto families, MTE tag ops, and host-feature-gated paths** (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2); the AES/SHA-1/SHA-256/PMULL crypto surface is JIT-lowered. Recent JIT promotions moved vector `FCVTN/FCVTL` (incl. FP16), the `.2D→.2S` saturating extracts, `URECPE/URSQRTE`, the full I8MM dot/matmul family (`USDOT/SUDOT/SMMLA/UMMLA/USMMLA`), `.2S<-.2D` `ADDHN`–`RSUBHN`, `.2S/.4S` `SUQADD/USQADD`, scalar `REV32`, and the FP32 across-lanes reductions (`FMAXV/FMINV/FMAXNMV/FMINNMV`) with vector `FADDP` onto the native path; the `ORR/BIC #imm` vector forms were corrected to read-modify-write. See [`unsupported-opcodes.md`](unsupported-opcodes.md) for the precise current split.
 
 ---
 
@@ -3348,7 +3349,7 @@ See [section 4](#4-the-big-picture) for the prose walkthrough; the diagram above
 | Engine | Coverage | Handles |
 |---|---|---|
 | Lite Translator (JIT) | ~98% of executed instructions | integer, branch, load/store, system, scalar FP (incl. conversions, FMA, FCSEL, FP16), and most NEON SIMD (arithmetic, logical, compare, shifts, widening MAC, reductions, permute, vector FP, FCMA/DotProd/BF16) |
-| Interpreter | fallback | syscalls, most system-register access, IEEE `CRC32`, crypto (AES/SHA/SM3/SM4), the 64-bit-element `SUQADD/USQADD .1D/.2D` forms, MTE tag ops, and host-feature-gated paths (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2) |
+| Interpreter | fallback | syscalls, most system-register access, IEEE `CRC32`, exotic crypto (SHA-512, SM3/SM4), MTE tag ops, and host-feature-gated paths (FP16 without F16C, FMA without host FMA, CRC32C without SSE4.2) |
 
 A `kInterpreted` marker is installed at any guest PC the JIT can't handle, so subsequent dispatcher entries route directly to the interpreter instead of re-attempting compilation. See [section 6](#6-three-execution-tiers-lite-jit-heavy-optimizer-and-interpreter) and [section 9](#9-translation-cache-and-dispatch-loop).
 
