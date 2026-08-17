@@ -13,7 +13,8 @@
     "version": "26.05.40.0",
     "category": "app",
     "note": "productivity",
-    "file": "top-apps/com.Slack_26.05.40.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+    "bundle": true,
+    "file": "slack/base.apk"
   },
   {
     "package": "com.alibaba.aliexpresshd",
@@ -64,14 +65,6 @@
     "file": "top-apps/com.ebay.mobile_6.257.1.1_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
-    "package": "com.intsig.camscanner",
-    "slug": "intsig-pte/camscanner-phone-pdf-creator",
-    "version": "7.17.5.2605140000",
-    "category": "app",
-    "note": "productivity",
-    "file": "top-apps/com.intsig.camscanner_7.17.5.2605140000_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
-  },
-  {
     "package": "com.linkedin.android",
     "slug": "linkedin/linkedin-linkedin",
     "version": "6.1.1",
@@ -105,11 +98,12 @@
   },
   {
     "package": "com.reddit.frontpage",
+    "bundle": true,
     "slug": "redditinc/reddit",
     "version": "2026.22.0",
     "category": "app",
     "note": "social",
-    "file": "top-apps/com.reddit.frontpage_2026.22.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+    "file": "reddit/base.apk"
   },
   {
     "package": "com.shazam.android",
@@ -142,14 +136,6 @@
     "category": "app",
     "note": "browser",
     "file": "top-apps/org.mozilla.firefox_151.0.2_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
-  },
-  {
-    "package": "org.telegram.messenger",
-    "slug": "telegram-fz-llc/telegram",
-    "version": "12.7.3",
-    "category": "app",
-    "note": "messaging",
-    "file": "top-apps/org.telegram.messenger_12.7.3_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
     "package": "org.thoughtcrime.securesms",
