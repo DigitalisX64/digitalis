@@ -21,7 +21,11 @@ Icon resolution (authoritative only — never guesses a random asset):
   4. If a layer is a vector drawable (no raster — e.g. Firefox, WhatsApp), or
      no APK is available, a deterministic monogram avatar (rounded colored
      tile with the app's initials) is generated instead, so every row still
-     has an icon.
+     has an icon. To replace those monograms with the REAL icons, run
+     render-app-icons.py afterwards: it renders them faithfully on the booted
+     emulator (the only reliable source for vector/obfuscated adaptive icons).
+     This script skips packages whose icon already exists (unless --force), so
+     it never clobbers an emulator-rendered icon.
 
 Usage:
     extract-app-icons.py [--aapt2 PATH] [--repo PATH] [--force]
