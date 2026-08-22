@@ -116,10 +116,10 @@
   {
     "package": "com.twitter.android",
     "slug": "x-corp/twitter",
-    "version": "677",
+    "version": "10.72.2-release.0",
     "category": "app",
     "note": "social",
-    "file": "top-apps/com.twitter.android_677_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+    "file": "top-apps/com.twitter.android_10.72.2-release.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
     "package": "com.zhiliaoapp.musically",
