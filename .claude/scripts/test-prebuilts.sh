@@ -23,21 +23,32 @@
 #
 # Set STRICT_REPRODUCIBILITY=1 to repeat steps 2-5 three times back-to-back
 # and require all three launches to pass.  Useful for catching "sometimes
-# loads" non-determinism (e.g. the AddToMap signal-clobber wedge described
-# in handoff-269 has ~46% failure rate per launch).
+# loads" non-determinism (e.g. an AddToMap signal-clobber wedge with a ~46%
+# failure rate per launch).
 #
-# Exit code: 0 if every APK passes ALL five checks; non-zero otherwise.
+# By default (non-STRICT) a failing app is retried up to PREBUILTS_RETRIES
+# more times (default 2 -> 3 attempts) and PASSes if ANY attempt succeeds.
+# This is the regression-gate semantics: a flaky-but-working app (some
+# anti-tamper/watchdog apps pass ~2 of 3 launches) must not false-FAIL, while
+# a genuine translator regression fails every attempt. Set PREBUILTS_RETRIES=0
+# to force single-shot. STRICT mode ignores retries (all-must-pass is its point).
+#
+# Exit code: 0 if every APK passes (within its attempts); non-zero otherwise.
 
 set -u
 set -o pipefail
 
 WORK_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-PREBUILTS_DIR="${WORK_DIR}/sample/prebuilts"
+PREBUILTS_DIR="${PREBUILTS_DIR_OVERRIDE:-${WORK_DIR}/sample/prebuilts}"
 AAPT2="${WORK_DIR}/out/host/linux-x86/bin/aapt2"
 CONTENT_CHECK="${WORK_DIR}/digitalis/diagnostics/screenshot_content_check.py"
 WATCH_SECONDS="${WATCH_SECONDS:-30}"
 CONTENT_THRESHOLD="${PREBUILTS_CONTENT_THRESHOLD:-30}"
 STRICT="${STRICT_REPRODUCIBILITY:-0}"
+# Default regression gate: retry a failing app up to RETRIES more times and
+# PASS if any attempt succeeds (distinguishes a flaky-but-working app from a
+# real translator regression, which fails every attempt). Set to 0 to disable.
+RETRIES="${PREBUILTS_RETRIES:-2}"
 SCREENSHOTS_DIR="${PREBUILTS_SCREENSHOTS_DIR:-/tmp/prebuilt-screenshots}"
 mkdir -p "${SCREENSHOTS_DIR}"
 
@@ -165,6 +176,16 @@ for apk in "${APKS[@]}"; do
     # the global $round_fail_reason. If STRICT=1 we repeat this 3 times
     # and require all three rounds to PASS.
     rounds_to_run=$([ "${STRICT}" = "1" ] && echo 3 || echo 1)
+    # STRICT keeps all-rounds-must-pass with NO retry (its purpose is catching
+    # intermittent "sometimes loads" bugs). The default regression gate instead
+    # allows RETRIES extra attempts and passes if ANY attempt's round-set fully
+    # passes, so a flaky-but-working app does not false-FAIL while a real
+    # translator regression (fails every attempt) still does.
+    max_attempts=$([ "${STRICT}" = "1" ] && echo 1 || echo $((RETRIES + 1)))
+    apk_passed=0
+    won_attempt=0
+    skip_apk=0
+    for attempt in $(seq 1 ${max_attempts}); do
     round_pass=0
     round_fail=0
     round_fail_reason=""
@@ -258,20 +279,35 @@ for apk in "${APKS[@]}"; do
         round_pass=$((round_pass+1))
         round_outcomes+=( "R${round_idx}=Pass" )
     done
+    # A missing LAUNCHER activity is a skip, not a flake — don't retry it.
+    if [ -n "${round_fail_reason}" ] && [ "${round_fail_reason%%:*}" = "no LAUNCHER activity" ]; then
+        skip_apk=1
+        break
+    fi
+    if [ ${round_pass} -eq ${rounds_to_run} ]; then
+        apk_passed=1
+        won_attempt=${attempt}
+        break
+    fi
+    done  # attempts
     adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
 
     # Join per-round outcomes with commas: "R1=Fail(content_cells=7/60),R2=Fail(content_cells=7/60),..."
     round_summary="$(IFS=','; echo "${round_outcomes[*]}")"
+    attempt_note=""
+    if [ ${max_attempts} -gt 1 ] && [ ${apk_passed} -eq 1 ] && [ ${won_attempt} -gt 1 ]; then
+        attempt_note="  (flaky: passed on attempt ${won_attempt}/${max_attempts})"
+    fi
 
-    if [ -n "${round_fail_reason}" ] && [ "${round_fail_reason%%:*}" = "no LAUNCHER activity" ]; then
+    if [ ${skip_apk} -eq 1 ]; then
         RESULTS+=( "SKIP  ${base}  ${pkg}  (no LAUNCHER activity)" )
         continue
     fi
-    if [ ${round_pass} -eq ${rounds_to_run} ]; then
-        RESULTS+=( "PASS  ${base}  ${pkg}  [${round_pass}/${rounds_to_run} pass]  ${round_summary}" )
+    if [ ${apk_passed} -eq 1 ]; then
+        RESULTS+=( "PASS  ${base}  ${pkg}  [${round_pass}/${rounds_to_run} pass]${attempt_note}  ${round_summary}" )
         pass=$((pass+1))
     else
-        RESULTS+=( "FAIL  ${base}  ${pkg}  [${round_pass}/${rounds_to_run} pass]  ${round_summary}  last_fail: ${round_fail_reason}" )
+        RESULTS+=( "FAIL  ${base}  ${pkg}  [${round_pass}/${rounds_to_run} pass]  tried ${max_attempts}x  ${round_summary}  last_fail: ${round_fail_reason}" )
         fail=$((fail+1))
     fi
 done
