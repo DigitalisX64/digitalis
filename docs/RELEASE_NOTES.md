@@ -1,3 +1,58 @@
+# Digitalis — The Linker Apps Go Looking For: Native Inline Hooking, MSA OAID, NetEase Cloud Music (2026-08-23)
+
+Two guest-linker seams that gate a whole class of real apps — native
+inline-hook engines and the MSA OAID device-id SDK — plus the
+samples that pin them. Both come down to how a translated ARM64 process
+presents its dynamic linker, which under Berberis is split in two: the real
+guest ARM64 linker (translated, mapped read-only) and the host x86_64 linker
+that is the process's actual ELF interpreter. App code that introspects "the
+linker" has to be pointed at the right one.
+
+- **Native inline hooking works under translation.** ByteDance's ShadowHook /
+  xDL resolves the dynamic linker's non-exported internals by re-opening the
+  path it reports through `dl_iterate_phdr` — `/system/bin/linker64`, which on
+  the x86_64 host image symlinks to the host linker, so `xDL` read a
+  wrong-architecture ELF and init aborted with `INIT_LINKER`. A guest-loader
+  `open()` redirect of `/system/bin/linker64` to the real guest ARM64 linker
+  makes init succeed; UNIQUE-mode inline hooking then installs, fires, chains
+  the original, and unhooks end to end. New gated sample `hello-shadowhook`.
+- **NetEase Cloud Music runs.** Its bundled MSA OAID security library
+  (`libmsaoaidsec.so`) walks the linker's internal `solist` for anti-tamper. It
+  finds the linker's load base by matching a canonical device path
+  (`/apex/com.android.runtime/bin/linker64`) in `/proc/self/maps` — under
+  Berberis that path is the *host x86_64* linker — then pairs it with the guest
+  linker's symbol offset, so it dereferenced host machine code as a soinfo
+  pointer and crashed on the splash. The emulated `/proc/self/maps` now presents
+  the guest ARM64 linker at that canonical path and hides the host linker, so
+  linker-base-by-maps introspection resolves the guest linker consistently and
+  the walk terminates. Isolated repro: `hello-msaoaid`.
+- **Seven new samples** for the native SDKs real apps bundle: `hello-shadowhook`
+  (inline hooking), `hello-msaoaid` (MSA OAID security lib), `hello-tinker`
+  (Tencent Tinker patch primitives), `hello-hiddenapibypass` (LSPosed
+  HiddenApiBypass), `hello-yoga` (Facebook Yoga flexbox), `hello-xcrash` (iQIYI
+  xCrash), and `hello-firebase-crashlytics` (Crashlytics NDK) — the suite
+  catalog is now 139 modules.
+- **New prebuilt regression apps:** the Hypic 9.2.0 and Xingtu photo editors
+  join the drop-in prebuilt gate.
+
+Performance is flat against 2026-08-16: both changes are guest-loader / syscall
+emulation (`/system/bin/linker64` open redirect, `/proc/self/maps` rewriting),
+not translation-tier code, so they leave the interpreter and both JIT tiers
+untouched. The benchmark sweep is within noise of the prior release.
+
+## Verification
+
+Full `berberis_arm64_host_tests` binary: **3,720 pass, zero failures** (two
+by-design skips assert the no-F16C bail path on hosts that have F16C);
+`libberberis_arm64` and `libberberis_riscv64` both build clean. Sample suite
+**157/157 PASS**. The committed microbenchmark table is regenerated from a fresh
+four-mode sweep on this build and every unflagged row is within noise of the
+previous table. NetEase Cloud Music — the release's headline app — comes up to
+its home UI with no crash, and the isolated `hello-msaoaid` repro logs
+`MSAOAID OK`, both on `ro.debuggable` 0 and 1.
+
+---
+
 # Digitalis — The Interpreter Loses Its Tail: +16% Geekbench, SHA-1 and FP16 in the JIT, a 17-App Gate (2026-08-16)
 
 A measurement-first performance cycle, the last two instruction families that
