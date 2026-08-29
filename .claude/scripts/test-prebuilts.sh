@@ -64,38 +64,81 @@ if [ ! -x "${AAPT2}" ]; then
     exit 2
 fi
 
-shopt -s nullglob
-# Non-recursive on purpose: top-apps/ and top-games/ (fetch-prebuilt-apks.py
-# staging) are excluded from this gate.
-APKS=( "${PREBUILTS_DIR}"/*.apk )
 # A split app (one whose store install is base.apk + config/asset splits, e.g. a
 # game shipped as an apkm/xapk) cannot be represented as one installable *.apk —
 # merging the splits into a single APK forces a re-sign, which trips signature
 # anti-tamper and also collides with an already-installed genuine copy. Such an
-# app is dropped in as an immediate SUBDIRECTORY holding its split *.apk files;
-# it is installed with `adb install-multiple`, preserving the original
-# signature. Generic over any split app dropped in this way — no app names are
-# hard-coded. top-apps/ and top-games/ stay excluded (they are fetch staging,
-# not split-app groups).
+# app is dropped in as a SUBDIRECTORY holding its split *.apk files and installed
+# with `adb install-multiple`, preserving the original signature. Splits of one
+# app all declare the SAME package name, so a subdirectory whose APKs resolve to
+# exactly one package is a split-app group; a directory holding two different
+# packages (a benchmark suite kept together, per-ABI copies) is not, and is
+# skipped with a note rather than fed to `install-multiple`, which would reject
+# it — silently ignoring a directory someone deliberately populated is worse.
 #
-# Splits of one app all declare the SAME package name, so that is the test for
-# whether a subdirectory is a split-app group. A directory holding APKs of two
-# different packages is some other kind of grouping (e.g. a benchmark suite kept
-# together, or per-ABI copies of the same app); `install-multiple` would reject
-# it, turning an unrelated drop-in into a gate FAIL. Skip those instead, and say
-# so — silently ignoring a directory someone deliberately populated is worse.
+# Discovery covers the prebuilts root AND the top-apps/ and top-games/ staging
+# areas (fetch-prebuilt-apks.py's drop zone), so every verified app is a
+# regression target. The staging areas are scanned one level deep — their own
+# *.apk files and their split-app subdirectories — and every target is
+# de-duplicated by package name, first occurrence winning, so an app promoted to
+# a root entry is tested from there and its staging copy is skipped rather than
+# launched twice. (benchmark-apps/, a two-package perf suite, resolves to more
+# than one package and is skipped as a non-split-group like any other.)
+declare -A SEEN_PKG
+declare -a APKS
+
+pkg_of_apk() { "${AAPT2}" dump packagename "$1" 2>/dev/null | head -1; }
+
+# Echo a directory's single package name, or nothing if its APKs span 0 or >1
+# packages (i.e. it is not one app's split group).
+split_dir_pkg() {
+    local d="$1" s np
+    local sp=( "${d%/}"/*.apk )
+    [ ${#sp[@]} -eq 0 ] && return
+    np="$(for s in "${sp[@]}"; do pkg_of_apk "${s}"; done | sort -u | grep -c .)"
+    [ "${np}" -eq 1 ] && pkg_of_apk "${sp[0]}"
+}
+
+# Add a target (single *.apk file or split-app directory) unless an earlier,
+# more-canonical target already claimed its package.
+add_target() {
+    local path="$1" pkg="$2"
+    [ -z "${pkg}" ] && return
+    [ -n "${SEEN_PKG[${pkg}]:-}" ] && return
+    SEEN_PKG[${pkg}]=1
+    APKS+=( "${path}" )
+}
+
+shopt -s nullglob
+# 1. Root single APKs.
+for f in "${PREBUILTS_DIR}"/*.apk; do
+    add_target "${f}" "$(pkg_of_apk "${f}")"
+done
+# 2. Directories. A root-level directory is either a split-app group or, for the
+#    two staging areas, a container scanned one level deeper. Root split groups
+#    are visited before the staging areas (top-apps/top-games sort last), so a
+#    promoted app wins de-duplication over its staging copy.
 for d in "${PREBUILTS_DIR}"/*/; do
     dname="$(basename "${d}")"
-    [ "${dname}" = "top-apps" ] && continue
-    [ "${dname}" = "top-games" ] && continue
-    dsplits=( "${d}"*.apk )
-    [ ${#dsplits[@]} -eq 0 ] && continue
-    dpkgs="$(for s in "${dsplits[@]}"; do
-                 "${AAPT2}" dump packagename "${s}" 2>/dev/null | head -1
-             done | sort -u | grep -c .)"
-    if [ "${dpkgs}" -eq 1 ]; then
-        APKS+=( "${d%/}" )
+    if [ "${dname}" = "top-apps" ] || [ "${dname}" = "top-games" ]; then
+        for f in "${d}"*.apk; do
+            add_target "${f}" "$(pkg_of_apk "${f}")"
+        done
+        for sd in "${d}"*/; do
+            p="$(split_dir_pkg "${sd}")"
+            if [ -n "${p}" ]; then
+                add_target "${sd%/}" "${p}"
+            else
+                echo "[prebuilts] skip ${dname}/$(basename "${sd}")/ — not one app's splits"
+            fi
+        done
+        continue
+    fi
+    p="$(split_dir_pkg "${d}")"
+    if [ -n "${p}" ]; then
+        add_target "${d%/}" "${p}"
     else
+        dpkgs="$(for s in "${d}"*.apk; do pkg_of_apk "${s}"; done | sort -u | grep -c .)"
         echo "[prebuilts] skip ${dname}/ — ${dpkgs} distinct packages, not one app's splits"
     fi
 done

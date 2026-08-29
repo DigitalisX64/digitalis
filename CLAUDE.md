@@ -79,7 +79,7 @@ Any `*.apk` in the `sample/prebuilts/` **root** is an extra regression target, r
 
 - **Mandatory per-cycle gate.** The dispatch loop runs the script at the **end of every cycle**, after `test-samples.sh` and before the handoff, and the handoff copy-pastes its per-APK PASS/FAIL into a `## Prebuilt-APK Status` section. This is how the user tracks prebuilt regressions across cycles — non-negotiable.
 - **Stay generic over whatever is dropped in.** No per-APK scripts, no per-APK CLAUDE.md sections, no hard-coded app names anywhere in the dispatch flow. If one APK needs special handling, the underlying bug belongs in `binary_translation/`, not the script.
-- **Discovery is top-level only.** `top-apps/` and `top-games/` are the staging area for `digitalis/scripts/fetch-prebuilt-apks.py`; never recurse into them, so this gate and the fetch tool's own verification stay independent.
+- **Discovery covers the root plus the staging areas, de-duplicated by package.** The gate discovers root `*.apk` files, root split-app subdirectories, **and** the `top-apps/`/`top-games/` staging areas of `digitalis/scripts/fetch-prebuilt-apks.py` (scanned one level deep — their own `*.apk` files and their split-app subdirs), so every verified app is a regression target. Targets are de-duplicated by package name, first occurrence winning, so an app promoted to a root entry is tested from there and its staging copy is skipped rather than launched twice. A directory whose APKs span more than one package (`benchmark-apps/`, a two-package perf suite; per-ABI copies) is not a split group and is skipped with a note. Keep discovery generic — no hard-coded app names.
 
 ## Key Files for Development
 
