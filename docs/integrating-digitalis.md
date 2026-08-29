@@ -210,6 +210,34 @@ moving on:
 6. **Real apps.** Drop ARM64-only third-party APKs into `sample/prebuilts/`
    and run `.claude/scripts/test-prebuilts.sh`.
 
+## Runtime flags (`ro.berberis.flags`)
+
+The translator reads a comma-separated list of tuning flags from the
+`ro.berberis.flags` system property (or, off-device, the `BERBERIS_FLAGS`
+environment variable). Unknown tokens are logged and ignored. The list is read
+once, early, so set the property in your product's `.prop` (or export the env
+var before launch) rather than expecting a runtime change to take effect. The
+authoritative flag set is the `ConfigFlag` enum in
+`base/include/berberis/base/config_globals.h`; the ones an integrator is likely
+to touch:
+
+- **`glibc-host-thread-id-handoff`** — set this **only** when the translator
+  runs on a **glibc host under a bionic compatibility layer** (a non-Android
+  runtime such as Drion, not the stock Digitalis emulator or an Android device).
+  When a new guest thread's static TLS is seeded, Berberis normally copies the
+  host's `TLS_SLOT_THREAD_ID` (`%fs+0x08`) into the guest's thread-id slot,
+  which is correct on a bionic host where that slot holds a
+  `pthread_internal_t*`. On glibc that slot is the DTV pointer, so the guest
+  would start with garbage where bionic expects the pthread record. With this
+  flag on, `GuestThread::InitStaticTls` instead reads the id from
+  `TLS_SLOT_NATIVE_BRIDGE_GUEST_STATE`, where such a host seeds a synthetic
+  bionic pthread record before the thread starts. **Never set it on a real
+  bionic host** — it is off by default, and with it off the generated code is
+  byte-identical to before (the ordinary `TLS_SLOT_THREAD_ID` load).
+- **`disable-ir-check`** — skip the MachineIR validation passes in the
+  optimizing backend. The checks stay on by default (and in host tests); a
+  production image can ship this to drop the per-translation validation cost.
+
 ## Version compatibility
 
 Digitalis tracks AOSP 16 (API 36). The guest libraries are built from the same
