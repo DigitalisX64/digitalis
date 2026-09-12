@@ -74,6 +74,23 @@ def _manifest_line(key, value):
     return b"\r\n".join(chunks) + b"\r\n"
 
 
+def _is_signature_entry(name):
+    """True for the JAR signature files a re-sign must replace.
+
+    Only these may be dropped when re-signing. Everything else under META-INF/ is
+    application payload and must survive: `META-INF/services/*` holds ServiceLoader
+    provider registrations, and losing one is invisible until the app throws at
+    runtime ("No <X>Provider found on classpath") — which is exactly what a blanket
+    `META-INF/` strip used to do to every bundle-merged APK here.
+    """
+    if "/" in name[len("META-INF/"):]:
+        return False  # a subdirectory: never a signature file
+    upper = name.upper()
+    return (upper == "META-INF/MANIFEST.MF"
+            or upper.startswith("META-INF/SIG-")
+            or upper.endswith((".SF", ".RSA", ".DSA", ".EC")))
+
+
 def _b64(b):
     return base64.b64encode(b).decode("ascii")
 
@@ -82,7 +99,8 @@ def _v1_sign(src, dst, key, cert):
     with zipfile.ZipFile(src) as zin:
         entries = [(zi.filename, zin.read(zi.filename))
                    for zi in zin.infolist()
-                   if not zi.filename.startswith("META-INF/")
+                   if not (zi.filename.startswith("META-INF/")
+                           and _is_signature_entry(zi.filename))
                    and not zi.is_dir()]
 
     main = (_manifest_line("Manifest-Version", "1.0")
@@ -118,7 +136,7 @@ def _v1_sign(src, dst, key, cert):
 
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
         for zi in zin.infolist():
-            if zi.filename.startswith("META-INF/"):
+            if zi.filename.startswith("META-INF/") and _is_signature_entry(zi.filename):
                 continue
             zout.writestr(zi, zin.read(zi.filename))
         zout.writestr("META-INF/MANIFEST.MF", manifest_full)
