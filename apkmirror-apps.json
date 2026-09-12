@@ -210,6 +210,14 @@
     "file": "top-games/com.miHoYo.GenshinImpact_6.6.0_44318314_44476906_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
+    "package": "com.sega.sonic2.runner",
+    "slug": "sega/sonic-the-hedgehog-2-classic",
+    "version": "3.0.0",
+    "category": "game",
+    "note": "game (SEGA Retro Engine)",
+    "file": "top-games/com.sega.sonic2.runner_3.0.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+  },
+  {
     "package": "com.yodo1.crossyroad",
     "slug": "hipster-whale/crossy-road",
     "version": "7.11.1",
