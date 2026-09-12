@@ -19,7 +19,10 @@
   recorded targets to 137); installs are pinned to `--abi arm64-v8a` so a
   multi-ABI APK cannot run natively and still report green; app-embedded crash
   reporters no longer count as crashes; and the arm64 3DMark and Geekbench builds
-  are launch-tested instead of skipped with their directory.
+  are launch-tested instead of skipped with their directory. The APK fetcher also
+  stopped deleting `META-INF/services` when it re-signs a merged bundle -- it had
+  been stripping ServiceLoader registrations out of every bundle app we staged,
+  which is what killed two of them at startup.
 
 Also worth recording: four Unity titles failed the gate reproducibly and turned
 out to be an emulator-exhaustion flake -- all four pass after a reboot.
@@ -30,7 +33,7 @@ Re-baseline before trusting a tier differential.
 `berberis_arm64_host_tests` **3,729 pass, zero failures** (two by-design skips),
 including a new 8-test AndroidHardwareBuffer suite; `libberberis_arm64` and
 `libberberis_riscv64` both build clean; sample suite **157/157 PASS**; prebuilt
-gate **134 PASS / 3 FAIL** over 137 targets. Not comparable to the previously
+gate **135 PASS / 2 FAIL** over 137 targets. Not comparable to the previously
 recorded 17-target figure, because discovery, ABI pinning, crash-reporter
 filtering and the exhaustion guard all changed this cycle. The Vulkan fix was
 verified on the reporter's Intel hardware with Mesa ANV and real Vulkan games --
