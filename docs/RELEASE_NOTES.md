@@ -29,13 +29,12 @@ Re-baseline before trusting a tier differential.
 
 `berberis_arm64_host_tests` **3,729 pass, zero failures** (two by-design skips),
 including a new 8-test AndroidHardwareBuffer suite; `libberberis_arm64` and
-`libberberis_riscv64` both build clean; sample suite **157/157 PASS**. The prebuilt gate
-was itself rebuilt this cycle (discovery, ABI pinning, crash-reporter filtering,
-an exhaustion guard), so its count is not comparable to the previously recorded
-17-target figure; a full sweep under the new gate is being re-run and will be
-recorded separately. The Vulkan fix was verified on the reporter's Intel
-hardware with Mesa ANV and real Vulkan games -- the emulator's encoder is
-precisely what cannot reproduce it.
+`libberberis_riscv64` both build clean; sample suite **157/157 PASS**; prebuilt
+gate **134 PASS / 3 FAIL** over 137 targets. Not comparable to the previously
+recorded 17-target figure, because discovery, ABI pinning, crash-reporter
+filtering and the exhaustion guard all changed this cycle. The Vulkan fix was
+verified on the reporter's Intel hardware with Mesa ANV and real Vulkan games --
+the emulator's encoder is precisely what cannot reproduce it.
 
 ---
 
