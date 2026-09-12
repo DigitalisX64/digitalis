@@ -211,6 +211,21 @@ for apk in "${APKS[@]}"; do
         fi
     fi
 
+    # A multi-ABI ("universal") APK that carries an x86/x86_64 slice installs as
+    # the HOST abi, so the guest never enters translation and the launch proves
+    # nothing about the translator — banking that as a PASS is worse than not
+    # running it, because it hides the absent coverage. Report it instead.
+    # Generic: keyed on the installed primaryCpuAbi, no app names. A package with
+    # no native code (primaryCpuAbi=null) still exercises the guest Java path and
+    # is left alone.
+    inst_abi="$(adb shell dumpsys package "${pkg}" 2>/dev/null | grep -m1 primaryCpuAbi | tr -d ' \r' | cut -d= -f2)"
+    case "${inst_abi}" in
+        x86|x86_64)
+            RESULTS+=( "SKIP  ${base}  ${pkg}  (installed as ${inst_abi} — multi-ABI APK, NOT translated)" )
+            continue
+            ;;
+    esac
+
     adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
     adb logcat -c >/dev/null 2>&1 || true
 
@@ -272,7 +287,16 @@ for apk in "${APKS[@]}"; do
         # print the signal *name* ("Setting SIGSEGV to SIG_DFL" on a child's
         # normal exit) but are not crash reports (debuggerd's "Fatal signal" is),
         # so the bare "SIG…SEGV" alternation would otherwise false-positive.
-        round_log="$(adb logcat -d 2>/dev/null | grep -v "libsigchain:" | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b|Scheduling restart of crashed service.*SandboxedProcessService" | head -3 || true)"
+        # Drop app-EMBEDDED crash reporters for the same reason: Unity/il2cpp
+        # ("CRASH"), Embrace and Crashlytics print their own report containing
+        # "signal 11 (SIGSEGV)" for a fault their handler swallowed, which the
+        # bare signal alternation matches even though the process is alive and
+        # healthy. debuggerd stays the authority — a genuine fatal guest fault
+        # always leaves its "Fatal signal"/tombstone, which is matched above, so
+        # nothing real is lost. (Observed: com.vincentb.MobControl FAILed on an
+        # Embrace line while rendering fine on re-run.) A reporter line whose
+        # fault IS fatal still fails via the dead-pid or blank-content checks.
+        round_log="$(adb logcat -d 2>/dev/null | grep -vE "libsigchain:| CRASH +:|\[Embrace\]|CrashlyticsCore" | grep -E "Fatal signal|Undefined arm64 instruction|FATAL EXCEPTION|libc.*tgkill|signal 11|signal 6|signal 4|SIG(11|6|4|SEGV|ABRT|ILL)\b|Scheduling restart of crashed service.*SandboxedProcessService" | head -3 || true)"
         if [ -n "${round_log}" ]; then
             round_fail_reason="round ${round_idx}: ${round_log:0:120}"
             round_fail=$((round_fail+1))
