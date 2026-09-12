@@ -109,6 +109,29 @@ add_target() {
     APKS+=( "${path}" )
 }
 
+# A directory whose APKs span more than one package is not one app's split group.
+# Rather than dropping it, enroll each APK as its own single-APK target. That is
+# how benchmark-apps/ gets verified: it holds a 3DMark pair and a Geekbench pair,
+# each built for arm64-v8a and for x86_64, so it is two packages and never was a
+# split group. Per-package de-duplication keeps only the first APK seen for each
+# package and "-arm64-v8a" sorts before "-x86_64", so the translated build is the
+# one enrolled and the native build -- which exists solely as the benchmark
+# denominator and must not be treated as a regression target -- is left out. The
+# --abi pin and the primaryCpuAbi backstop catch any x86-only straggler anyway.
+add_multi_package_dir() {
+    local d="$1" label="$2" f n=0
+    for f in "${d%/}"/*.apk; do
+        [ -f "${f}" ] || continue
+        add_target "${f}" "$(pkg_of_apk "${f}")"
+        n=$((n+1))
+    done
+    if [ ${n} -eq 0 ]; then
+        echo "[prebuilts] skip ${label} — no *.apk files"
+    else
+        echo "[prebuilts] ${label} — ${n} APKs spanning >1 package, enrolled individually"
+    fi
+}
+
 shopt -s nullglob
 # 1. Root single APKs.
 for f in "${PREBUILTS_DIR}"/*.apk; do
@@ -129,7 +152,7 @@ for d in "${PREBUILTS_DIR}"/*/; do
             if [ -n "${p}" ]; then
                 add_target "${sd%/}" "${p}"
             else
-                echo "[prebuilts] skip ${dname}/$(basename "${sd}")/ — not one app's splits"
+                add_multi_package_dir "${sd}" "${dname}/$(basename "${sd}")/"
             fi
         done
         continue
@@ -138,8 +161,7 @@ for d in "${PREBUILTS_DIR}"/*/; do
     if [ -n "${p}" ]; then
         add_target "${d%/}" "${p}"
     else
-        dpkgs="$(for s in "${d}"*.apk; do pkg_of_apk "${s}"; done | sort -u | grep -c .)"
-        echo "[prebuilts] skip ${dname}/ — ${dpkgs} distinct packages, not one app's splits"
+        add_multi_package_dir "${d}" "${dname}/"
     fi
 done
 shopt -u nullglob
