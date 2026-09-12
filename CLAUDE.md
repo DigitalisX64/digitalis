@@ -17,7 +17,9 @@ ARM64 APK (arm64-v8a only)
   -> Guest Loader (TinyLoader) -> ARM64 linker64 + libraries
   -> ARM64 App Code
   -> Proxy Libraries (libvulkan, libc, libm, etc.) -> host APIs
-  -> Host GPU (GFXStream VkDecoder for Vulkan)
+  -> Host Vulkan ICD -> Host GPU
+     (GFXStream VkDecoder on the emulator; a real in-process vendor
+      driver such as Mesa ANV on a bare-metal x86_64 device)
 ```
 
 Three execution tiers, all reachable for the same guest code:

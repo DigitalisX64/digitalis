@@ -525,7 +525,7 @@ graph TD
         PROXY["Proxy library<br/><i>libberberis_proxy_libvulkan.so</i>"]
         MARSHAL["Convert ARM64 args → x86_64"]
         HOST_LIB["Host library"]
-        GPU["GFXStream VkDecoder → Host GPU"]
+        GPU["Host Vulkan ICD → Host GPU<br/><i>GFXStream VkDecoder on the emulator;<br/>real in-process vendor driver on bare metal</i>"]
         GUEST_API --> PROXY --> MARSHAL --> HOST_LIB --> GPU
     end
 
@@ -557,7 +557,7 @@ When Java code calls a native method, the NativeBridge creates a *trampoline* �
 
 For untranslated code, the JIT compiler (Lite Translator) kicks in: it decodes ARM64 instructions, maps guest registers to host registers, and emits x86_64 machine code. The translated code is installed in the cache for reuse. For instructions the JIT can't handle (syscalls, complex SIMD), the interpreter takes over, simulating each instruction by directly updating the guest CPU state.
 
-When guest code calls Android APIs (Vulkan, libc, etc.), proxy libraries intercept the call, convert arguments between ARM64 and x86_64 ABIs, and forward to the host library. For Vulkan specifically, calls pass through GFXStream's VkDecoder to reach the host GPU.
+When guest code calls Android APIs (Vulkan, libc, etc.), proxy libraries intercept the call, convert arguments between ARM64 and x86_64 ABIs, and forward to the host library. For Vulkan specifically, the proxy forwards into the host's x86_64 Vulkan loader, and what sits behind that loader depends on the product: on the Digitalis emulator it is GFXStream's VkDecoder (`vulkan.ranchu`), which encodes the calls and replays them on the host GPU; on a bare-metal x86_64 device it is the real vendor ICD (e.g. Mesa ANV), loaded **in-process** and consuming the forwarded structs directly. Both are supported, and the difference is not cosmetic — an encoder re-serialises everything it is handed, while an in-process driver dereferences it, so marshalling mistakes that the emulator hides are fatal on a real device (see §13).
 
 ### Going Deeper
 
@@ -1805,7 +1805,48 @@ only as a fallback. Cached per window: the consumer usage it needs lives across
 the BufferQueue, so asking is a binder round trip, and neither half belongs on a
 per-frame path. `hello-nativewindow` holds this to account, posting and reading
 back byte-exact through an `ImageReader` — including 642×362, whose 656-pixel
-rows exercise real padding. And the **host-call redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
+rows exercise real padding.
+
+A third override answers a different failure shape: the upstream trampoline is not
+*incomplete*, it is **lossy on the way in**. The generated Vulkan proxy knows only
+the structs its API registry was generated from, and
+`VK_ANDROID_external_memory_android_hardware_buffer` was filtered out of that
+registry — so none of its `pNext` structs are known to it. The generated chain
+walker (`ConvertOptionalStructures`) forwards a chain untouched only while every
+struct in it is both known and layout-compatible; a single unknown struct sends it
+down a rebuild path whose `default: continue` **silently drops** the struct it did
+not recognise. Nothing aborts and nothing is logged: `vkAllocateMemory` simply
+loses its `VkImportAndroidHardwareBufferInfoANDROID`, `vkCreateImage` loses its
+`VkExternalFormatANDROID`, and `vkGetAndroidHardwareBufferPropertiesANDROID` loses
+the output format struct the driver was meant to fill.
+
+On the emulator this is invisible, which is the interesting part. The guest's
+Vulkan ICD there is gfxstream's `vulkan.ranchu` — a command *encoder* that
+re-serialises every struct across the encode boundary, so a chain that arrives
+short is merely encoded short and nothing dereferences the missing state
+in-process. Point the same proxy at a real **in-process vendor ICD** — Mesa ANV on
+a bare-metal Intel device, which is how Digitalis runs outside the emulator — and
+the driver consumes the chain directly: it allocates plain memory instead of
+importing the AndroidHardwareBuffer, builds an image with no external format, and
+then faults deep inside itself a frame later, during first-frame setup. The
+override cannot post-process its way out of that, because the damage is done
+before the upstream trampoline returns. For the affected calls it forwards the
+guest's chain to the host driver **intact** instead — correct under LP64, since
+every struct on these chains is layout-identical across the two architectures and
+carries only plain data or host handles (the `AHardwareBuffer*` is already a host
+object, produced by the proxied allocator), and guest memory shares the host
+address space. The blast radius is kept deliberately small: `vkAllocateMemory` /
+`vkCreateImage` / `vkCreateSamplerYcbcrConversion` sit on every Vulkan app's hot
+path, so they delegate to the upstream trampoline unchanged unless the chain really
+does carry a dropped struct *and* the app left the allocator at default; only the
+two AndroidHardwareBuffer-specific getters always forward. Detection lives in
+`vulkan_android_external_memory.h` so it can be unit-tested on the host, away from
+any device — necessary here, because the emulator's encoder is precisely what
+cannot reproduce the bug. Confirmed on an Intel tablet running Mesa ANV, where it
+is the difference between an ARM64 Unity title reaching its menus and dying on its
+first frame.
+
+And the **host-call redirect** (`digitalis_host_call_redirect.cc`) handles a hardened app that
 skips the normal symbol-lookup path (the linker's jump table, the PLT) and
 branches *directly into a host system library's x86_64 code* — bytes the guest
 CPU-under-translation was never meant to reach: the resulting non-executable-fault is caught by a `HandleNoExec`
@@ -1953,7 +1994,7 @@ An ARM64 Android app doesn't just run its own code — it calls dozens of system
 | **ML** | libneuralnetworks |
 | **Web** | libwebviewchromium_plat_support |
 
-**Vulkan is the primary use case.** ARM64-only games and graphics apps almost always use Vulkan for rendering. The Vulkan proxy path — guest call to `libberberis_proxy_libvulkan.so` to GFXStream's VkDecoder to the host GPU — is the most exercised and most important translation path.
+**Vulkan is the primary use case.** ARM64-only games and graphics apps almost always use Vulkan for rendering. The Vulkan proxy path — guest call to `libberberis_proxy_libvulkan.so`, then to the host Vulkan loader and whatever ICD it resolves (GFXStream's VkDecoder on the emulator, a real in-process vendor driver such as Mesa ANV on bare metal) — is the most exercised and most important translation path.
 
 **OpenGL ES runs on top of Vulkan via ANGLE.** The GLES proxies (`libEGL`, `libGLESv1_CM`, `libGLESv2`, `libGLESv3`) forward the guest's EGL/GLES calls to the host's GLES driver. The Digitalis emulator selects **ANGLE** as that driver (`ro.hardware.egl=angle`, set in `device/generic/goldfish/64bitonly/product/sdk_phone64_x86_64_digitalis.mk`) instead of gfxstream's built-in GLES emulation. ANGLE implements OpenGL ES on top of Vulkan, so GLES calls are translated to Vulkan *inside the guest process* and then ride the same `libvulkan` → GFXStream VkDecoder → host GPU path as native Vulkan. Two consequences matter:
 
