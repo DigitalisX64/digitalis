@@ -1,3 +1,44 @@
+# Digitalis — Off the Emulator: AndroidHardwareBuffer Structs, a glibc Host, and an Honest Gate (2026-09-12)
+
+- **Vulkan against real vendor drivers.** The generated libvulkan proxy silently
+  drops any `pNext` struct it does not recognise, and the whole
+  `VK_ANDROID_external_memory_android_hardware_buffer` extension was missing from
+  its registry -- so `vkAllocateMemory` lost its AHB import and `vkCreateImage`
+  its external format. gfxstream's encoder re-serialises chains and hid this; a
+  real in-process ICD (Mesa ANV on bare-metal Intel) consumes them directly and
+  faults on the first frame. A new libvulkan `digitalis_extra` override forwards
+  the affected calls with their chain intact and delegates everything else to
+  upstream unchanged.
+
+- **glibc hosts.** New opt-in `glibc-host-thread-id-handoff` flag: on a glibc host
+  `TLS_SLOT_THREAD_ID` is glibc's DTV pointer rather than a `pthread_internal_t*`,
+  so the guest thread id comes from `TLS_SLOT_NATIVE_BRIDGE_GUEST_STATE` instead.
+  Off by default, byte-identical codegen when off.
+
+- **The prebuilt gate stopped lying.** Discovery now covers the staging areas (17
+  recorded targets to 137); installs are pinned to `--abi arm64-v8a` so a
+  multi-ABI APK cannot run natively and still report green; app-embedded crash
+  reporters no longer count as crashes; and the arm64 3DMark and Geekbench builds
+  are launch-tested instead of skipped with their directory.
+
+Also worth recording: four Unity titles failed the gate reproducibly and turned
+out to be an emulator-exhaustion flake -- all four pass after a reboot.
+Re-baseline before trusting a tier differential.
+
+## Verification
+
+`berberis_arm64_host_tests` **3,729 pass, zero failures** (two by-design skips),
+including a new 8-test AndroidHardwareBuffer suite; `libberberis_arm64` and
+`libberberis_riscv64` both build clean; sample suite **157/157 PASS**. The prebuilt gate
+was itself rebuilt this cycle (discovery, ABI pinning, crash-reporter filtering,
+an exhaustion guard), so its count is not comparable to the previously recorded
+17-target figure; a full sweep under the new gate is being re-run and will be
+recorded separately. The Vulkan fix was verified on the reporter's Intel
+hardware with Mesa ANV and real Vulkan games -- the emulator's encoder is
+precisely what cannot reproduce it.
+
+---
+
 # Digitalis — The Linker Apps Go Looking For: Native Inline Hooking, MSA OAID, NetEase Cloud Music (2026-08-23)
 
 Two guest-linker seams that gate a whole class of real apps — native
