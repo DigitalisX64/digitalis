@@ -183,11 +183,22 @@ for apk in "${APKS[@]}"; do
             [ "$(basename "${s}")" = "base.apk" ] && base_apk="${s}"
         done
         pkg="$("${AAPT2}" dump packagename "${base_apk}" 2>/dev/null | head -1)"
-        adb install-multiple -r -g "${splits[@]}" >/dev/null 2>&1 && install_ok=1
+        # Force the guest ABI. A multi-ABI ("universal") APK that also carries an
+        # x86/x86_64 slice would otherwise install as the HOST abi, and the app
+        # would run natively -- never entering translation, so the launch proves
+        # nothing while still reporting a green result. --abi pins the arm64
+        # slice, which is the only one this gate is meant to exercise. Harmless
+        # for arm64-only and no-native APKs (verified), so it is applied
+        # unconditionally rather than sniffing each APK's lib/ entries.
+        adb install-multiple -r -g --abi arm64-v8a "${splits[@]}" >/dev/null 2>&1 && install_ok=1
+        # Fall back to an unpinned install if this APK has no arm64 slice at all;
+        # the primaryCpuAbi guard below then reports it rather than testing it.
+        [ ${install_ok} -eq 0 ] && adb install-multiple -r -g "${splits[@]}" >/dev/null 2>&1 && install_ok=1
     else
         base="$(basename "${apk}")"
         pkg="$("${AAPT2}" dump packagename "${apk}" 2>/dev/null | head -1)"
-        adb install -r -g "${apk}" >/dev/null 2>&1 && install_ok=1
+        adb install -r -g --abi arm64-v8a "${apk}" >/dev/null 2>&1 && install_ok=1
+        [ ${install_ok} -eq 0 ] && adb install -r -g "${apk}" >/dev/null 2>&1 && install_ok=1
     fi
 
     if [ -z "${pkg}" ]; then
@@ -211,10 +222,11 @@ for apk in "${APKS[@]}"; do
         fi
     fi
 
-    # A multi-ABI ("universal") APK that carries an x86/x86_64 slice installs as
-    # the HOST abi, so the guest never enters translation and the launch proves
+    # Backstop for the --abi pin above: if a package still ended up on a host abi
+    # (its APK carries no arm64 slice, so the pinned install fell back to an
+    # unpinned one) then the guest never enters translation and the launch proves
     # nothing about the translator — banking that as a PASS is worse than not
-    # running it, because it hides the absent coverage. Report it instead.
+    # running it, because it hides the absent coverage behind a green result.
     # Generic: keyed on the installed primaryCpuAbi, no app names. A package with
     # no native code (primaryCpuAbi=null) still exercises the guest Java path and
     # is left alone.
