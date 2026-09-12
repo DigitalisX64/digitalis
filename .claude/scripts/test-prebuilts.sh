@@ -166,6 +166,100 @@ for d in "${PREBUILTS_DIR}"/*/; do
 done
 shopt -u nullglob
 
+# Emulator exhaustion guard. A full sweep installs and launches 130+ apps into
+# one long-lived emulator. The dominant cost is not fragmentation but LEFTOVER
+# RUNNING APPS: a launched game can sit on hundreds of MB (one observed sweep had
+# a single title holding 889 MB, with ~1.5 GB across leftovers), and once
+# MemAvailable collapses, HEALTHY apps start failing -- blank frames, "failed to
+# attach" start timeouts, SIGSEGVs that vanish after a reboot. Those read as
+# translator regressions and cost real investigation time.
+#
+# So reclaim before rebooting: force-stopping the third-party processes that are
+# actually running returns the memory in seconds, where a reboot costs a minute
+# and (with a low floor and a busy device) can thrash into one reboot per target.
+# Reboot only if reclaiming was not enough, and not more often than the cooldown.
+EMU_MEM_FLOOR_KB="${PREBUILTS_MEM_FLOOR_KB:-700000}"
+EMU_REBOOT_COOLDOWN="${PREBUILTS_REBOOT_COOLDOWN:-15}"
+emu_targets_since_reboot=0
+
+emulator_mem_available_kb() {
+    adb shell "grep -m1 MemAvailable /proc/meminfo" 2>/dev/null | tr -d '\r' | awk '{print $2}'
+}
+
+# A dead or unreachable device must ABORT the sweep, never be reported as a wall
+# of per-app failures. When the emulator dies mid-run every remaining target
+# records "(install failed)" and the run reads as a catastrophic regression --
+# one observed sweep reported 19 PASS / 118 FAIL purely because the emulator
+# process went away at target 20. There is no result to report once the device is
+# gone, so fail loudly instead of manufacturing failures.
+require_live_device() {
+    if ! adb get-state 2>/dev/null | grep -q "device"; then
+        echo "[prebuilts] ABORT: no live adb device (emulator gone). Results so far are incomplete." >&2
+        exit 2
+    fi
+}
+
+# Force-stop the third-party packages that currently have a process. Targeted at
+# what is running rather than everything installed, so it stays quick.
+reclaim_emulator_memory() {
+    local running
+    running="$(adb shell "ps -A -o NAME" 2>/dev/null | tr -d '\r' \
+        | grep -E '^[a-z][a-z0-9_]*(\.[A-Za-z0-9_]+)+' | sed 's/:.*//' | sort -u)"
+    [ -z "${running}" ] && return 0
+    local pkg
+    for pkg in ${running}; do
+        case "${pkg}" in
+            android|com.android.systemui|com.android.settings|com.android.phone) continue ;;
+            com.android.*|com.google.android.*) continue ;;
+        esac
+        adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
+    done
+}
+
+reboot_emulator_and_wait() {
+    echo "[prebuilts] rebooting emulator ..."
+    adb reboot >/dev/null 2>&1 || true
+    sleep 8
+    adb wait-for-device >/dev/null 2>&1 || true
+    for _ in $(seq 1 100); do
+        [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+        sleep 3
+    done
+    # boot_completed precedes package-manager readiness; wait for pm as well.
+    for _ in $(seq 1 40); do
+        adb shell pm list packages >/dev/null 2>&1 && break
+        sleep 3
+    done
+    adb root >/dev/null 2>&1 || true
+    sleep 2
+    emu_targets_since_reboot=0
+}
+
+ensure_emulator_headroom() {
+    local avail
+    require_live_device
+    emu_targets_since_reboot=$((emu_targets_since_reboot + 1))
+    avail="$(emulator_mem_available_kb)"
+    [ -z "${avail}" ] && return 0
+    [ "${avail}" -ge "${EMU_MEM_FLOOR_KB}" ] && return 0
+
+    echo "[prebuilts] MemAvailable ${avail} kB below floor ${EMU_MEM_FLOOR_KB} kB — reclaiming"
+    reclaim_emulator_memory
+    avail="$(emulator_mem_available_kb)"
+    if [ -n "${avail}" ] && [ "${avail}" -ge "${EMU_MEM_FLOOR_KB}" ]; then
+        echo "[prebuilts] reclaimed to ${avail} kB"
+        return 0
+    fi
+
+    if [ "${emu_targets_since_reboot}" -lt "${EMU_REBOOT_COOLDOWN}" ]; then
+        echo "[prebuilts] still ${avail:-unknown} kB; within reboot cooldown, continuing"
+        return 0
+    fi
+    reboot_emulator_and_wait
+    require_live_device
+    echo "[prebuilts] resumed with MemAvailable $(emulator_mem_available_kb) kB"
+}
+
 if [ ${#APKS[@]} -eq 0 ]; then
     echo "[prebuilts] no *.apk files under ${PREBUILTS_DIR} — nothing to test"
     exit 0
@@ -259,6 +353,8 @@ for apk in "${APKS[@]}"; do
             continue
             ;;
     esac
+
+    ensure_emulator_headroom
 
     adb shell am force-stop "${pkg}" >/dev/null 2>&1 || true
     adb logcat -c >/dev/null 2>&1 || true
