@@ -140,10 +140,10 @@
   {
     "package": "org.thoughtcrime.securesms",
     "slug": "signal-foundation/signal-private-messenger",
-    "version": "8.13.0",
+    "version": "8.26.4",
     "category": "app",
     "note": "messaging",
-    "file": "top-apps/org.thoughtcrime.securesms_8.13.0_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
+    "file": "top-apps/org.thoughtcrime.securesms_8.26.4_minAPI21(arm64-v8a)(640dpi)_apkmirror.com.apk"
   },
   {
     "package": "org.videolan.vlc",
