@@ -210,6 +210,14 @@
     "file": "top-games/com.miHoYo.GenshinImpact_6.6.0_44318314_44476906_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
   },
   {
+    "package": "com.pikpok.dr2.play",
+    "slug": "pikpok/into-the-dead-2",
+    "version": "1.85.0",
+    "category": "game",
+    "note": "game (Unity IL2CPP; bundle with asset packs)",
+    "file": "top-games/com.pikpok.dr2.play_1.85.0_minAPI21(arm64-v8a)(nodpi)_apkmirror.com.apk"
+  },
+  {
     "package": "com.sega.sonic2.runner",
     "slug": "sega/sonic-the-hedgehog-2-classic",
     "version": "3.0.0",
