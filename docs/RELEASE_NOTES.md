@@ -1,50 +1,35 @@
-# Digitalis — Off the Emulator: AndroidHardwareBuffer Structs, a glibc Host, and an Honest Gate (2026-09-12)
+# Digitalis — Real GPU Drivers, glibc Hosts, and an Honest Gate (2026-09-13)
 
-- **Vulkan against real vendor drivers.** The generated libvulkan proxy silently
-  drops any `pNext` struct it does not recognise, and the whole
-  `VK_ANDROID_external_memory_android_hardware_buffer` extension was missing from
-  its registry -- so `vkAllocateMemory` lost its AHB import and `vkCreateImage`
-  its external format. gfxstream's encoder re-serialises chains and hid this; a
-  real in-process ICD (Mesa ANV on bare-metal Intel) consumes them directly and
-  faults on the first frame. A new libvulkan `digitalis_extra` override forwards
-  the affected calls with their chain intact and delegates everything else to
-  upstream unchanged.
+- **Vulkan on real vendor drivers.** The libvulkan proxy silently dropped the
+  `VK_ANDROID_external_memory_android_hardware_buffer` structs from `pNext`
+  chains. The emulator's gfxstream encoder hid this; Mesa ANV on bare-metal
+  Intel crashed on the first frame. A `digitalis_extra` override now forwards
+  the affected calls with their chains intact.
 
-- **glibc hosts.** New opt-in `glibc-host-thread-id-handoff` flag: on a glibc host
-  `TLS_SLOT_THREAD_ID` is glibc's DTV pointer rather than a `pthread_internal_t*`,
-  so the guest thread id comes from `TLS_SLOT_NATIVE_BRIDGE_GUEST_STATE` instead.
-  Off by default, byte-identical codegen when off.
+- **glibc hosts.** New opt-in `glibc-host-thread-id-handoff` flag for hosts
+  where `TLS_SLOT_THREAD_ID` holds glibc's DTV pointer instead of a
+  `pthread_internal_t*`. Off by default, with byte-identical codegen when off.
 
-- **The prebuilt gate stopped lying.** Discovery now covers the staging areas (17
-  recorded targets to 137); installs are pinned to `--abi arm64-v8a` so a
-  multi-ABI APK cannot run natively and still report green; app-embedded crash
-  reporters no longer count as crashes; and the arm64 3DMark and Geekbench builds
-  are launch-tested instead of skipped with their directory. The APK fetcher also
-  stopped deleting `META-INF/services` when it re-signs a merged bundle -- it had
-  been stripping ServiceLoader registrations out of every bundle app we staged,
-  which is what killed two of them at startup.
+- **Narrow return values fill the whole register.** Proxied calls returning
+  `bool`, `jboolean` or `jshort` set only the low byte(s) of `x0`, leaving the
+  rest of the caller's first argument behind. C callers never noticed; Rust
+  tests all of `w0`, so Signal died at startup. Every proxy library now returns
+  full register values, and the new `hello-narrowret` sample guards it.
 
-- **Narrow return values fill the whole register.** A proxied call returning
-  `bool`/`jboolean`/`jshort` wrote only its low byte(s) into `x0`, leaving the
-  rest holding the first argument (a `JNIEnv*`). C never noticed; Rust tests
-  `cbz w0`, so Signal's ringrtc saw a pending exception that wasn't there and
-  died at startup. Results are now extended the way `mov w0, #v` leaves them, in
-  every proxy library, and the new `hello-narrowret` sample guards it.
-
-Also worth recording: four Unity titles failed the gate reproducibly and turned
-out to be an emulator-exhaustion flake -- all four pass after a reboot.
-Re-baseline before trusting a tier differential.
+- **A prebuilt gate you can trust.** It now covers all 137 staged APKs, pins
+  installs to arm64 so no app can silently run natively, and ignores crash
+  reporters bundled inside apps. The APK fetcher also stopped stripping
+  `META-INF/services` when it re-signs merged bundles, which had broken eBay
+  and Shazam at startup. Signal, eBay, Shazam and Sonic 2 now run.
 
 ## Verification
 
-`berberis_arm64_host_tests` **3,731 pass, zero failures** (two by-design skips),
-including a new 8-test AndroidHardwareBuffer suite; `libberberis_arm64` and
-`libberberis_riscv64` both build clean; sample suite **158/158 PASS**; prebuilt
-gate **135 PASS / 2 FAIL** over 137 targets. Not comparable to the previously
-recorded 17-target figure, because discovery, ABI pinning, crash-reporter
-filtering and the exhaustion guard all changed this cycle. The Vulkan fix was
-verified on the reporter's Intel hardware with Mesa ANV and real Vulkan games --
-the emulator's encoder is precisely what cannot reproduce it.
+`berberis_arm64_host_tests` **3,731 pass, 0 fail**; `libberberis_arm64` and
+`libberberis_riscv64` build clean; sample suite **158/158 PASS**; prebuilt gate
+**135 PASS / 2 FAIL** over 137 APKs. The two failures are Clash of Clans'
+anti-emulator check and AliExpress's keep-alive daemon, which Android starts
+outside the native bridge; AliExpress itself runs. The Vulkan fix was verified
+on the reporter's Intel hardware with real Vulkan games.
 
 ---
 
