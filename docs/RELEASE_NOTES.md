@@ -24,16 +24,23 @@
   been stripping ServiceLoader registrations out of every bundle app we staged,
   which is what killed two of them at startup.
 
+- **Narrow return values fill the whole register.** A proxied call returning
+  `bool`/`jboolean`/`jshort` wrote only its low byte(s) into `x0`, leaving the
+  rest holding the first argument (a `JNIEnv*`). C never noticed; Rust tests
+  `cbz w0`, so Signal's ringrtc saw a pending exception that wasn't there and
+  died at startup. Results are now extended the way `mov w0, #v` leaves them, in
+  every proxy library, and the new `hello-narrowret` sample guards it.
+
 Also worth recording: four Unity titles failed the gate reproducibly and turned
 out to be an emulator-exhaustion flake -- all four pass after a reboot.
 Re-baseline before trusting a tier differential.
 
 ## Verification
 
-`berberis_arm64_host_tests` **3,729 pass, zero failures** (two by-design skips),
+`berberis_arm64_host_tests` **3,731 pass, zero failures** (two by-design skips),
 including a new 8-test AndroidHardwareBuffer suite; `libberberis_arm64` and
-`libberberis_riscv64` both build clean; sample suite **157/157 PASS**; prebuilt
-gate **135 PASS / 2 FAIL** over 137 targets. Not comparable to the previously
+`libberberis_riscv64` both build clean; sample suite **158/158 PASS**; prebuilt
+gate **136 PASS / 1 FAIL** over 137 targets. Not comparable to the previously
 recorded 17-target figure, because discovery, ABI pinning, crash-reporter
 filtering and the exhaustion guard all changed this cycle. The Vulkan fix was
 verified on the reporter's Intel hardware with Mesa ANV and real Vulkan games --
