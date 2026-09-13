@@ -619,6 +619,17 @@ Once the guest environment is ready, the app's native code can execute — eithe
 
 That reuse needs one guard, because the two halves age differently: an app's cache directory survives an app update, while the APK is replaced by one. A cached copy keyed only on the library's name would therefore keep serving the *previous* version's native code to the new version's Java — loudly as an `UnsatisfiedLinkError` for a JNI method that only exists in the new library, quietly as old native code running against new callers, or as a native fix that simply never takes effect. Digitalis requires the cached copy to be newer than the APK it came from and re-extracts when it is not. The cost is one `stat`; the archive is opened only when something genuinely has to be unpacked. This is not a theoretical failure: before the check existed, a stale extract once produced a convincing but entirely fictitious 7.7× translator regression in a benchmark sweep.
 
+**Limitation: helper processes an app starts with `app_process`.** Everything above happens in processes forked from zygote, and only there. Some apps also start helpers themselves: a shell running `app_process64 / <Class>` with `CLASSPATH` pointing at the APK. Keep-alive daemons do this; AliExpress's `channel`, `support` and `tool` daemons are an example. Android passes `-XX:NativeBridge` only to zygote. ART's upstream policy is that no other runtime keeps a native bridge; ART can override it only with a testing option, `-Xforce-nb-testing`. So such a helper has no Digitalis in it, and its `System.load` of an arm64 library goes to the host linker and fails. Digitalis does not work around this, and cannot add a log line inside that process. The app itself is unaffected: its zygote-forked processes still run translated.
+
+Recognise it from the existing log. In a process started by the app (its parent is `sh` or the app, not `zygote64`; the name is the helper's `--nice-name` or `app_process64`), look for:
+
+```
+D nativeloader: Load <app>/lib/arm64/<lib>.so using isolated ns clns-… (caller=<app>/base.apk): dlopen failed: "…" is for EM_AARCH64 (183) instead of EM_X86_64 (62)
+E AndroidRuntime: java.lang.UnsatisfiedLinkError: dlopen failed: "…" is for EM_AARCH64 (183) instead of EM_X86_64 (62)
+```
+
+The `nativeloader` line is always written, but only at debug level. The `UnsatisfiedLinkError` shows up as a `FATAL EXCEPTION` only when the helper does not catch it. `adb shell ps -A -o PID,PPID,NAME,ARGS` shows the helper's parent, and `/proc/<pid>/environ` shows its `CLASSPATH` and `LD_LIBRARY_PATH`. `EM_AARCH64` in a zygote-forked app process, by contrast, means the bridge was not used for that app at all: an integration or ABI problem, not this limitation.
+
 ### Going Deeper
 
 The NativeBridge integration is implemented in the `NdktNativeBridge` class, which provides Android's NativeBridge v8 callback interface. Key callbacks include:
