@@ -20,7 +20,8 @@
   installs to arm64 so no app can silently run natively, and ignores crash
   reporters bundled inside apps. The APK fetcher also stopped stripping
   `META-INF/services` when it re-signs merged bundles, which had broken eBay
-  and Shazam at startup. Signal, eBay, Shazam and Sonic 2 now run.
+  and Shazam at startup. Signal, Shazam and Sonic 2 now run, and eBay starts
+  again (its servers still refuse the emulator).
 
 ## Verification
 
