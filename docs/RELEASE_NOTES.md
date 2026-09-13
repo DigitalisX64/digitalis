@@ -40,7 +40,7 @@ Re-baseline before trusting a tier differential.
 `berberis_arm64_host_tests` **3,731 pass, zero failures** (two by-design skips),
 including a new 8-test AndroidHardwareBuffer suite; `libberberis_arm64` and
 `libberberis_riscv64` both build clean; sample suite **158/158 PASS**; prebuilt
-gate **136 PASS / 1 FAIL** over 137 targets. Not comparable to the previously
+gate **135 PASS / 2 FAIL** over 137 targets. Not comparable to the previously
 recorded 17-target figure, because discovery, ABI pinning, crash-reporter
 filtering and the exhaustion guard all changed this cycle. The Vulkan fix was
 verified on the reporter's Intel hardware with Mesa ANV and real Vulkan games --
