@@ -26,10 +26,10 @@ Where it is at:
 | | encodings | share |
 |---|---|---|
 | Lite translator | 45,338 / 48,032 | 94.4% |
-| Heavy optimizer | 44,354 / 48,032 | 92.3% |
+| Heavy optimizer | 44,355 / 48,032 | 92.3% |
 
-123 mnemonics have no lite coverage and 147 no heavy coverage — but most of those
-are SVE/SME/FP8 encodings that are undecoded by design (§2). 75 mnemonics are
+123 mnemonics have no lite coverage and 146 no heavy coverage — but most of those
+are SVE/SME/FP8 encodings that are undecoded by design (§2). 74 mnemonics are
 lite-covered but weaker in heavy (§4).
 
 **Read `0` as proof of absence; do not read a full count as proof of presence.**
@@ -38,8 +38,8 @@ still have an unsampled form that bails.
 
 ## The four kinds of gap
 
-1. **Exception-generating** (`SVC`/`BRK`/`HLT`/`HVC`/`SMC`/`DCPS`) — deliberately not
-   JIT-lowered. None abort the translator. §1.
+1. **Exception-generating** (`SVC`/`BRK`/`HLT`/`HVC`/`SMC`/`DCPS`) — none abort the
+   translator. `SVC` is lowered by both JIT tiers; the rest are deliberately not. §1.
 2. **Extension not decoded at all** — falls through to a catch-all `Undefined()`,
    which delivers `SIGILL`. §2.
 3. **Decoded and correct, interpreter-only** — runs correctly, but forces a region
@@ -52,7 +52,9 @@ still have an unsampled form that bails.
 
 ## 1. Exception-generating instructions
 
-No exception-generating instruction aborts the translator. `SVC` becomes a syscall;
+No exception-generating instruction aborts the translator. `SVC` becomes a syscall,
+lowered inline by both JIT tiers (a `RunGuestSyscall` call that ends the region and
+dispatches to `pc+4`);
 `BRK`/`HLT` deliver a guest `SIGTRAP`; `HVC`/`SMC`/`DCPS1-3` are UNDEFINED at EL0 and
 route through `Undefined()` to `SIGILL` — the architecturally correct result for
 user space.
@@ -106,7 +108,7 @@ just slower: FP16 needs `F16C`, FMA-based paths need `FMA`, `CRC32C*` needs SSE4
 
 Correct via lite/interpreter; the heavy frontend just doesn't translate them, so a hot
 region containing one can't gear up. Filter the generated table for
-`lite > 0 && heavy < lite` — 75 mnemonics. The largest, by encodings lost:
+`lite > 0 && heavy < lite` — 74 mnemonics. The largest, by encodings lost:
 
 | Mnemonic | lite → heavy | 
 |---|---|
