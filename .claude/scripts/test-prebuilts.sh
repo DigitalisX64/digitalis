@@ -394,7 +394,13 @@ for apk in "${APKS[@]}"; do
 
         sleep "${WATCH_SECONDS}"
 
-        round_pid="$(adb shell pidof "${pkg}" 2>/dev/null | tr -d '\r')"
+        # Liveness covers the package's own process AND its "<pkg>:<suffix>"
+        # processes. An app whose LAUNCHER activity carries android:process
+        # (e.g. a privacy/consent dialog declared in ":privacy") never has a
+        # process named exactly after the package, so bare `pidof <pkg>` reads
+        # a perfectly healthy app as dead. Match the package process and every
+        # ":suffix" sibling instead — generic over any manifest.
+        round_pid="$(adb shell "ps -A -o PID,NAME 2>/dev/null | awk -v p='${pkg}' '\$2 == p || index(\$2, p \":\") == 1 { print \$1 }'" 2>/dev/null | tr -d '\r' | tr '\n' ' ' | sed 's/ *$//')"
         # Native crash signatures — a genuine translator/guest fault ALWAYS leaves
         # one: SIGILL -> "Undefined arm64 instruction", SIGSEGV -> debuggerd
         # "Fatal signal"/tombstone, SIGSYS -> seccomp, a Java crash -> "FATAL
