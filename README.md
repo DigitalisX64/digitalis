@@ -19,8 +19,12 @@ public framework.
 ```
 mkdir digitalis
 cd digitalis
-repo init -b android-latest-release -u git@github.com:DigitalisX64/manifest.git
+repo init -b android16 -u git@github.com:DigitalisX64/manifest.git
 ```
+
+`android16` is the development branch, pinned to AOSP's
+`android16-qpr2-release`. `android-latest-release` tracks the latest stable
+Digitalis release instead; use it when you want a release rather than the tip.
 
 ## Sync code
 

@@ -46,7 +46,7 @@ branch. A minimal local-manifest overlay:
 ```xml
 <manifest>
   <remote name="digitalis" fetch="git@github.com:DigitalisX64"
-          revision="android-latest-release" />
+          revision="android16" />
 
   <remove-project path="frameworks/libs/binary_translation"
                   name="platform/frameworks/libs/binary_translation" />
