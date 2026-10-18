@@ -1664,6 +1664,24 @@ From the guest code's perspective, it's calling a normal ARM64 library. The prox
 
 (**JNI**, the Java Native Interface, is how Java/Kotlin code calls into native `.so` code and back. A **`JNIEnv*`** is a per-thread handle the native code uses to call Java — it is itself a table of function pointers, which is why it can't simply be passed from guest to host unchanged: the guest's pointers point at *guest* ARM64 code.)
 
+**The guest gets its own copy of the dispatch table.** A `JNIEnv` is barely more
+than a pointer to a `JNINativeInterface` — a table of ~230 function pointers —
+so handing the guest a copy of the `JNIEnv` struct alone would still leave it
+pointing at the *host* runtime's live table. That matters because apps hook JNI:
+an anti-tamper SDK overwrites a table entry with its own function to watch or
+filter calls. On a real ARM64 device both sides of that hook are ARM64 and
+nothing breaks. Under translation the host runtime and host system libraries
+dispatch through the very same table, so a guest-installed hook points host
+callers at ARM64 code they cannot execute — the host takes `SIGSEGV` with
+`pc == si_addr` and `si_code == SEGV_ACCERR` (an instruction fetch from a
+non-executable page), or, when the hook catches a host-created thread, parks it
+somewhere ART cannot suspend it and ART aborts with `SuspendAll timeout`.
+`ToGuestJNIEnv` therefore points the guest env at a private copy of the table,
+one per host table. The copy holds the same host function addresses — which is
+what the trampoline registry keys on — so guest calls are unchanged, while a
+guest-installed hook stays on the guest side where its pointers are callable and
+the host's table keeps the host's own entries.
+
 **JNI trampolines** are a special case. (A **trampoline** — or **thunk** — is a small piece of generated code that sits between caller and callee to reshape the call, here converting an ARM64-style call into an x86_64-style one and back.) `WrapGuestJNIFunction()` creates host-callable wrappers for guest JNI native methods. It uses **"shorty" strings** — Dalvik type abbreviation strings like `"VJI"` for `void(long, int)` — to know how many arguments to convert and what types they are (where `V`=void, `J`=long, `I`=int, `L`=object). The wrapper converts JNIEnv pointers, jobject handles, and primitive arguments between host and guest representations.
 
 **The Vulkan path** is the primary use case for Digitalis:

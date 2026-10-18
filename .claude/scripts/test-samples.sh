@@ -122,6 +122,7 @@ declare -A MODULES=(
     ["hello-vulkan"]="com.example.hellodigitalis/android.app.NativeActivity"
     ["hello-jni"]="com.example.hellodigitalis.hellojni/com.example.hellojni.HelloJni"
     ["hello-jniCallback"]="com.example.hellodigitalis.hellojnicallback/com.example.hellojnicallback.MainActivity"
+    ["hello-jnihook"]="com.example.hellodigitalis.hellojnihook/com.example.hellojnihook.MainActivity"
     ["exceptions"]="com.example.hellodigitalis.exceptions/com.example.exceptions.MainActivity"
     ["bitmap-plasma"]="com.example.hellodigitalis.plasma/com.example.plasma.Plasma"
     ["hello-gl2"]="com.example.hellodigitalis.gl2jni/com.android.gl2jni.GL2JNIActivity"
@@ -324,7 +325,7 @@ MODULE_ORDER=(
     hello-gles1 hello-gles3 hello-msaa hello-vktexture hello-ijkplayer hello-opencv hello-sqlcipher hello-conscrypt hello-graphics-path hello-gif hello-zxing hello-quickjs hello-sqlite-bundled hello-tflite hello-litert-llm hello-libpag hello-zstd hello-libvlc hello-ink hello-appsearch hello-libsignal hello-fresco hello-objectbox hello-pdfium hello-tracing-perfetto hello-renderscript-toolkit hello-pytorch hello-gpuimage hello-camera-core hello-tesseract hello-oboe hello-ffmpeg-kit hello-ncnn hello-lynx hello-aaudio hello-binder-ndk hello-jnihelp hello-webview-functor hello-nnapi hello-yoga hello-xcrash hello-firebase-crashlytics hello-shadowhook hello-hiddenapibypass hello-tinker hello-msaoaid
     hello-fp-vector hello-neon hello-glyphblit hello-sha-crypto hello-ld-interleave hello-superpack-regress
     hello-barriers hello-bf16 hello-bti hello-complex hello-dotprod
-    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-eglext hello-fcma hello-fcsel hello-fp16arith hello-i8mm-bf16 hello-lseatomics hello-lsepair hello-neonmisc hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp hello-fdsweep hello-narrowret hello-nativewindow
+    hello-fp16 hello-jscvt hello-libc-libm hello-mmkv hello-lrcpc hello-lse hello-pac-ret hello-widemul hello-aes hello-eglext hello-fcma hello-fcsel hello-fp16arith hello-i8mm-bf16 hello-lseatomics hello-lsepair hello-neonmisc hello-cronet hello-ldxp hello-cntvct hello-sigaction hello-seccomp hello-fdsweep hello-narrowret hello-jnihook hello-nativewindow
     hello-onnxruntime hello-jna hello-libsodium hello-j2v8 hello-couchbase hello-avif hello-themis hello-wcdb hello-vosk hello-mediapipe hello-rive hello-argon2 hello-webrtc hello-duktape hello-wireguard hello-fbjni hello-libtorrent4j hello-javacpp hello-javet hello-maplibre hello-snappy
     hello-libyuv hello-secp256k1 hello-filament hello-gltfio hello-openblas hello-fftw hello-gsl hello-leptonica hello-box2d hello-filament-render
     hello-lua hello-mupdf hello-sentry-ndk hello-bullet
