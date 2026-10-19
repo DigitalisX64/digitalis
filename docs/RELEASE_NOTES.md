@@ -1,3 +1,42 @@
+# Digitalis — A Faster Second Gear, and Apps That Hook JNI (2026-10-20)
+
+- **The optimizing tier got faster.** Twenty-three changes to the heavy
+  optimizer and the x86_64 backend: interleaved `LD3`/`ST4` move 16-byte chunks
+  plus a `PSHUFB` instead of one element at a time, SHA message schedules stay
+  in XMM, a `B.cond` fuses with the compare that sets it across intervening
+  instructions, and guest-register reads forward across memory-fault recovery
+  splits. Two-gear now reaches **108x the interpreter** on `sgemm-256`.
+
+- **An app that hooks JNI no longer takes the process down.** A `JNIEnv` is
+  barely more than a pointer to a dispatch table, and anti-tamper SDKs overwrite
+  entries in it. Host code dispatches through that table too, so sharing one
+  with the guest sent host callers into ARM64 code they cannot execute — host
+  libhwui pushing a `Bitmap.compress` chunk into a Java stream died inside the
+  guest's SDK. The guest now gets a private copy on its own read-only pages.
+  Kuaishou runs again; `hello-jnihook` reproduces the crash without the fix.
+
+- **One measured cost.** Three SIMD workloads are slower in the **lite** tier
+  than before this series: `recip-newton` +45%, `rsqrt-newton` +35%,
+  `sqrshl-requant` +21%. A pre-series build reproduces the old numbers on the
+  same device, so it is the series, not the environment. Two-gear and the
+  interpreter are unaffected. Two candidate commits were measured; neither
+  explains it.
+
+Also: `FMAX`/`FMIN` order −0 below +0 in the scalar and across-lanes forms,
+D-form `ORR`/`BIC` zeroes its upper half, and the prebuilt gate no longer reads
+an app whose launcher declares `android:process` as dead.
+
+## Verification
+
+Host tests **3,731 pass / 0 fail** (arm64) and **1,197 / 0** (riscv64); both
+`libberberis_*` flavors and the full build clean; samples **159/159**. Fifteen
+apps chosen to stress JNI dispatch — four multi-process browsers and chat apps,
+three independent hooking SDKs, a photo editor driving `Bitmap.compress` —
+passed **15/15** on a rebooted emulator at 2.5-2.8 GB free. Benchmarks: 162
+records, four modes, same build.
+
+---
+
 # Digitalis — Real GPU Drivers, glibc Hosts, and an Honest Gate (2026-09-13)
 
 - **Vulkan on real vendor drivers.** The libvulkan proxy silently dropped the
