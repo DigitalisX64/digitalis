@@ -19,12 +19,26 @@ public framework.
 ```
 mkdir digitalis
 cd digitalis
-repo init -b android16 -u git@github.com:DigitalisX64/manifest.git
+repo init -b android17 -u git@github.com:DigitalisX64/manifest.git
 ```
 
-`android16` is the development branch, pinned to AOSP's
-`android16-qpr2-release`. `android-latest-release` tracks the latest stable
-Digitalis release instead; use it when you want a release rather than the tip.
+Pick the branch for the platform you are building:
+
+| Branch | AOSP | What it is |
+|---|---|---|
+| `android16` | `android16-qpr2-release` | the shipping development branch |
+| `android17` | `android17-release` | the AOSP 17 port, **in progress** |
+| `android-latest-release` | — | the latest stable Digitalis release |
+
+`android17` brings up a complete AOSP 17 tree, but the translator is not
+ported yet: `frameworks/libs/binary_translation` on that branch is still
+upstream AOSP 17, which carries no ARM64 backend. It builds an ordinary
+AOSP 17 emulator, not a translating one. Use `android16` for anything that
+needs to actually run ARM64 apps.
+
+AOSP 17 moved the translator sources under `cpu_emulation/`, and it now ships
+its own ARM64 guest scaffolding for Google's closed backend, so the port is a
+merge that has to reconcile both -- not a fast-forward.
 
 ## Sync code
 

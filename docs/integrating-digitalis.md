@@ -40,13 +40,15 @@ those seams:
 
 Digitalis replaces AOSP's `frameworks/libs/binary_translation` (upstream
 Berberis is RISC-V-only; the Digitalis fork adds the entire ARM64 backend) and
-uses the stock `frameworks/libs/native_bridge_support` from the same AOSP 16
-branch. A minimal local-manifest overlay:
+uses the stock `frameworks/libs/native_bridge_support` from the same AOSP
+branch. Match the revision to your platform: `android16` for AOSP 16, or
+`android17` for the AOSP 17 port once it lands -- that branch is still upstream
+today and adds no ARM64 backend. A minimal local-manifest overlay:
 
 ```xml
 <manifest>
   <remote name="digitalis" fetch="git@github.com:DigitalisX64"
-          revision="android16" />
+          revision="android17" />
 
   <remove-project path="frameworks/libs/binary_translation"
                   name="platform/frameworks/libs/binary_translation" />
