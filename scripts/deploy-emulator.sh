@@ -207,6 +207,25 @@ fi
 log "Smoke test: emulator -version"
 ( cd "$PREBUILT" && timeout 60 ./emulator -version 2>&1 | head -2 )
 
+# The Android 17 kernel retires the goldfish pipe (the guest has only
+# /dev/goldfish_pipe_dprctd), so the gfxstream Vulkan driver takes the
+# virtio-gpu path. Both sides have to agree: the image asks for the features
+# through its own advancedFeatures.ini, and the emulator has to support them.
+# A released emulator ships them off and answers the guest with "Please update
+# the emulator to one that supports the feature(s)", leaving no /dev/dri/* to
+# open -- every Vulkan app then fails vkCreateInstance with
+# VK_ERROR_INITIALIZATION_FAILED and renders a black frame while GLES keeps
+# working through the deprecated pipe node and hides it. Turn them on here so a
+# deployed emulator needs no -feature argument at launch.
+FEATURES_INI="$PREBUILT/lib/advancedFeatures.ini"
+if [ -f "$FEATURES_INI" ]; then
+    sed -i \
+        -e 's/^VirtioGpuNativeSync = off$/VirtioGpuNativeSync = on/' \
+        -e 's/^VirtioGpuFenceContexts = off$/VirtioGpuFenceContexts = on/' \
+        "$FEATURES_INI"
+    log "Enabled virtio-gpu in $(basename "$FEATURES_INI"): $(grep -cE '^(VirtioGpuNativeSync|VirtioGpuFenceContexts) = on' "$FEATURES_INI")/2 flags on"
+fi
+
 log "Done. Deployed emulator into:"
 echo "    $PREBUILT"
 echo "Restore the original with: $0 --restore"
