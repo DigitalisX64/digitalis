@@ -82,6 +82,50 @@ sizes (e.g. ~30 GiB host-visible and ~16 GiB device-local on a 16 GB card).
 To confirm the translator is not involved, run the same workload's x86_64
 build: the failure reproduces identically with no translation in the path.
 
+## Symptom 3: `vkCreateInstance` fails with `VK_ERROR_INITIALIZATION_FAILED`
+
+Every Vulkan app gets `VkResult=-3` from `vkCreateInstance` and renders a black
+frame. Nothing crashes, the guest driver loads and all of its dependencies
+resolve, and `ro.hardware.vulkan=ranchu` with the Vulkan feature flags
+advertised normally.
+
+This is the opposite direction from Symptom 1: there the host binary was too
+old for a struct the guest sent, here the *guest* driver is newer than any host
+backend available. `vulkan.ranchu.so` grew from 2.0 MB to 4.5 MB between the
+Android 16 and Android 17 images, and the newer one cannot complete the
+gfxstream handshake with a host built from emulator source as of 2026-09-15.
+
+### Confirming it is the image and not us
+
+Four measurements, each of which rules something out:
+
+1. **Rebuild the sample as native x86_64** (`abiFilters += "x86_64"`) and run
+   it. It fails identically, with `0` `memfd:exec` regions and no
+   `/system/lib64/arm64/` libraries in `/proc/<pid>/maps` -- no translated code
+   is in the path at all, so it is not the translator.
+2. **Run the older image under the newer emulator and vice versa.** The
+   Android 16 image passes on the same emulator binary that the Android 17
+   image fails on, so it is not the emulator binary.
+3. **Swap only the guest driver.** `adb disable-verity`, reboot, `adb remount`,
+   then copy the Android 16 `vulkan.ranchu.so` over the Android 17 one. Vulkan
+   initializes immediately -- "Vulkan instance created", the GPU is named, and
+   the screenshot test passes. That isolates the guest driver as the single
+   incompatible component.
+4. **Check the emulator source date.** If the newest source available is not
+   newer than the emulator already deployed, rebuilding cannot help.
+
+### What to do about it
+
+Nothing, from this tree. `vulkan.ranchu.so` is built from
+`hardware/google/gfxstream`, which is not a Digitalis modification surface, and
+pinning the older driver would mean shipping an Android 16 component in an
+Android 17 image. Re-test when a newer emulator source is available and deploy
+it with `deploy-emulator.sh`; the swap in step 3 is the check that it worked.
+
+Do not record this as a translator regression, and do not regenerate the
+screenshot reference against the black frame -- the reference is correct and the
+sample is correct.
+
 ## Deploying a fixed emulator
 
 ### 1. Get the emulator source
