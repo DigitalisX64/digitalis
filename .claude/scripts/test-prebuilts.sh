@@ -186,6 +186,20 @@ emulator_mem_available_kb() {
     adb shell "grep -m1 MemAvailable /proc/meminfo" 2>/dev/null | tr -d '\r' | awk '{print $2}'
 }
 
+# Suppress the system's "Viewing full screen / Got it" immersive-mode dialog
+# before any target runs. Games go fullscreen on launch, so the dialog lands on
+# top of the very first frames -- the ones this gate screenshots. It corrupts the
+# verdict in both directions: its own pixels count as content, so a game that
+# rendered nothing can still score non-zero content cells and pass, while the
+# panel it draws over the top of the screen hides whatever the game did draw.
+# It also steals focus from fullscreen NativeActivity apps. test-samples.sh has
+# always set this for its screenshot modes; the prebuilt gate needs it for the
+# same reason.
+suppress_immersive_dialog() {
+    adb shell settings put global policy_control immersive.status=\* >/dev/null 2>&1 || true
+    adb shell settings put secure immersive_mode_confirmations confirmed >/dev/null 2>&1 || true
+}
+
 # A dead or unreachable device must ABORT the sweep, never be reported as a wall
 # of per-app failures. When the emulator dies mid-run every remaining target
 # records "(install failed)" and the run reads as a catastrophic regression --
@@ -232,6 +246,7 @@ reboot_emulator_and_wait() {
     done
     adb root >/dev/null 2>&1 || true
     sleep 2
+    suppress_immersive_dialog
     emu_targets_since_reboot=0
 }
 
@@ -280,6 +295,10 @@ fi
 pass=0
 fail=0
 declare -a RESULTS
+
+# Do this before the first target, not per target: the dialog is one-shot per
+# device, and every screenshot this gate takes must be of the game alone.
+suppress_immersive_dialog
 
 for apk in "${APKS[@]}"; do
     # A target is either a single *.apk file or a split-app subdirectory. The
