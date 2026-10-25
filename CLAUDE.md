@@ -56,7 +56,10 @@ lunch sdk_phone64_x86_64_digitalis-trunk_staging-userdebug
 m
 ```
 
-Or `source digitalis/scripts/lunch-digitalis.sh`. Emulator: `emulator -memory 4096 -writable-system -qemu -cpu host &` (never `-no-window` when debugging an APK).
+Or `source digitalis/scripts/lunch-digitalis.sh`. Emulator: `emulator -memory 4096 -writable-system -feature VirtioGpuNativeSync,VirtioGpuFenceContexts -qemu -cpu host &` (never `-no-window` when debugging an APK).
+The two virtio-gpu features are required: this kernel ships only `/dev/goldfish_pipe_dprctd`, so without them the
+guest has no `/dev/dri/*`, the gfxstream Vulkan driver cannot open a transport, and every Vulkan app fails
+`vkCreateInstance` with `VK_ERROR_INITIALIZATION_FAILED` and renders a black frame while GLES still works.
 
 ```bash
 # Host unit tests
