@@ -466,10 +466,17 @@ for apk in "${APKS[@]}"; do
         fi
 
         # Content check: capture screenshot, evaluate via heuristic.
+        #
+        # screencap must be bounded. Some apps leave SurfaceFlinger in a state
+        # where the capture never returns -- prisonlife wedged a whole run for
+        # 50 minutes on a single `adb exec-out screencap -p` while the device
+        # stayed otherwise responsive -- and an unbounded capture turns one such
+        # app into a stalled gate rather than one failed target. A timed-out
+        # capture is reported as NoShot, the same as an empty one.
         shot="${SCREENSHOTS_DIR}/${pkg}.round${round_idx}.png"
-        adb exec-out screencap -p > "${shot}" 2>/dev/null
+        timeout "${SCREENCAP_TIMEOUT:-60}" adb exec-out screencap -p > "${shot}" 2>/dev/null
         if [ ! -s "${shot}" ]; then
-            round_fail_reason="round ${round_idx}: screencap empty"
+            round_fail_reason="round ${round_idx}: screencap empty or timed out"
             round_fail=$((round_fail+1))
             round_outcomes+=( "R${round_idx}=NoShot" )
             continue
