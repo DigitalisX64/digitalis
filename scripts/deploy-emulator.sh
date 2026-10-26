@@ -174,7 +174,17 @@ fi
 # SDK identity for tooling (binaries still self-report their real version via
 # `emulator -version`).
 log "Overlaying freshly built package onto the target prebuilt"
-rsync -a --exclude='source.properties' --exclude='android-info.txt' "$DIST"/ "$PREBUILT"/
+# --delete matters: without it the new package is laid over the old one and the
+# result is a hybrid. A deploy of the 37.x build over the shipped 36.x prebuilt
+# left 427 files where the build produces 292, i.e. ~135 orphans from the old
+# version, and that emulator booted for hours and then failed every launch with
+#   kvm_user_backed_ram_map: error registering slot: File exists
+# Restoring the untouched backup fixed it immediately. This script's own header
+# already says the interdependent set has to move together; a non-deleting rsync
+# is exactly what fails to do that. source.properties and android-info.txt stay
+# excluded (and so protected from --delete) because they describe the prebuilt
+# channel, not the build.
+rsync -a --delete --exclude='source.properties' --exclude='android-info.txt' "$DIST"/ "$PREBUILT"/
 
 # ---- 5. verify the deployment -----------------------------------------------
 log "Verifying deployment"
