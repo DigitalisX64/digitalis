@@ -35,6 +35,9 @@
 #   --host HOST      Prebuilt host triple under prebuilts/android-emulator/
 #                    (default: autodetect, e.g. linux-x86_64 / darwin-aarch64)
 #   --no-build       Skip the build; use whatever is already in <emu-root>/external/qemu/objs
+#   --no-virtio-gpu  Deploy with virtio-gpu OFF. Trades guest Vulkan for one game:
+#                    games go 65/67 -> 66/67 (ninjahands2 renders on GLES fallback)
+#                    but the platform then has no Vulkan at all. Default is ON.
 #   --restore        Restore the target prebuilt from the backup taken on first deploy
 #   -h, --help       Show this help
 #
@@ -61,6 +64,7 @@ while [[ $# -gt 0 ]]; do
         --aosp-root) AOSP_ROOT="${2:?--aosp-root needs a value}"; shift 2 ;;
         --host)      HOST="${2:?--host needs a value}";           shift 2 ;;
         --no-build)  MODE="nobuild"; shift ;;
+        --no-virtio-gpu) VIRTIO_GPU="off"; shift ;;
         --restore)   MODE="restore"; shift ;;
         -h|--help)   usage 0 ;;
         *)           die "unknown argument: $1 (see --help)" ;;
@@ -227,13 +231,31 @@ log "Smoke test: emulator -version"
 # VK_ERROR_INITIALIZATION_FAILED and renders a black frame while GLES keeps
 # working through the deprecated pipe node and hides it. Turn them on here so a
 # deployed emulator needs no -feature argument at launch.
+#
+# --no-virtio-gpu turns them off instead, which trades guest Vulkan for one
+# game. Measured over the whole prebuilt games corpus, one full sweep each:
+# virtio-gpu on is 65/67 (beachbuggy and ninjahands2 blank) and off is 66/67 --
+# ninjahands2 renders because Unity falls back to GLES, and no other game
+# regresses. The cost is not per-game: with the transport off the platform
+# enumerates zero Vulkan devices, so Vulkan-only prebuilts (VkCapsViewer,
+# 3DMark Wild Life) have nothing to run on. Neither setting reaches 67/67;
+# beachbuggy needs a gfxstream GLES fix either way. See
+# digitalis/docs/prebuilt-games-blank-render.md.
 FEATURES_INI="$PREBUILT/lib/advancedFeatures.ini"
 if [ -f "$FEATURES_INI" ]; then
-    sed -i \
-        -e 's/^VirtioGpuNativeSync = off$/VirtioGpuNativeSync = on/' \
-        -e 's/^VirtioGpuFenceContexts = off$/VirtioGpuFenceContexts = on/' \
-        "$FEATURES_INI"
-    log "Enabled virtio-gpu in $(basename "$FEATURES_INI"): $(grep -cE '^(VirtioGpuNativeSync|VirtioGpuFenceContexts) = on' "$FEATURES_INI")/2 flags on"
+    if [ "${VIRTIO_GPU:-on}" = "off" ]; then
+        sed -i \
+            -e 's/^VirtioGpuNativeSync = on$/VirtioGpuNativeSync = off/' \
+            -e 's/^VirtioGpuFenceContexts = on$/VirtioGpuFenceContexts = off/' \
+            "$FEATURES_INI"
+        log "DISABLED virtio-gpu in $(basename "$FEATURES_INI") (--no-virtio-gpu): guest Vulkan is now unavailable; games 66/67"
+    else
+        sed -i \
+            -e 's/^VirtioGpuNativeSync = off$/VirtioGpuNativeSync = on/' \
+            -e 's/^VirtioGpuFenceContexts = off$/VirtioGpuFenceContexts = on/' \
+            "$FEATURES_INI"
+        log "Enabled virtio-gpu in $(basename "$FEATURES_INI"): $(grep -cE '^(VirtioGpuNativeSync|VirtioGpuFenceContexts) = on' "$FEATURES_INI")/2 flags on"
+    fi
 fi
 
 log "Done. Deployed emulator into:"
