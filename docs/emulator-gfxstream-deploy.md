@@ -212,6 +212,77 @@ reaches the launcher before dying. A fixed host shows **zero**
 `Failed to find process owned resources` lines and survives well past the
 bootanimation teardown window.
 
+## Symptom 5: an app calls through an uninitialised GL function pointer
+
+Beach Buggy Racing crashed with `SIGSEGV si_addr=0x300` on every launch. The
+guest code is
+
+```
+ldr  x8, [x20, #0xd0]      // glDiscardFramebufferEXT
+cbz  x8, skip              // the game DOES null-check it
+...
+blr  x8                    // -> 0x300
+```
+
+The member at `+0xd0` is written only when
+`getExtension("GL_EXT_discard_framebuffer")` returns true. gfxstream's GLES
+decoder has had a `glDiscardFramebufferEXT` entry point for years, but the
+translator never advertised the extension, so the member was never written and
+the game branched through heap residue. `0x300` is `GL_SRC_COLOR` -- leftovers,
+not a computed pointer, which is the tell for an uninitialised read.
+
+Fixed in `host/gl/glestranslator/gles_v2/` by implementing
+`glDiscardFramebufferEXT` as `glInvalidateFramebuffer` (the EXT is the ES 2
+spelling of the same hint) and advertising the extension in
+`InitExtensionString`.
+
+The general shape is worth recognising: an app that *conditionally* resolves an
+entry point and *unconditionally* calls it turns a missing extension into a
+crash whose reproducibility depends on heap contents. It will look
+tier-dependent, and switching GLES driver will "fix" it whenever the other
+driver happens to advertise the extension.
+
+## Symptom 6: the 37.x emulator boots but the guest has no Vulkan
+
+`ls /dev/dri` is empty and `cmd gpu vkjson` returns `{}`, while the emulator
+logs
+
+```
+WARNING | Please update the emulator to one that supports the feature(s):
+          VirtioGpuFenceContexts, VirtioGpuNativeSync, VulkanVirtualQueue
+```
+
+Those are **host** features. The `advancedFeatures.ini` goldfish installs into
+the system image is the *guest* feature file; host features are read from the
+emulator's own `lib/advancedFeatures.ini`, which the 37.x build ships with
+`VirtioGpuNativeSync = off` and `VirtioGpuFenceContexts = off`. Listing them on
+the guest side only produces that warning.
+
+`deploy-emulator.sh` flips both host flags on, so a deployed emulator is
+correct; a build run straight out of `objs/` is not.
+
+## Symptom 7: deploy refuses with a BuildID mismatch
+
+```
+ERROR: stripped/unstripped backend BuildID mismatch (... vs ...) -- stale distribution
+```
+
+`deploy-emulator.sh` packages from `objs/distribution/` and
+`objs/distribution-unstripped/`, not from `objs/lib64/`. Building a single
+library with `ninja lib64/libgfxstream_backend.so` therefore does **not** update
+what gets deployed, and refreshing only one of the two trips this check. When
+hand-patching a library into the package, update both:
+
+```
+strip --strip-unneeded -o objs/distribution/emulator/lib64/libgfxstream_backend.so \
+                          objs/lib64/libgfxstream_backend.so
+cp objs/lib64/libgfxstream_backend.so \
+   objs/distribution-unstripped/emulator/lib64/libgfxstream_backend.so
+```
+
+The check is doing its job: without it the deployed emulator silently keeps the
+old backend and the fix appears not to work.
+
 ## Deploying a fixed emulator
 
 ### 1. Get the emulator source
