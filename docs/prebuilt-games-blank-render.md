@@ -108,6 +108,37 @@ threads is the distinguishing shape to start from.
 This also explains why ANGLE does nothing for it: ANGLE substitutes the GLES
 driver, and this app never asks for GLES.
 
+## The configuration trade-off
+
+Disabling the virtio-gpu transport removes guest Vulkan, Unity falls back to
+GLES, and `ninjahands2` renders normally -- 19629 distinct colours, with the ten
+`GFXSTREAM:` lines that show the GLES driver in use. That isolates its cause
+beyond doubt: the game is fine, the Vulkan path is not.
+
+`beachbuggy` is unchanged by the same experiment (still one colour), which
+confirms the two failures are independent: its GLES defect is not a transport
+problem.
+
+Measured across the three reachable configurations:
+
+| Configuration | beachbuggy | ninjahands2 | artblitz, bouncyhoops, bucketcrusher, burgerplease | Vulkan-only apps (3DMark, VkCapsViewer) |
+| --- | --- | --- | --- | --- |
+| gfxstream GLES + virtio-gpu (shipping) | FAIL | FAIL | pass | work |
+| gfxstream GLES, no virtio-gpu | FAIL | **pass** | pass | **break** -- no Vulkan at all |
+| ANGLE + virtio-gpu | **pass** | FAIL | **FAIL** | work |
+
+No configuration passes all 67. The shipping choice keeps 65 and keeps Vulkan,
+and is deliberate rather than accidental:
+
+* Dropping virtio-gpu buys `ninjahands2` and costs every Vulkan-only app. On
+  AOSP 17 the kernel retires the goldfish pipe, so without virtio-gpu there is
+  no Vulkan transport at all (Symptom 3 in `emulator-gfxstream-deploy.md`).
+* ANGLE buys `beachbuggy` and costs four games that currently pass.
+
+If the corpus were games alone the middle row would win by one game, so this is
+worth revisiting if the Vulkan-only prebuilts stop mattering -- the decision is
+a judgement about the image, not about these two games.
+
 ## Status
 
 Both are host graphics defects, one per API, with Digitalis eliminated by A/B.
@@ -120,5 +151,16 @@ guest's write reaches the host at all -- host-side gfxstream Vulkan logging for
 that process, or a trace of the address-space stream doorbell -- rather than to
 keep reading the decoder.
 
-`beachbuggy` is the weaker lead: no error is reported anywhere, so there is no
-thread to pull beyond instrumenting gfxstream's GLES path.
+`beachbuggy` is the weaker lead: no error is reported anywhere, and it fails on
+both transports, so there is no thread to pull beyond instrumenting gfxstream's
+GLES path.
+
+One experiment is blocked rather than finished. The newer 37.x emulator built
+from `emu-main-dev` would be the obvious thing to try against both games, since
+its gfxstream is months newer. It cannot be booted on this host at present: from
+14:40 on 2026-10-26 every launch fails with
+`kvm_user_backed_ram_map: error registering slot: File exists` and hangs without
+serving adb, while the 36.3.10 prebuilt boots from the same tree, same AVD and
+same locks cleared. A clean deploy (293 files, exactly the build output) fails
+the same way as the hybrid package did, so the earlier `--delete` bug was real
+but is not this. Retry after a host reboot before spending time on it.
