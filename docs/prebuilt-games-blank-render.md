@@ -1,80 +1,75 @@
-# Two prebuilt games render blank -- and one of them IS a translator bug
+# Two prebuilt games rendered blank -- both root-caused and fixed
 
-> **Superseded, 2026-10-26.** This page first concluded that neither failure was
-> ours. That was wrong for `beachbuggy`, and the section below records how the
-> wrong conclusion was reached, because the trap is reusable.
->
-> `beachbuggy` renders correctly under `berberis.mode=interpret-only` and
-> crashes under *both* `lite-translate-or-interpret` and `two-gear` with
-> `SIGSEGV si_addr=0x300`. It also renders correctly in the lite tier with
-> `ro.berberis.flags=disable-reg-map`. It is a lite register-mapping bug.
->
-> **Why the first reading survived.** An unhandled fatal guest signal used to
-> spin forever instead of crashing (fixed in binary_translation `96d92a7f`):
-> `ProcessPendingSignalsImpl` called `kFatalGuestHandlerStub` as guest code,
-> which faulted, re-raised, and looped at 100% CPU. Every tier therefore looked
-> identically "process alive, frame black, logcat silent", so the tier A/B that
-> should have caught this returned the same answer for all three tiers and the
-> evidence pointed outward at the GLES driver instead. ANGLE "fixing" it was a
-> coincidence: ANGLE advertises a different extension set, so the game never
-> takes the bad path.
->
-> **Reusable lesson.** Before trusting any tier A/B, confirm a failing app
-> actually *fails* rather than hangs -- `top -H` on the app's threads. A thread
-> pinned at 100% CPU is a spin, and a spin makes every tier look alike.
+Both failures in the 67-target prebuilt games corpus are fixed. Neither was a
+translator bug, and neither was the host-GL bug this page originally claimed.
 
-The prebuilt games corpus is 67 targets. 65 pass; `beachbuggy` and
-`ninjahands2` present an empty frame. They are two unrelated problems that
-share one symptom, so the evidence that separates them is kept in one place.
+## `beachbuggy`: an unadvertised GL extension, not a render bug
 
-Both are reproducible on a pristine `-wipe-data` device with eight apps
-installed, three launch attempts each, and both survive the gate's content
-polling to its 120 s deadline (see `test-prebuilts.sh`: a blank frame is
-re-checked every 30 s before it is failed, so these are not slow loads).
-
-## `beachbuggy`: a lite register-mapping bug (OURS)
-
-Narrowed 2026-10-26 on the AOSP 17 tree:
-
-| Configuration | Result |
-|---|---|
-| `berberis.mode=interpret-only` | **Renders.** Full title screen, process alive. |
-| `berberis.mode=lite-translate-or-interpret` | Crashes, `si_addr=0x300`. |
-| `berberis.mode=two-gear` | Crashes, `si_addr=0x300`. |
-| lite + `ro.berberis.flags=disable-reg-map` | **Renders.** 60/60 content cells. |
-
-The guest code is `VuAndroidOglesGfx::setRenderTarget` (libmain.so vaddr
-0x7ade0c):
+`VuAndroidOglesGfx::init` (libmain.so vaddr 0x7adb88) resolves
+`glDiscardFramebufferEXT` and stores it at `this+0xd0` **only** when
+`VuOglesGfx::getExtension("GL_EXT_discard_framebuffer")` returns true.
+`setRenderTarget` (0x7ade0c) then does
 
 ```
-7ade0c: ldr  x8, [x20, #0xd0]        // glDiscardFramebufferEXT
-7ade10: cbz  x8, skip                // the game DOES null-check it
+ldr  x8, [x20, #0xd0]
+cbz  x8, skip          // the game DOES null-check it
 ...
-7ade5c: blr  x8                      // -> 0x300
+blr  x8
 ```
 
-The field at `+0xd0` is written at vaddr 0x7adb8c, immediately after
-`bl SDL_GL_GetProcAddress`, and only when
-`VuOglesGfx::getExtension("GL_EXT_discard_framebuffer")` returns true:
+gfxstream's GLES decoder has had a `glDiscardFramebufferEXT` entry point all
+along, but its GLES translator never advertised the extension, so the member
+was never written and the game branched through **uninitialised heap**. Whether
+that crashed depended on what the slot happened to hold -- `0x300` here, which
+is `GL_SRC_COLOR`, residue rather than a computed pointer.
+
+That is why every earlier reading was wrong. It looked tier-dependent (the
+residue differed), and ANGLE "fixed" it only because ANGLE advertises
+`GL_EXT_discard_framebuffer`.
+
+**Fix** (gfxstream, `host/gl/glestranslator/gles_v2/`): implement
+`glDiscardFramebufferEXT` as `glInvalidateFramebuffer` -- the EXT is the ES 2
+spelling of the same hint, with the same target and attachment tokens -- and
+advertise `GL_EXT_discard_framebuffer` in `InitExtensionString`. The
+translator's existing no-op fallback applies when the host lacks the entry
+point, which a hint extension may legally do.
+
+Verified on both translated tiers (`two-gear` and
+`lite-translate-or-interpret`): process alive, zero fatal signals, 47/60
+content cells.
+
+## `ninjahands2`: virtio-gpu was never switched on for the 37.x emulator
+
+The guest `advancedFeatures.ini` that goldfish installs is the **guest**
+feature file. `VirtioGpuNativeSync` and `VirtioGpuFenceContexts` are **host**
+features, read from the emulator's own `lib/advancedFeatures.ini`, which the
+37.x build ships `off`. Listing them in the guest file only produced
 
 ```
-7adb78: bl   VuOglesGfx::getExtension
-7adb7c: tbz  w0, #0, skip
-7adb80: adrp x0, "glDiscardFramebufferEXT"
-7adb88: bl   SDL_GL_GetProcAddress
-7adb8c: str  x0, [x19, #0xd0]        // stores 0x300 under the JIT
+WARNING | Please update the emulator to one that supports the feature(s):
+          VirtioGpuFenceContexts, VirtioGpuNativeSync, VulkanVirtualQueue
 ```
 
-So the stored pointer is wrong at the moment it is stored; the crash 0x7ade0c
-is just where it is finally used. The guest register dump at the fault shows
-x20 live, x0/x1/x2 a well-formed argument list, and only x8 wrong -- the object
-is not corrupt, the one field is. 0x300 is `GL_SRC_COLOR`, which is consistent
-with a stale value left in the host register mapped to guest x0 rather than
-with random memory.
+so the guest had no `/dev/dri/*` and no Vulkan at all. With the host flags on,
+the guest gets `card0`/`renderD128`, `cmd gpu vkjson` reports a device, and the
+37.x gfxstream no longer exhibits the `AddressSpaceStream::speculativeRead`
+lost wakeup that 36.3.10 did. The title renders its full menu (55/60 cells)
+with Vulkan live.
 
-Still open: which register-mapping path drops the value. `disable-reg-map`
-is a diagnosis, not a fix -- it forces every guest-register access through
-ThreadState memory and costs throughput everywhere.
+`deploy-emulator.sh` already flips those two host flags on deploy; nothing in
+goldfish needed to change.
+
+## A trap worth keeping
+
+An unhandled fatal guest signal used to spin forever instead of crashing
+(binary_translation `96d92a7f`): `ProcessPendingSignalsImpl` called
+`kFatalGuestHandlerStub` as guest code, which faulted, re-raised and looped at
+100% CPU. Every tier then looked identically "process alive, frame black,
+logcat silent", so the tier A/B that separates our bugs from the host's
+returned the same answer for all three and the investigation pointed outward.
+
+Before trusting any tier A/B, check `top -H` on the app's threads: a thread
+pinned at 100% is a spin, and a spin makes every tier look alike.
 
 ## Superseded: the original `beachbuggy` gfxstream-GLES investigation
 
