@@ -185,6 +185,17 @@ as Symptom 1 in `emulator-gfxstream-deploy.md` -- a struct the shipped host
 predates -- and it needs a newer host, which is the 37.x build that will not
 boot here (see Status).
 
+Disabling the corresponding ANGLE feature does **not** avoid the abort. goldfish
+already drives `debug.angle.feature_overrides_disabled` from
+`ro.boot.hardware.angle_feature_overrides_disabled`, and the feature is named
+`supportsPrimitivesGeneratedQuery` (it is in the guest `libGLESv2_angle.so`),
+so this looked like a one-property fix. It is not: with
+`debug.angle.feature_overrides_disabled=supportsPrimitivesGeneratedQuery` set
+and ANGLE selected for that package alone, the emulator aborts on the identical
+struct. ANGLE queries the physical-device feature chain for every extension the
+driver advertises regardless of whether it will use the capability, and the
+override only gates usage. Do not spend time on this property again.
+
 Two further notes for whoever picks this up:
 
 * ANGLE also needs the process-teardown fix (Symptom 4), because it routes every
