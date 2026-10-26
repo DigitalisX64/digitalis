@@ -474,36 +474,64 @@ for apk in "${APKS[@]}"; do
         # app into a stalled gate rather than one failed target. A timed-out
         # capture is reported as NoShot, the same as an empty one.
         shot="${SCREENSHOTS_DIR}/${pkg}.round${round_idx}.png"
-        timeout "${SCREENCAP_TIMEOUT:-60}" adb exec-out screencap -p > "${shot}" 2>/dev/null
-        if [ ! -s "${shot}" ]; then
+        # A blank frame is re-checked until CONTENT_DEADLINE_SECONDS rather than
+        # failed outright, because one screenshot at a fixed deadline is the
+        # wrong instrument for translated startup: ARM64-on-x86_64 games reach
+        # first paint well after a native one would. At WATCH_SECONDS=30 five
+        # games (dr2play, mosquitoio, downhillsmash, officefever, paperio1) were
+        # photographed mid-load and recorded as blank-render FAILs; all five
+        # render by 90s -- dr2play at 39682 distinct colours. Raising the global
+        # watch instead would charge every fast game the slowest game's wait, so
+        # poll: return as soon as there is content, keep waiting while blank.
+        # Genuinely blank apps still FAIL, just at the deadline.
+        content_deadline="${CONTENT_DEADLINE_SECONDS:-120}"
+        poll_step="${CONTENT_POLL_SECONDS:-30}"
+        waited="${WATCH_SECONDS}"
+        shot_verdict=""
+        check_out=""
+        cells_score=""
+        while : ; do
+            timeout "${SCREENCAP_TIMEOUT:-60}" adb exec-out screencap -p > "${shot}" 2>/dev/null
+            if [ ! -s "${shot}" ]; then shot_verdict="noshot"; break; fi
+            if [ ! -x "${CONTENT_CHECK}" ] && [ ! -r "${CONTENT_CHECK}" ]; then
+                shot_verdict="pass"; break
+            fi
+            check_out="$(python3 "${CONTENT_CHECK}" --threshold "${CONTENT_THRESHOLD}" "${shot}" 2>&1 | tail -1)"
+            if echo "${check_out}" | grep -q "PASS"; then shot_verdict="pass"; break; fi
+            cells_score="$(echo "${check_out}" | grep -oE 'content_cells=[0-9]+/[0-9]+' | head -1)"
+            cells_n="$(echo "${cells_score}" | grep -oE '[0-9]+' | head -1)"
+            if [ "${cells_n:-0}" -gt 0 ]; then shot_verdict="warn"; break; fi
+            if [ "${waited}" -ge "${content_deadline}" ]; then shot_verdict="blank"; break; fi
+            sleep "${poll_step}"
+            waited=$((waited+poll_step))
+            # The app must still be alive to be worth another look.
+            if ! adb shell "ps -A -o PID,NAME 2>/dev/null | awk -v p='${pkg}' '\$2 == p || index(\$2, p \":\") == 1 { print \$1 }'" 2>/dev/null | tr -d '\r' | grep -q '[0-9]'; then
+                shot_verdict="blank"; break
+            fi
+        done
+        if [ "${shot_verdict}" = "noshot" ]; then
             round_fail_reason="round ${round_idx}: screencap empty or timed out"
             round_fail=$((round_fail+1))
             round_outcomes+=( "R${round_idx}=NoShot" )
             continue
         fi
-        if [ -x "${CONTENT_CHECK}" ] || [ -r "${CONTENT_CHECK}" ]; then
-            check_out="$(python3 "${CONTENT_CHECK}" --threshold "${CONTENT_THRESHOLD}" "${shot}" 2>&1 | tail -1)"
-            if ! echo "${check_out}" | grep -q "PASS"; then
-                # Extract the content_cells score for the per-round tag.
-                cells_score="$(echo "${check_out}" | grep -oE 'content_cells=[0-9]+/[0-9]+' | head -1)"
-                cells_n="$(echo "${cells_score}" | grep -oE '[0-9]+' | head -1)"
-                if [ "${cells_n:-0}" -eq 0 ]; then
-                    # A fully blank frame (zero content cells) means nothing was
-                    # rendered at all — a real render-path regression. Hard FAIL.
-                    round_fail_reason="round ${round_idx}: ${check_out%% *} blank render (${shot})"
-                    round_fail=$((round_fail+1))
-                    round_outcomes+=( "R${round_idx}=Fail(${cells_score:-blank})" )
-                    continue
-                fi
-                # Dark-but-nonzero: the app IS drawing (a game's black boot/splash
-                # frame, a dark login screen, a paused video frame) yet is alive
-                # and crash-free. The prebuilt-gate regression criteria (see file
-                # header) are crash/disappearance, not sparse content — so surface
-                # this as a WARN and count the round as passed, don't fail the gate.
-                round_pass=$((round_pass+1))
-                round_outcomes+=( "R${round_idx}=Warn(${cells_score:-low})" )
-                continue
-            fi
+        if [ "${shot_verdict}" = "blank" ]; then
+            # Nothing rendered by the deadline — a real render-path regression,
+            # not a slow load. Hard FAIL.
+            round_fail_reason="round ${round_idx}: ${check_out%% *} blank render after ${waited}s (${shot})"
+            round_fail=$((round_fail+1))
+            round_outcomes+=( "R${round_idx}=Fail(${cells_score:-blank}@${waited}s)" )
+            continue
+        fi
+        if [ "${shot_verdict}" = "warn" ]; then
+            # Dark-but-nonzero: the app IS drawing (a game's black boot/splash
+            # frame, a dark login screen, a paused video frame) yet is alive
+            # and crash-free. The prebuilt-gate regression criteria (see file
+            # header) are crash/disappearance, not sparse content — so surface
+            # this as a WARN and count the round as passed, don't fail the gate.
+            round_pass=$((round_pass+1))
+            round_outcomes+=( "R${round_idx}=Warn(${cells_score:-low})" )
+            continue
         fi
         round_pass=$((round_pass+1))
         round_outcomes+=( "R${round_idx}=Pass" )
