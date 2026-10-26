@@ -149,6 +149,50 @@ switch is two flags. Judged on the image it trades Vulkan for that one game,
 which is why it is not the default. Revisit it if the Vulkan-only prebuilts
 stop mattering; the decision is about the image, not about these two games.
 
+## The better fix for beachbuggy: per-app ANGLE
+
+Image-wide ANGLE costs four games, but Android can select ANGLE for named
+packages only, and that is enough here:
+
+```
+settings put global angle_gl_driver_selection_pkgs   com.vectorunit.purple.googleplay
+settings put global angle_gl_driver_selection_values angle
+```
+
+This works as intended. The emulator then logs exactly one ANGLE client:
+
+```
+Created VkInstance:0x... for application:'com.vectorunit.purple.googleplay' engine:'ANGLE'
+```
+
+against the image-wide case, which creates ANGLE instances for surfaceflinger,
+launcher3, systemui and every app. So the one game that needs ANGLE can have it
+while everything else keeps gfxstream GLES and keeps passing, and guest Vulkan
+stays available. That is 66/67 with no capability given up -- better than either
+configuration in the table above.
+
+It is blocked by the emulator, not by the mechanism. On the shipped 36.3.10
+prebuilt, the moment ANGLE initialises its device the emulator aborts:
+
+```
+reservedunmarshal_extension_struct, Unhandled Vulkan structure type [1000382000], aborting.
+```
+
+`1000382000` is `VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIMITIVES_GENERATED_QUERY_FEATURES_EXT`
+(`VK_EXT_primitives_generated_query`), which ANGLE queries during device
+creation and that gfxstream's unmarshaller does not know. It is the same class
+as Symptom 1 in `emulator-gfxstream-deploy.md` -- a struct the shipped host
+predates -- and it needs a newer host, which is the 37.x build that will not
+boot here (see Status).
+
+Two further notes for whoever picks this up:
+
+* ANGLE also needs the process-teardown fix (Symptom 4), because it routes every
+  ANGLE client through the Vulkan decoder.
+* `settings put global` lives in userdata, and every gate launch uses
+  `-wipe-data`, so this cannot be a manual step: it has to be seeded by the
+  product (goldfish) to survive a wipe and to mean anything for the gate.
+
 ## Status
 
 Both are host graphics defects, one per API, with Digitalis eliminated by A/B.
