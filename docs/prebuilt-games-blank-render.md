@@ -1,25 +1,82 @@
-# Two prebuilt games render blank, and neither is a translator bug
+# Two prebuilt games render blank -- and one of them IS a translator bug
+
+> **Superseded, 2026-10-26.** This page first concluded that neither failure was
+> ours. That was wrong for `beachbuggy`, and the section below records how the
+> wrong conclusion was reached, because the trap is reusable.
+>
+> `beachbuggy` renders correctly under `berberis.mode=interpret-only` and
+> crashes under *both* `lite-translate-or-interpret` and `two-gear` with
+> `SIGSEGV si_addr=0x300`. It also renders correctly in the lite tier with
+> `ro.berberis.flags=disable-reg-map`. It is a lite register-mapping bug.
+>
+> **Why the first reading survived.** An unhandled fatal guest signal used to
+> spin forever instead of crashing (fixed in binary_translation `96d92a7f`):
+> `ProcessPendingSignalsImpl` called `kFatalGuestHandlerStub` as guest code,
+> which faulted, re-raised, and looped at 100% CPU. Every tier therefore looked
+> identically "process alive, frame black, logcat silent", so the tier A/B that
+> should have caught this returned the same answer for all three tiers and the
+> evidence pointed outward at the GLES driver instead. ANGLE "fixing" it was a
+> coincidence: ANGLE advertises a different extension set, so the game never
+> takes the bad path.
+>
+> **Reusable lesson.** Before trusting any tier A/B, confirm a failing app
+> actually *fails* rather than hangs -- `top -H` on the app's threads. A thread
+> pinned at 100% CPU is a spin, and a spin makes every tier look alike.
 
 The prebuilt games corpus is 67 targets. 65 pass; `beachbuggy` and
-`ninjahands2` present an empty frame. They look like one symptom and are two
-unrelated host-side graphics problems, so they are written up together only to
-keep the evidence that separates them in one place.
+`ninjahands2` present an empty frame. They are two unrelated problems that
+share one symptom, so the evidence that separates them is kept in one place.
 
 Both are reproducible on a pristine `-wipe-data` device with eight apps
 installed, three launch attempts each, and both survive the gate's content
 polling to its 120 s deadline (see `test-prebuilts.sh`: a blank frame is
 re-checked every 30 s before it is failed, so these are not slow loads).
 
-## Why they are not Digitalis bugs
+## `beachbuggy`: a lite register-mapping bug (OURS)
 
-| Game | Elimination |
+Narrowed 2026-10-26 on the AOSP 17 tree:
+
+| Configuration | Result |
 |---|---|
-| `beachbuggy` | Renders correctly under ANGLE on the *same* translator and image -- 1431 distinct colours against Android 16's 1434. Swapping only the GLES driver fixes it, so the fault is in the GLES driver, not in translation. |
-| `ninjahands2` | Blank under `berberis.mode=interpret-only`, with the JIT entirely out of the path. Identical frame, so no JIT codegen bug. |
+| `berberis.mode=interpret-only` | **Renders.** Full title screen, process alive. |
+| `berberis.mode=lite-translate-or-interpret` | Crashes, `si_addr=0x300`. |
+| `berberis.mode=two-gear` | Crashes, `si_addr=0x300`. |
+| lite + `ro.berberis.flags=disable-reg-map` | **Renders.** 60/60 content cells. |
 
-Keep suspecting Digitalis until an A/B says otherwise -- these are those A/Bs.
+The guest code is `VuAndroidOglesGfx::setRenderTarget` (libmain.so vaddr
+0x7ade0c):
 
-## `beachbuggy`: gfxstream GLES, uniform black
+```
+7ade0c: ldr  x8, [x20, #0xd0]        // glDiscardFramebufferEXT
+7ade10: cbz  x8, skip                // the game DOES null-check it
+...
+7ade5c: blr  x8                      // -> 0x300
+```
+
+The field at `+0xd0` is written at vaddr 0x7adb8c, immediately after
+`bl SDL_GL_GetProcAddress`, and only when
+`VuOglesGfx::getExtension("GL_EXT_discard_framebuffer")` returns true:
+
+```
+7adb78: bl   VuOglesGfx::getExtension
+7adb7c: tbz  w0, #0, skip
+7adb80: adrp x0, "glDiscardFramebufferEXT"
+7adb88: bl   SDL_GL_GetProcAddress
+7adb8c: str  x0, [x19, #0xd0]        // stores 0x300 under the JIT
+```
+
+So the stored pointer is wrong at the moment it is stored; the crash 0x7ade0c
+is just where it is finally used. The guest register dump at the fault shows
+x20 live, x0/x1/x2 a well-formed argument list, and only x8 wrong -- the object
+is not corrupt, the one field is. 0x300 is `GL_SRC_COLOR`, which is consistent
+with a stale value left in the host register mapped to guest x0 rather than
+with random memory.
+
+Still open: which register-mapping path drops the value. `disable-reg-map`
+is a diagnosis, not a fix -- it forces every guest-register access through
+ThreadState memory and costs throughput everywhere.
+
+## Superseded: the original `beachbuggy` gfxstream-GLES investigation
 
 Vector Unit's own engine (`VuAndroidCommunityManager`), not Unity. 1920x1080
 landscape, every pixel `(0,0,0)`.
