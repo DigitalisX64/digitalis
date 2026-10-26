@@ -121,23 +121,33 @@ problem.
 
 Measured across the three reachable configurations:
 
-| Configuration | beachbuggy | ninjahands2 | artblitz, bouncyhoops, bucketcrusher, burgerplease | Vulkan-only apps (3DMark, VkCapsViewer) |
-| --- | --- | --- | --- | --- |
-| gfxstream GLES + virtio-gpu (shipping) | FAIL | FAIL | pass | work |
-| gfxstream GLES, no virtio-gpu | FAIL | **pass** | pass | **break** -- no Vulkan at all |
-| ANGLE + virtio-gpu | **pass** | FAIL | **FAIL** | work |
+Both candidate configurations were measured over the whole corpus, one full
+sweep each, nine batches on a fresh emulator per batch:
 
-No configuration passes all 67. The shipping choice keeps 65 and keeps Vulkan,
-and is deliberate rather than accidental:
+| Configuration | games | fails | guest Vulkan |
+| --- | --- | --- | --- |
+| gfxstream GLES + virtio-gpu (shipping) | **65 / 67** | beachbuggy, ninjahands2 | works -- host creates VkInstance for a Vulkan app |
+| gfxstream GLES, no virtio-gpu | **66 / 67** | beachbuggy | **none** -- `cmd gpu vkjson` returns `{}` |
+| ANGLE + virtio-gpu | not swept | beachbuggy passes, four others fail | works |
 
-* Dropping virtio-gpu buys `ninjahands2` and costs every Vulkan-only app. On
-  AOSP 17 the kernel retires the goldfish pipe, so without virtio-gpu there is
-  no Vulkan transport at all (Symptom 3 in `emulator-gfxstream-deploy.md`).
+Dropping virtio-gpu costs no game: every Unity title falls back to GLES and all
+64 other targets pass exactly as before, Genshin Impact included. What it costs
+is Vulkan itself, platform-wide and not just for games -- with the transport
+off the platform enumerates zero Vulkan devices, so anything Vulkan-only
+(VkCapsViewer, 3DMark Wild Life) has nothing to run on. On AOSP 17 there is no
+second transport to fall back to: the kernel retires the goldfish pipe
+(Symptom 3 in `emulator-gfxstream-deploy.md`).
+
+The shipping choice keeps 65 and keeps Vulkan, and is deliberate rather than
+accidental:
+
+* Dropping virtio-gpu buys exactly one game and removes a platform capability.
 * ANGLE buys `beachbuggy` and costs four games that currently pass.
 
-If the corpus were games alone the middle row would win by one game, so this is
-worth revisiting if the Vulkan-only prebuilts stop mattering -- the decision is
-a judgement about the image, not about these two games.
+Judged on the games corpus alone the middle row wins by one game, and the
+switch is two flags. Judged on the image it trades Vulkan for that one game,
+which is why it is not the default. Revisit it if the Vulkan-only prebuilts
+stop mattering; the decision is about the image, not about these two games.
 
 ## Status
 
