@@ -59,18 +59,51 @@ Unity/il2cpp, and it selects **Vulkan**, not GLES -- there is not a single
 `GFXSTREAM:` line in the process, only the Vulkan loader's layer search. 1080x1920
 portrait, every pixel `(255,255,255)`: a surface cleared and never drawn into.
 
-Vulkan itself comes up. The host creates six Vulkan objects for "Ninja Hands 2",
-and Unity reports the device normally. What fails is the command stream:
+Vulkan itself comes up: the host creates six Vulkan objects for "Ninja Hands 2"
+and Unity reports the device normally. What fails is the present path, and a
+thread dump taken while the frame is blank shows it is a deadlock, not idleness:
 
 ```
-WARNING | Process=com.YsoCorp.NinjaHands2-29 is exitting. Skip processing seqno=1288 on thread=0x1e2486c0
+"UnityGfxDeviceW" sysTid=6552
+ #02 vulkan.ranchu.so  AddressSpaceStream::speculativeRead      <- blocked on the host reply
+ #03 vulkan.ranchu.so  AddressSpaceStream::readFully
+ #05 vulkan.ranchu.so  VkEncoder::vkQueueWaitIdle
+ #06 vulkan.ranchu.so  ResourceTracker::on_vkQueueSubmitTemplate<...>
+ #07 vulkan.ranchu.so  gfxstream_vk_QueueSubmit2
+ #08 vulkan.ranchu.so  vk_common_QueueSignalReleaseImageANDROID
+ #09 libvulkan.so      vulkan::driver::QueuePresentKHR
+ #10 libberberis_proxy_libvulkan.so  DoCustomTrampoline...
 ```
 
-That line is emitted from the sequence-number wait in `VkDecoder::Impl::decode`,
-which spins `while ((seqno - seqnoPtr->load(...)) != 1)` until the expected
-sequence number arrives and only escapes through `shouldExit`. The app's render
-threads are parked there, so no frames are ever submitted and the window stays
-at its clear colour.
+Two `UnityGfxDeviceW` threads sit there, so no frame is ever presented and the
+window keeps its clear colour. Digitalis appears in the stack only as the
+forwarding trampoline at the entry point; the blocking read is the Android
+system's own native Vulkan driver waiting on the emulator.
+
+Meanwhile **every qemu thread is at 0.0% CPU**. That matters, because the two
+obvious explanations both predict otherwise:
+
+* It is not the decoder's sequence-number spin. That loop is a `pause` loop and
+  would burn a core; the host is idle. The
+  `WARNING | Process=...is exitting. Skip processing seqno=1288` lines in the
+  emulator log are the *consequence* of the gate force-stopping the app at the
+  end of its watch, not the cause of the stall.
+* It is not a missing sequence-number increment in the generated decoder.
+  `vkQueueSubmit`, `vkQueueSubmit2`, `vkQueueSubmit2KHR`, `vkQueueWaitIdle` and
+  `vkQueueSignalReleaseImageANDROID` all increment it. (Checked in 37.x source;
+  the running emulator is the restored 36.3.10 prebuilt, so treat that as
+  indicative rather than authoritative.)
+
+Guest blocked on a reply while the host is idle means the command, or its
+wakeup, never arrived -- a lost notification on the address-space transport
+rather than anything mis-decoded. The AOSP 17 transport change is the obvious
+suspect: the kernel retires the goldfish pipe and Vulkan now rides virtio-gpu
+(Symptom 3 in `emulator-gfxstream-deploy.md`).
+
+It is not a blanket transport failure: Genshin Impact is also Unity on Vulkan
+and it passes, so whatever this is depends on how the app presents --
+`vkQueueSubmit2` plus `QueueSignalReleaseImageANDROID` from two graphics
+threads is the distinguishing shape to start from.
 
 This also explains why ANGLE does nothing for it: ANGLE substitutes the GLES
 driver, and this app never asks for GLES.
@@ -78,8 +111,14 @@ driver, and this app never asks for GLES.
 ## Status
 
 Both are host graphics defects, one per API, with Digitalis eliminated by A/B.
-Neither has a fix here yet. `ninjahands2` is the more tractable of the two: the
-stall is in the same `vk_decoder` sequence-number mechanism as the
-process-teardown crash in `emulator-gfxstream-deploy.md` (Symptom 4), which is
-already known to be fragile, and the warning above names the thread and the
-sequence number it is waiting for.
+Neither has a fix here yet.
+
+`ninjahands2` is the better-characterised of the two: a reproducible deadlock
+with the blocking frame identified, the host demonstrably idle, and two
+plausible causes already eliminated. The next step is to find out whether the
+guest's write reaches the host at all -- host-side gfxstream Vulkan logging for
+that process, or a trace of the address-space stream doorbell -- rather than to
+keep reading the decoder.
+
+`beachbuggy` is the weaker lead: no error is reported anywhere, so there is no
+thread to pull beyond instrumenting gfxstream's GLES path.
