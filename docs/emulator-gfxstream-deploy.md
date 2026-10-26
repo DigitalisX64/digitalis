@@ -3,12 +3,14 @@
 Some Digitalis failures are not Digitalis failures. The emulator under
 `prebuilts/android-emulator/` is a released binary that lags the emulator's own
 source tree, so a host-side graphics fix that has already landed upstream is
-still absent from the binary you run.
+still absent from the binary you run. One of the fixes below is not upstream at
+all yet and has to be made in the emulator source before building.
 
-This page covers the two such fixes Digitalis currently needs — one that kills
-the emulator process, one that silently starves apps of Vulkan memory — how to
-tell each apart from a translator bug, and how to build and deploy an emulator
-that has both.
+This page covers four host-side symptoms: two stale-binary fixes (one aborts
+the emulator process, one silently starves apps of Vulkan memory), one that is
+purely a launch-flag problem, and one live gfxstream bug that segfaults the
+emulator. Each section says how to tell it apart from a translator bug, and the
+last sections cover building and deploying a host that has all of them.
 
 ## Symptom 1: the emulator process aborts on `VK_EXT_memory_budget`
 
@@ -129,6 +131,86 @@ is not, and it is worth proving rather than assuming:
 Rebuilding and redeploying the emulator does *not* fix this one -- a host built
 from 2026-10-21 source fails exactly like the shipped prebuilt -- so do not
 reach for `deploy-emulator.sh` here. Check the launch flags first.
+
+## Symptom 4: the emulator segfaults about a minute into every boot
+
+The emulator reaches the launcher and then the process simply disappears.
+`adb devices` goes empty, the telnet console stops answering, and the
+emulator's own stdout ends without a fatal message -- the last lines are an
+app's `VkInstance` being destroyed and:
+
+```
+ERROR | Failed to find process owned resources for puid 5.
+```
+
+The exit status is `139` (SIGSEGV), and the backtrace from the core is:
+
+```
+#0  VkDecoder::Impl::decode(...)            <- atomic RMW, c11.h
+#1  gfxstream::host::RenderThread::main()
+...
+#5  FrameBuffer::Impl::cleanupProcGLObjects(unsigned long)
+#8  RendererImpl::ProcessCleanupThread::CleanProcessResources
+```
+
+Two threads in one picture: a render thread is still decoding for a guest
+process while the cleanup worker tears that same process down.
+
+`RendererImpl::cleanupProcGLObjects()` removed the process's
+`ProcessResources` **before** handing the puid to the cleanup worker, and only
+the worker waits (inside `FrameBuffer::cleanupProcGLObjects()`) for that puid's
+render threads to finish. In the window between the two, a render thread that
+had not yet cached the pointer looks it up, gets the `nullptr` that prints the
+error above, and passes it to the Vulkan decoder. The decoder guards the *read*
+of the sequence number (`if (seqnoPtr && ...)`) but every one of its generated
+`seqnoPtr->fetch_add(1, ...)` completion sites is unguarded, so the first
+command it finishes does an atomic increment through address 0.
+
+`bootanimation` exiting a few seconds after the launcher appears is what
+reliably hits it, which is why the death is so reproducible and always at the
+same point. It is *not* specific to any app or to the translator: no guest code
+can legitimately kill the host process.
+
+This surfaces only once ANGLE is the GLES driver, because then every app's
+rendering goes through the Vulkan decoder. Under gfxstream's own GLES almost
+nothing took that path, so the race was there but rarely won.
+
+Unlike Symptoms 1 and 2 this is not a stale binary: a host built from
+2026-10-21 emulator source crashes the same way, so the fix has to be made in
+the source before building. In
+`hardware/google/gfxstream/host/renderer_impl.cpp`, defer the removal to the
+cleanup worker so it happens *after* the existing render-thread wait -- the
+lifetime the code's own comment already assumes:
+
+```c++
+ void RendererImpl::cleanupProcGLObjects(uint64_t puid) {
+-    std::unique_ptr<ProcessResources> resource =
+-        FrameBuffer::getFB()->removeGraphicsProcessResources(puid);
+-    mCleanupThread->cleanup(puid, std::move(resource));
++    mCleanupThread->cleanup(puid);
+ }
+```
+
+and in the worker's visitor:
+
+```c++
+ WorkerProcessingResult operator()(CleanProcessResources resources) {
+     FrameBuffer::getFB()->cleanupProcGLObjects(resources.puid);
++    FrameBuffer::getFB()->removeGraphicsProcessResources(resources.puid);
+     return WorkerProcessingResult::Continue;
+ }
+```
+
+`CleanProcessResources` then carries only the puid, and
+`ProcessCleanupThread::cleanup()` loses its `std::unique_ptr` parameter.
+Do not try to fix this in `host/vulkan/vk_decoder.cpp`: it is generated
+("Please do not modify directly") from the Vulkan registry, and the hundreds of
+unguarded increment sites come from the generator template.
+
+Verify the fix behaviourally, not just by booting -- the unfixed build also
+reaches the launcher before dying. A fixed host shows **zero**
+`Failed to find process owned resources` lines and survives well past the
+bootanimation teardown window.
 
 ## Deploying a fixed emulator
 
