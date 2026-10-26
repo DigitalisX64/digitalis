@@ -47,6 +47,13 @@ E GFXSTREAM: [egl.cpp(1491)] tid 5177: error 0x300c (EGL_BAD_PARAMETER)
 `eglBindAPI()` -- the app passed something other than `EGL_OPENGL_ES_API`.
 Startup probe noise, before any surface work.
 
+The host GL backend is not the culprit either. Running the emulator with
+`-gpu swiftshader_indirect`, which replaces the host's native GL driver with a
+software renderer, leaves the frame just as blank (one colour). Both host
+backends share gfxstream's GLES translation layer, so the defect is in that
+layer rather than in Mesa/radeonsi or anything host-driver specific. Don't
+re-test this with a different host GPU or driver.
+
 ANGLE renders this game because it reimplements GLES on Vulkan and never uses
 gfxstream's GLES path. It is not a usable fix: measured over the same corpus,
 ANGLE breaks `artblitz`, `bouncyhoops`, `bucketcrusher` and `burgerplease`,
