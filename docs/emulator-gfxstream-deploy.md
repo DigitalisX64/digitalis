@@ -283,6 +283,46 @@ cp objs/lib64/libgfxstream_backend.so \
 The check is doing its job: without it the deployed emulator silently keeps the
 old backend and the fix appears not to work.
 
+## Symptom 8: later apps in a session render black (`Failed to create process resource`)
+
+```
+WARNING | Failed to create process resource for puid 2.
+WARNING | Failed to create process resource for puid 6.
+```
+
+`createGraphicsProcessResources()` warns when `try_emplace` fails, which means
+the puid is still in `m_procOwnedResources`. A new guest process reusing that
+puid then inherits a dead process's entry and renders black. In a gate batch the
+symptom is positional: the first few titles pass and later ones are blank.
+
+This was self-inflicted. An earlier fix here deferred
+`removeGraphicsProcessResources()` into the cleanup worker so that a render
+thread still decoding could not lose its sequence number. That kept the *map
+entry* alive, not just the object, and leaked puids. Measured on the gate's
+batch 1, with nothing else changed:
+
+| teardown | `burgerplease` |
+|---|---|
+| removal deferred into the worker | 16/60 cells |
+| upstream (immediate removal) | 54/60 cells |
+
+Seven Unity titles failed that way.
+
+The constraint that motivated the deferral is real, so the fix has to satisfy
+both halves:
+
+* **Remove the map entry immediately**, as upstream does, so a new process with
+  the same puid can create its own resources. The object itself still outlives
+  the threads: `removeGraphicsProcessResources()` hands the `unique_ptr` to the
+  cleanup worker, which destroys it only after `cleanupProcGLObjects()` has
+  waited for that puid's render threads.
+* **Never hand the decoder a null sequence number.** When a draining thread's
+  lookup misses, `RenderThread` now falls back to a private `ProcessResources`
+  instead of `nullptr`. The generated Vulkan decoder increments that pointer on
+  every completed command with no null check, and the sequence number only
+  orders commands within one live process -- a process that is going away needs
+  no ordering with anyone.
+
 ## Deploying a fixed emulator
 
 ### 1. Get the emulator source
