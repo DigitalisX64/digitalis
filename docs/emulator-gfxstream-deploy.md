@@ -348,6 +348,36 @@ When the thread's context has to be borrowed it must also be **put back**.
 Rebinding without restoring leaves the GLES 1 title that owned it rendering to
 nothing -- trading one black app for another.
 
+## Which of these still matter once ANGLE is the GLES driver
+
+Measured on 2026-10-29, after `sdk_phone64_x86_64_digitalis.mk` switched the
+image to `ro.hardware.egl=angle`: a host rebuilt **without** the GLES-path fixes
+behaves the same as one with them. The ten apps those fixes were written for all
+render (`beachbuggy` 54/60, `downhillsmash` 46/60, the rest 28-56/60, no fatal
+signal), and the games corpus passes 67/67 either way.
+
+The reason is structural rather than lucky. ANGLE implements GLES on top of
+Vulkan **in the guest**, so guest GL calls never reach gfxstream's host GLES
+decoder or its EGL emulation. Symptoms 5 and 9 live entirely in that code, so
+on an ANGLE image they are off the path:
+
+| symptom | host code | reachable under ANGLE |
+|---|---|---|
+| 5 (`glDiscardFramebufferEXT` null dispatch) | `gles2_dec`, `glestranslator/gles_v2` | no |
+| 9 (fence sync on a GLES 1 context) | `EmulationGl` EGL/GLES emulation | no |
+| 8 (ProcessResources teardown) | `render_thread`, Vulkan decoder | **yes** |
+| 1, 2, 3 (Vulkan heap/budget, transport) | Vulkan path | **yes** |
+
+Two consequences worth keeping straight:
+
+* The GLES-path fixes are still correct, and still required for an image that
+  uses gfxstream's GLES emulation -- which is what every non-digitalis goldfish
+  product does. "Not needed here" is not "not needed."
+* Symptom 8 is a race on a path ANGLE uses more heavily, not less. It did not
+  reproduce in the run above (five boots plus nine sweep sessions), but one
+  clean measurement does not disprove a race, so do not read the table as a
+  licence to drop that guard.
+
 ## Deploying a fixed emulator
 
 ### 1. Get the emulator source
