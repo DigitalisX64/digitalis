@@ -323,6 +323,31 @@ both halves:
   orders commands within one live process -- a process that is going away needs
   no ordering with anyone.
 
+## Symptom 9: one app renders black only after a GLES 1 app ran before it
+
+A title draws nothing, with no host error and no guest crash, and whether it
+happens depends on what ran earlier in the same session -- which makes it look
+like gate batch-position luck rather than a defect.
+
+The guest is blocked on a fence that will never signal. `glFenceSync` is ES 3
+only: the GLES translator's `GET_CTX_V2_RET` rejects any context below ES 2 with
+`invalid GLESv2 context version`, so `eglCreateSyncKHR` fails and the guest is
+handed no fence at all. Its release fence then never signals and
+SurfaceFlinger's producer blocks in `Fence::waitForever`.
+
+Two things conspired in `EmulationGl::createEmulatedEglFenceSync()`:
+
+* It built a trivial context only when the render thread had **none**. A render
+  thread inherits whatever context the previous app on it left current, so after
+  a GLES 1 title has run, a GLES 1 context is still bound -- present, but
+  unusable for a fence. The check now also treats a sub-ES2 context as unusable.
+* `createTrivialContext()` asked for `GLESApi_2`, which has no `glFenceSync`
+  either. It now asks for ES 3 whenever the host can dispatch it.
+
+When the thread's context has to be borrowed it must also be **put back**.
+Rebinding without restoring leaves the GLES 1 title that owned it rendering to
+nothing -- trading one black app for another.
+
 ## Deploying a fixed emulator
 
 ### 1. Get the emulator source
