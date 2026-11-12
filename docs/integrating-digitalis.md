@@ -142,7 +142,14 @@ of:
 - **Memory.** Translation adds a JIT code cache and guest address-space
   bookkeeping per app. 4 GB RAM is a workable floor for app testing; give the
   device what you would give it for the equivalent native workload plus
-  headroom.
+  headroom. The ARM64 runtime on x86_64 reserves available addresses in
+  `[2 GiB, 4 GiB - one page)` for executable code before guest execution.
+  These `PROT_NONE` / `MAP_NORESERVE` mappings reserve virtual address space,
+  not an immediate 2 GiB of RAM. Existing mappings are preserved and reduce
+  the available code capacity; guest requests for fixed addresses overlapping
+  owned ranges are rejected. See the
+  [code-window design and exhaustion behavior](how-it-works.md#a-reserved-2-4-gib-code-window)
+  and [guest mapping error codes](how-it-works.md#protecting-the-code-window-from-guest-mappings).
 - **SELinux.** Digitalis ships its policy with the packages above; building
   the product from source integrates it. If your target carries a hardened
   downstream policy, check `adb logcat -b events -s avc` on first boot for

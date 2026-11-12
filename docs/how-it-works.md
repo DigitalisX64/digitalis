@@ -1216,19 +1216,19 @@ JIT-compiled code is trickier — there's no per-instruction interpreter state t
 ```mermaid
 graph LR
     subgraph JIT_Code["JIT-Generated Code"]
-        I1["mov rcx, [rsi+16]<br/><i>@ host address 0x4000100</i>"]
-        I2["add rcx, 42<br/><i>@ host address 0x4000104</i>"]
-        RS["Recovery stub @ 0x4000108<br/><i>ExitGeneratedCode(0x7000200C)</i>"]
+        I1["mov rcx, [rsi+16]<br/><i>@ host address 0x90000100</i>"]
+        I2["add rcx, 42<br/><i>@ host address 0x90000104</i>"]
+        RS["Recovery stub @ 0x90000108<br/><i>ExitGeneratedCode(0x7000200C)</i>"]
     end
 
     subgraph Recovery["Recovery Map"]
-        R1["0x4000100 → 0x4000108<br/><i>fault addr → recovery stub addr</i>"]
+        R1["0x90000100 → 0x90000108<br/><i>fault addr → recovery stub addr</i>"]
     end
 
-    subgraph Handler["On SIGSEGV at 0x4000100"]
-        H1["Look up 0x4000100 in recovery map"]
-        H2["Found: recovery stub at 0x4000108"]
-        H3["Set host RIP = 0x4000108"]
+    subgraph Handler["On SIGSEGV at 0x90000100"]
+        H1["Look up 0x90000100 in recovery map"]
+        H2["Found: recovery stub at 0x90000108"]
+        H3["Set host RIP = 0x90000108"]
         H4["Recovery stub runs:<br/>sets guest PC, exits generated code"]
     end
 
@@ -1351,6 +1351,73 @@ graph TD
 ```
 
 The **code pool** pre-allocates large `memfd`-backed regions and parcels them out to individual translated regions, avoiding per-translation system call overhead.
+
+### A Reserved 2-4 GiB Code Window
+
+For an ARM64 guest on an x86_64 host, executable code pools use the available
+addresses in **[2 GiB, 4 GiB - one page)**. Previously, their `MAP_32BIT`
+allocations competed with ART's mappings below 2 GiB. A fragmented low address
+range could no longer fit a 4 MiB executable region even when physical memory
+was available, forcing translation to fall back to the interpreter. Moving
+executable pools above 2 GiB gives them separate address-space capacity (see
+[DigitalisX64/digitalis#3](https://github.com/DigitalisX64/digitalis/issues/3)).
+
+The upper bound still fits the unsigned 32-bit `HostCodeAddr`. Keeping the
+anonymous default and cold pools, the ELF-backed function-wrapper pool, and
+entry/exit trampolines in the same window also keeps relative `Jmp32` / `Jcc32`
+branches within their signed 32-bit displacement range. The final page below
+4 GiB is excluded: the interval is `[0x80000000, 0xfffff000)` with 4 KiB pages.
+Translation-cache host-PC lookups calculate range ends in 64 bits, avoiding
+wraparound when adding a code region's size near the 4 GiB boundary.
+Data that needs a **signed 32-bit absolute address** continues to use
+`kMmapBerberis32Bit` below 2 GiB; it must not use the new code-window flag.
+
+`CodeWindow` in `base/mmap_posix.cc` separates address reservation from
+executable backing:
+
+1. **Reserve before guest execution.** ARM64's `InitGuestArch()` calls
+   `EnableCodeWindow()` before `InitHostEntries()` or any executable pool is
+   created. It attempts 64 MiB reservations with `PROT_NONE`, `MAP_NORESERVE`,
+   and `MAP_FIXED_NOREPLACE`. If an existing mapping blocks a chunk, it
+   subdivides down to 4 MiB, preserving that mapping and reserving available
+   neighbors. Adjacent successful reservations are merged. Only successfully
+   reserved ranges belong to the code window.
+2. **Choose a random starting point once.** `getrandom` selects the first
+   reserved range and a page-aligned starting address within it. Allocation
+   then walks the remaining ranges and finally the prefix before that start,
+   so randomization does not discard the preceding capacity. Fork children
+   inherit this layout; it is not randomized again on every allocation.
+3. **Allocate slices with lock-free cursors.** The ownership ranges remain
+   immutable. Atomic cursors advance through them without scanning
+   `/proc/self/maps` or acquiring allocator/library locks. Completing the
+   local-static initialization before guest execution prevents a raw-fork
+   child from inheriting an unfinished initialization guard. This lock-free
+   property describes the address allocator, not every code-pool operation.
+4. **Back the selected slice.** `GetExecutableMmapFlags()` selects
+   `kMmapBerberisCode32Bit` for executable factories. Anonymous regions map
+   their memfd's R+X view over the reservation; the ELF-backed factory directs
+   the Android loader to its reserved address before installing the code
+   backing. The R+W alias remains an ordinary mapping elsewhere. The existing
+   W^X dual mapping is unchanged.
+
+Unused slices reserve **virtual addresses**, not an eagerly allocated 2 GiB
+of physical RAM. When `MunmapOrDie()` releases a slice owned by the window,
+it replaces the mapping with `PROT_NONE` and retains address ownership until
+process exit. Released slices are not reused by the allocation cursors and
+cannot become holes that ordinary guest allocations can claim.
+
+Capacity is finite and depends on mappings already present at initialization.
+When no remaining slice can satisfy a request, allocation fails with `ENOMEM`.
+The anonymous factory reserves before creating a memfd, so exhaustion does
+not repeatedly create file descriptors. Its non-fatal `TryCreate` path lets
+translation callers fall back to the interpreter; pool creation at startup,
+the pool reset in a fork child, and ELF-backed allocations still use fatal
+creation paths. There is no automatic fallback to a different address window.
+The runtime enables this policy for ARM64 on x86_64; the RISC-V guest keeps
+its existing placement policy.
+
+Guest mapping operations also respect these reservations, as described under
+[code-window protection](#protecting-the-code-window-from-guest-mappings).
 
 ### Labels and Backpatching
 
@@ -1538,9 +1605,9 @@ ASLR randomizes them every launch; ordering is not to scale):
 graph TD
     subgraph Map["One x86_64 process — everything lives here together"]
         direction TB
+        JITX["0x9a00_0000  JIT translation cache — R+X view (memfd)<br/><i>host CPU executes generated x86_64 from here</i>"]
         STK["0x7ffd_0000  Guest ARM64 stack<br/><i>per guest thread; guest SP points in here</i>"]
         VDSO["0x7fa0_0000  Guest vDSO (ARM64)<br/><i>handed to the guest linker via AT_SYSINFO_EHDR</i>"]
-        JITX["0x7f40_0000  JIT translation cache — R+X view (memfd)<br/><i>host CPU executes generated x86_64 from here</i>"]
         JITW["0x7f30_0000  JIT translation cache — R+W alias (SAME memfd)<br/><i>JIT writes bytes here; W^X dual-mapping</i>"]
         PROXY["0x7f00_0000  Proxy libs — libberberis_proxy_*.so (x86_64)<br/><i>real PROT_EXEC — run natively, not translated</i>"]
         HOSTC["0x7e80_0000  libberberis_arm64.so + host libc.so (x86_64)<br/><i>the translator itself</i>"]
@@ -1548,7 +1615,7 @@ graph TD
         GLIB["0x7900_0000  Guest ARM64 system libs — libc.so, libm.so, libvulkan.so<br/><i>real ARM64 code, translated on demand</i>"]
         LINK["0x7880_0000  Guest linker64 (ARM64)<br/><i>resolves relocations, drives dlopen_ext</i>"]
         HEAP["0x5500_0000  App heap<br/><i>malloc() served by host libc via the libc proxy</i>"]
-        STK --- VDSO --- JITX --- JITW --- PROXY --- HOSTC --- APPSO --- GLIB --- LINK --- HEAP
+        JITX --- STK --- VDSO --- JITW --- PROXY --- HOSTC --- APPSO --- GLIB --- LINK --- HEAP
     end
     SHADOW["GuestMapShadow (translator metadata)<br/><i>1 bit per guest page: is this page executable?</i>"]
     Map -.tracks the X bit of every page.-> SHADOW
@@ -1561,6 +1628,11 @@ directly — only the translated x86_64 in the JIT cache is executable — and t
 CPU), the W^X trick from [Section 11](#11-machine-code-generation). Proxy
 libraries and the translator itself are ordinary native x86_64 mappings in the
 same space.
+
+The JIT's R+X example address is inside the
+[reserved code window](#a-reserved-2-4-gib-code-window); its R+W alias is not
+restricted to that window. Unused and released code-window slices remain
+`PROT_NONE` reservations, which are omitted from the diagram for readability.
 
 ```mermaid
 graph TD
@@ -1587,6 +1659,31 @@ Even though guest and host addresses are the same, the translator needs extra bo
 - When guest code calls `mprotect()` to change page permissions, the emulation layer updates the bitmap to reflect the new executable status.
 
 **`AddProtectedMapping()`** is a separate mechanism: it prevents guest `mprotect()` calls from modifying permissions on specific host memory regions (specifically libc.so mappings, to prevent a known issue where guest code scans `/proc/self/maps` and tries to change permissions on host libraries).
+
+### Protecting the Code Window from Guest Mappings
+
+The ARM64 guest's `mmap`, `munmap`, `mprotect`, and `mremap` paths in
+`kernel_api/sys_mman_emulation.cc` check `IntersectsCodeWindow()` before
+changing a mapping or its executable-page shadow. This ownership check is
+separate from `GuestMapShadow`'s executable bitmap and the libc-specific
+`AddProtectedMapping()` checks above. It covers unused and released slices
+as well as installed executable code, rounds lengths to page boundaries,
+and only protects ranges the allocator actually reserved. Pre-existing
+mappings skipped during reservation do not become code-window-owned.
+
+| Guest operation | Conflict with an owned range | Result |
+|---|---|---|
+| `mmap` with `MAP_FIXED` | Destination overlaps the reservation | `EACCES` |
+| `mmap` with `MAP_FIXED_NOREPLACE` | Destination overlaps the reservation | `EEXIST` |
+| `munmap` or `mprotect` | Requested range overlaps the reservation | `EACCES` |
+| `mremap` | Source overlaps, or a `MREMAP_FIXED` destination overlaps | `EACCES` |
+| `mremap` without `MREMAP_MAYMOVE` | In-place growth would enter the reservation | `ENOMEM` |
+
+For `mremap` with `old_size == 0`, which can clone a shareable mapping, the
+source page is still checked. Keeping `EEXIST` for non-replacing mappings
+and `ENOMEM` for blocked in-place growth preserves the caller's normal
+retry behavior. Ordinary non-fixed `mmap` and movable `mremap` use the kernel's
+placement rules around the existing reservations.
 
 ### The Guest Dynamic Linker
 
