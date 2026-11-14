@@ -558,7 +558,7 @@ for mod in "${MODULE_ORDER[@]}"; do
         echo "  FAIL: $mod"
         crash=$((crash + 1))
         # Surface the actual assertion failure if logcat has it
-        fail_msg=$(adb logcat -d 2>/dev/null | grep -E "AssertionError|Screenshot mismatch|run finished:" | tail -3)
+        fail_msg=$(adb logcat -d 2>/dev/null | grep -E "AssertionError|Screenshot mismatch|run finished:" | tail -3 || true)
         if [[ -n "$fail_msg" ]]; then
             echo "$fail_msg" | sed 's/^/    /'
         else
