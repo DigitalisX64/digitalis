@@ -2,7 +2,7 @@
 
 The arm64-to-x86_64 binary translation based on Berberis framework.
 
-Built on **AOSP 16** (API 36).
+Built on **AOSP 17** (API 37).
 
 Upstream AOSP Berberis publishes only a RISC-V backend. Google's own Android
 Emulator *Google APIs* x86_64 system images do ship an ARM64 one — they register
